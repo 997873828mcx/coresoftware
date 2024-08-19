@@ -16,7 +16,7 @@
 #include <TH1.h>
 #include <TNtuple.h>
 
-int KshortReconstruction::process_event(PHCompositeNode* /**topNode*/)
+/*int KshortReconstruction::process_event(PHCompositeNode* *//**topNode*//*)
 {
   // Loop over tracks and check for close DCA match with all other tracks
   for (auto tr1_it = m_svtxTrackMap->begin(); tr1_it != m_svtxTrackMap->end(); ++tr1_it)
@@ -487,7 +487,7 @@ int KshortReconstruction::InitRun(PHCompositeNode* topNode)
   return 0;
 }
 
-int KshortReconstruction::End(PHCompositeNode* /**topNode*/)
+int KshortReconstruction::End(PHCompositeNode* *//**topNode*//*)
 {
   fout->cd();
   ntp_reco_info->Write();
@@ -521,4 +521,280 @@ int KshortReconstruction::getNodes(PHCompositeNode* topNode)
   }
 
   return Fun4AllReturnCodes::EVENT_OK;
+}*/
+
+KshortReconstruction::KshortReconstruction(const std::string& name)
+        : SubsysReco(name)
+{
+}
+
+int KshortReconstruction::getNodes(PHCompositeNode* topNode)
+{
+    m_svtxTrackMap = findNode::getClass<SvtxTrackMap>(topNode, "SvtxTrackMap");
+    if (!m_svtxTrackMap)
+    {
+        std::cout << PHWHERE << "No SvtxTrackMap on node tree, exiting." << std::endl;
+        return Fun4AllReturnCodes::ABORTEVENT;
+    }
+
+    m_vertexMap = findNode::getClass<SvtxVertexMap>(topNode, "SvtxVertexMap");
+    if (!m_vertexMap)
+    {
+        std::cout << PHWHERE << "No vertexMap on node tree, exiting." << std::endl;
+        return Fun4AllReturnCodes::ABORTEVENT;
+    }
+
+    _tGeometry = findNode::getClass<ActsGeometry>(topNode, "ActsGeometry");
+    if (!_tGeometry)
+    {
+        std::cout << PHWHERE << "Error, can't find acts tracking geometry" << std::endl;
+        return Fun4AllReturnCodes::ABORTEVENT;
+    }
+
+    return Fun4AllReturnCodes::EVENT_OK;
+}
+
+
+int KshortReconstruction::InitRun(PHCompositeNode* topNode)
+{
+    const char* cfilepath = filepath.c_str();
+    fout = new TFile(cfilepath, "recreate");
+    ntp_reco_info = new TNtuple("ntp_reco_info", "decay_pairs", "x1:y1:z1:px1:py1:pz1:dca3dxy1:dca3dz1:phi1:pca_rel1_x:pca_rel1_y:pca_rel1_z:eta1:charge1:tpcClusters_1:x2:y2:z2:px2:py2:pz2:dca3dxy2:dca3dz2:phi2:pca_rel2_x:pca_rel2_y:pca_rel2_z:eta2:charge2:tpcClusters_2:vertex_x:vertex_y:vertex_z:pair_dca:invariant_mass:invariant_pt:pathlength_x:pathlength_y:pathlength_z:pathlength:rapidity:pseudorapidity:projected_pos1_x:projected_pos1_y:projected_pos1_z:projected_pos2_x:projected_pos2_y:projected_pos2_z:projected_mom1_x:projected_mom1_y:projected_mom1_z:projected_mom2_x:projected_mom2_y:projected_mom2_z:projected_pca_rel1_x:projected_pca_rel1_y:projected_pca_rel1_z:projected_pca_rel2_x:projected_pca_rel2_y:projected_pca_rel2_z:projected_pair_dca:projected_pathlength_x:projected_pathlength_y:projected_pathlength_z:projected_pathlength:quality1:quality2:cosThetaReco:track1_silicon_clusters:track2_silicon_clusters");
+
+    getNodes(topNode);
+
+    recomass = new TH1D("recomass", "recomass", 1000, 0.0, 1);  // root histogram arguments: name,title,bins,minvalx,maxvalx
+
+    return 0;
+}
+
+
+int KshortReconstruction::process_event(PHCompositeNode* /**topNode*/)
+{
+
+    // Loop over tracks and check for close DCA match with all other tracks
+    for (auto tr1_it = m_svtxTrackMap->begin(); tr1_it != m_svtxTrackMap->end(); ++tr1_it)
+    {
+        auto id1 = tr1_it->first;
+        auto tr1 = tr1_it->second;
+        if (apply_quality_cut && tr1->get_quality() > _qual_cut)
+        {
+            std::cout<<"tr1 didn't pass the quality cut"<<std::endl;
+            continue;
+        }
+
+        // calculate number silicon tracks
+        double this_dca_cut = track_dca_cut;
+        TrackSeed* siliconseed = tr1->get_silicon_seed();
+
+        if (!siliconseed)
+        {
+            std::cout << "silicon seed not found" << std::endl;
+            this_dca_cut *= 5;
+            if (Verbosity() > 2)
+            {
+                std::cout << "silicon seed not found" << std::endl;
+            }
+            if (_require_mvtx)
+            {
+                std::cout<<"mvtx is required"<<std::endl;
+                continue;
+            }
+        }else if (Verbosity() > 2)
+        {
+            std::cout << "silicon seed found" << std::endl;
+        }
+
+        unsigned int track1_silicon_cluster_size = std::numeric_limits<unsigned int>::quiet_NaN();
+        if (siliconseed)
+        {
+            track1_silicon_cluster_size = siliconseed->size_cluster_keys();//这个作用是？
+        }
+
+        Acts::Vector3 pos1(tr1->get_x(), tr1->get_y(), tr1->get_z());//是哪里的点的位置和动量？
+        Acts::Vector3 mom1(tr1->get_px(), tr1->get_py(), tr1->get_pz());
+        Acts::Vector3 dcaVals1 = calculateDca(tr1, mom1, pos1);
+        // first dca cuts
+        *//*if (dcaVals1(0) < this_dca_cut or dcaVals1(1) < this_dca_cut)//dcx为什么小的反而不好？
+                {
+                        continue;
+                }*//*
+
+        // look for close DCA matches with all other such tracks
+        for (auto tr2_it = std::next(tr1_it); tr2_it != m_svtxTrackMap->end(); ++tr2_it)
+        {
+            auto id2 = tr2_it->first;
+            auto tr2 = tr2_it->second;
+            *//*if (tr2->get_quality() > _qual_cut)
+                    {
+                            continue;
+                    }*//*
+
+            // calculate number silicon tracks
+            // TrackSeed* siliconseed2 = tr2->get_silicon_seed();
+
+            double this_dca_cut2 = track_dca_cut;
+
+            *//*if (!siliconseed2)
+                    {
+                            this_dca_cut2 *= 5;
+                    if (Verbosity() > 2)
+                    {
+                        std::cout << "silicon seed not found" << std::endl;
+                    }
+                    if (_require_mvtx)
+                    {
+
+                        continue;
+                    }
+                    }
+            if(siliconseed)
+            {
+                std::cout<<"there is siliconseed"<<std::endl;
+            }*//*
+
+                    //unsigned int track2_silicon_cluster_size = std::numeric_limits<unsigned int>::quiet_NaN();
+                    unsigned int track2_silicon_cluster_size = 0;
+            *//*   if (siliconseed2)
+                    {
+                            track2_silicon_cluster_size = siliconseed2->size_cluster_keys();
+                    }*//*
+            // unsigned int track2_silicon_cluster_size = 0;
+
+            // dca xy and dca z cut here compare to track dca cut
+            Acts::Vector3 pos2(tr2->get_x(), tr2->get_y(), tr2->get_z());
+            Acts::Vector3 mom2(tr2->get_px(), tr2->get_py(), tr2->get_pz());
+            Acts::Vector3 dcaVals2 = calculateDca(tr2, mom2, pos2);    //dcx 这里dca计算的是轨迹与哪个点的距离？pos2吗？
+
+            *//*if (dcaVals2(0) < this_dca_cut2 or dcaVals2(1) < this_dca_cut2)
+                    {
+                            continue;
+                    }*//*
+
+            // find DCA of these two tracks
+            if (Verbosity() > 3)
+            {
+                std::cout << "Check DCA for tracks " << id1 << " and  " << id2 << std::endl;
+            }
+
+            *//*if (tr1->get_charge() == tr2->get_charge())
+                    {
+                            continue;
+                    }*//*
+
+            // declare these variables to pass into findPCAtwoTracks and fillHistogram by reference
+            double pair_dca;
+            Acts::Vector3 pca_rel1;
+            Acts::Vector3 pca_rel2;
+            double invariantMass;
+            double invariantPt;
+            float rapidity;
+            float pseudorapidity;
+
+            // Initial calculation of point of closest approach between the two tracks
+            // This presently assumes straight line tracks to get a rough answer
+            // Should update to use circles instead?
+            findPcaTwoTracks(pos1, pos2, mom1, mom2, pca_rel1, pca_rel2, pair_dca); //dcx 应该是输入两个轨迹上两个点的位置和动量，输出两个轨迹的pca,和dca
+
+            // tracks with small relative pca are k short candidates
+            if (abs(pair_dca) < pair_dca_cut)
+            {
+                // Pair pca and dca were calculated with nominal track parameters and are approximate
+                // Project tracks to this rough pca
+                Eigen::Vector3d projected_pos1;
+                Eigen::Vector3d projected_mom1;
+                Eigen::Vector3d projected_pos2;
+                Eigen::Vector3d projected_mom2;
+
+                bool ret1 = projectTrackToPoint(tr1, pca_rel1, projected_pos1, projected_mom1);//dcx 输入第一条轨迹，第一条轨迹的初步pca（应该是位置），输出投影的位置和动量
+                bool ret2 = projectTrackToPoint(tr2, pca_rel2, projected_pos2, projected_mom2);
+
+                if (!ret1 or !ret2)
+                {
+                    continue;
+                }
+
+                // recalculate pca starting with projected position and momentum
+                double pair_dca_proj;
+                Acts::Vector3 pca_rel1_proj;
+                Acts::Vector3 pca_rel2_proj;
+                findPcaTwoTracks(projected_pos1, projected_pos2, projected_mom1, projected_mom2, pca_rel1_proj, pca_rel2_proj, pair_dca_proj); //dcx进一步根据投影的点的位置和动量找到dca和pca，为什么要做这一步？
+
+                // if(pair_dca_proj > pair_dca_cut) continue;
+
+                // invariant mass is calculated in this method
+                fillHistogram(projected_mom1, projected_mom2, recomass, invariantMass, invariantPt, rapidity, pseudorapidity);
+                fillNtp(tr1, tr2, dcaVals1, dcaVals2, pca_rel1, pca_rel2, pair_dca, invariantMass, invariantPt, rapidity, pseudorapidity, projected_pos1, projected_pos2, projected_mom1, projected_mom2, pca_rel1_proj, pca_rel2_proj, pair_dca_proj, track1_silicon_cluster_size, track2_silicon_cluster_size);
+
+                if (Verbosity() > 2)
+                {
+                    std::cout << " Accepted Track Pair" << std::endl;
+                    std::cout << " invariant mass: " << invariantMass << std::endl;
+                    std::cout << " track1 dca_cut: " << this_dca_cut << " track2 dca_cut: " << this_dca_cut2 << std::endl;
+                    std::cout << " dca3dxy1,dca3dz1,phi1: " << dcaVals1 << std::endl;
+                    std::cout << " dca3dxy2,dca3dz2,phi2: " << dcaVals2 << std::endl;
+                    std::cout << "Initial:  pca_rel1: " << pca_rel1 << " pca_rel2: " << pca_rel2 << std::endl;
+                    std::cout << " Initial: mom1: " << mom1 << " mom2: " << mom2 << std::endl;
+                    std::cout << "Proj_pca_rel:  proj_pos1: " << projected_pos1 << " proj_pos2: " << projected_pos2 << " proj_mom1: " << projected_mom1 << " proj_mom2: " << projected_mom2 << std::endl;
+                    std::cout << " Relative PCA = " << abs(pair_dca) << " pca_cut = " << pair_dca_cut << std::endl;
+                    std::cout << " charge 1: " << tr1->get_charge() << " charge2: " << tr2->get_charge() << std::endl;
+                    std::cout << "found viable projection" << std::endl;
+                    std::cout << "Final: pca_rel1_proj: " << pca_rel1_proj << " pca_rel2_proj: " << pca_rel2_proj << " mom1: " << projected_mom1 << " mom2: " << projected_mom2 << std::endl
+                              << std::endl;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+Acts::Vector3 KshortReconstruction::calculateDca(SvtxTrack* track, const Acts::Vector3& momentum, Acts::Vector3 position)
+{
+    // For the purposes of this module, we set default values of zero to cause this track to be rejected if the dca calc fails
+    Acts::Vector3 outVals(0, 0, 0);
+    auto vtxid = track->get_vertex_id();
+
+    if (!m_vertexMap)
+    {
+        std::cout << "Could not find m_vertexmap " << std::endl;
+        return outVals;
+    }
+    auto svtxVertex = m_vertexMap->get(vtxid);
+    if (!svtxVertex)
+    {
+        std::cout << "Could not find vtxid in m_vertexMap " << vtxid << std::endl;
+        return outVals;
+    }
+    Acts::Vector3 vertex(svtxVertex->get_x(), svtxVertex->get_y(), svtxVertex->get_z());
+    position -= vertex;
+    Acts::Vector3 r = momentum.cross(Acts::Vector3(0., 0., 1.));
+    float phi = atan2(r(1), r(0));
+
+    Acts::RotationMatrix3 rot;
+    rot(0, 0) = cos(phi);
+    rot(0, 1) = -sin(phi);
+    rot(0, 2) = 0;
+    rot(1, 0) = sin(phi);
+    rot(1, 1) = cos(phi);
+    rot(1, 2) = 0;
+    rot(2, 0) = 0;
+    rot(2, 1) = 0;
+    rot(2, 2) = 1;
+
+    Acts::Vector3 pos_R = rot * position;
+    double dca3dxy = pos_R(0);
+    double dca3dz = pos_R(2);
+
+    outVals(0) = abs(dca3dxy);
+    outVals(1) = abs(dca3dz);
+    outVals(2) = phi;
+
+    if (Verbosity() > 4)
+    {
+        std::cout << " pre-position: " << position << std::endl;
+        std::cout << " vertex: " << vertex << std::endl;
+        std::cout << " vertex subtracted-position: " << position << std::endl;
+    }
+
+    return outVals;
 }
