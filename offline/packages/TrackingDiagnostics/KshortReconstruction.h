@@ -66,6 +66,9 @@ class KshortReconstruction : public SubsysReco
   // void findPcaTwoTracks(SvtxTrack *track1, SvtxTrack *track2, Acts::Vector3& pca1, Acts::Vector3& pca2, double& dca);
   void findPcaTwoTracks(const Acts::Vector3& pos1, const Acts::Vector3& pos2, Acts::Vector3 mom1, Acts::Vector3 mom2, Acts::Vector3& pca1, Acts::Vector3& pca2, double& dca);
 
+    void validateRotation(const Acts::Vector3& position, const Acts::Vector3& momentum);
+
+    void testRotationLogic();
   int getNodes(PHCompositeNode* topNode);
 
   Acts::Vector3 calculateDca(SvtxTrack* track, const Acts::Vector3& momentum, Acts::Vector3 position);

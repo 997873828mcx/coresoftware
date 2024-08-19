@@ -476,6 +476,7 @@ Acts::Vector3 KshortReconstruction::calculateDca(SvtxTrack* track, const Acts::V
 
 int KshortReconstruction::InitRun(PHCompositeNode* topNode)
 {
+  testRotationLogic();
   const char* cfilepath = filepath.c_str();
   fout = new TFile(cfilepath, "recreate");
   ntp_reco_info = new TNtuple("ntp_reco_info", "decay_pairs", "x1:y1:z1:px1:py1:pz1:dca3dxy1:dca3dz1:phi1:pca_rel1_x:pca_rel1_y:pca_rel1_z:eta1:charge1:tpcClusters_1:x2:y2:z2:px2:py2:pz2:dca3dxy2:dca3dz2:phi2:pca_rel2_x:pca_rel2_y:pca_rel2_z:eta2:charge2:tpcClusters_2:vertex_x:vertex_y:vertex_z:pair_dca:invariant_mass:invariant_pt:pathlength_x:pathlength_y:pathlength_z:pathlength:rapidity:pseudorapidity:projected_pos1_x:projected_pos1_y:projected_pos1_z:projected_pos2_x:projected_pos2_y:projected_pos2_z:projected_mom1_x:projected_mom1_y:projected_mom1_z:projected_mom2_x:projected_mom2_y:projected_mom2_z:projected_pca_rel1_x:projected_pca_rel1_y:projected_pca_rel1_z:projected_pca_rel2_x:projected_pca_rel2_y:projected_pca_rel2_z:projected_pair_dca:projected_pathlength_x:projected_pathlength_y:projected_pathlength_z:projected_pathlength:quality1:quality2:cosThetaReco:track1_silicon_clusters:track2_silicon_clusters");
@@ -521,4 +522,64 @@ int KshortReconstruction::getNodes(PHCompositeNode* topNode)
   }
 
   return Fun4AllReturnCodes::EVENT_OK;
+}
+
+void KshortReconstruction::validateRotation(const Acts::Vector3& position, const Acts::Vector3& momentum) {
+    // 计算 r 向量和 phi 角度
+    Acts::Vector3 r = momentum.cross(Acts::Vector3(0., 0., 1.));
+    double phi = atan2(r[1], r[0]);
+
+    std::cout << "Validation: phi = " << phi << " radians, " << phi * 180 / M_PI << " degrees" << std::endl;
+
+    // 创建旋转矩阵
+    Acts::RotationMatrix3 rot;
+    rot(0, 0) = cos(phi);  rot(0, 1) = -sin(phi); rot(0, 2) = 0;
+    rot(1, 0) = sin(phi);  rot(1, 1) = cos(phi);  rot(1, 2) = 0;
+    rot(2, 0) = 0;         rot(2, 1) = 0;         rot(2, 2) = 1;
+
+    // 应用旋转
+    Acts::Vector3 rotated_position = rot * position;
+    Acts::Vector3 rotated_momentum = rot * momentum;
+
+    // 输出旋转前后的位置向量
+    std::cout << "Validation: Original position vector: (" << position[0] << ", " << position[1] << ", " << position[2] << ")" << std::endl;
+    std::cout << "Validation: Rotated position vector: (" << rotated_position[0] << ", " << rotated_position[1] << ", " << rotated_position[2] << ")" << std::endl;
+
+    // 计算原始向量长度和旋转后的x分量（DCA）
+    double original_length = sqrt(position[0]*position[0] + position[1]*position[1] + position[2]*position[2]);
+    double dca = std::abs(rotated_position[0]);
+
+    std::cout << "Validation: Original vector length: " << original_length << std::endl;
+    std::cout << "Validation: DCA (abs of rotated X): " << dca << std::endl;
+
+    // 验证DCA是否等于原始向量长度
+    if (std::abs(original_length - dca) < 1e-4) {
+        std::cout << "Validation: Test passed - The DCA (rotated X) matches the original length." << std::endl;
+    } else {
+        std::cout << "Validation: Test failed - The DCA (rotated X) does not match the original length." << std::endl;
+    }
+
+    std::cout << "Validation: Rotated momentum vector: (" << rotated_momentum[0] << ", " << rotated_momentum[1] << ", " << rotated_momentum[2] << ")" << std::endl;
+
+    if (std::abs(rotated_momentum[0]) < 1e-4) {
+        std::cout << "Validation: Test passed - The rotated momentum is aligned with the Y-axis." << std::endl;
+    } else {
+        std::cout << "Validation: Test failed - The rotated momentum is not aligned with the Y-axis." << std::endl;
+    }
+}
+
+void KshortReconstruction::testRotationLogic() {
+    // 定义测试用的位置和动量向量
+    Acts::Vector3 testPosition(1.0, 1.0, 0.0);
+    Acts::Vector3 testMomentum(-1.0, 1.0, 0.0);
+
+    std::cout << "Running rotation logic test with custom vectors:" << std::endl;
+    validateRotation(testPosition, testMomentum);
+
+    /*// 可以添加更多的测试用例
+    Acts::Vector3 testPosition2(0.0, 2.0, 1.0);
+    Acts::Vector3 testMomentum2(1.0, 0.0, 0.0);
+
+    std::cout << "\nRunning rotation logic test with another set of custom vectors:" << std::endl;
+    validateRotation(testPosition2, testMomentum2);*/
 }
