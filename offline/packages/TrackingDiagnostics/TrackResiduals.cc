@@ -1769,7 +1769,8 @@ void TrackResiduals::createBranches()
   m_tree->Branch("Y0", &m_Y0, "m_Y0/F");
   m_tree->Branch("dcaxy", &m_dcaxy, "m_dcaxy/F");
   m_tree->Branch("dcaz", &m_dcaz, "m_dcaz/F");
-
+  /*m_tree->Branch("dcaxy_primary_vertex", &m_dcaxy_primary_vertex, "m_dcaxy_primary_vertex/F")
+  m_tree->Branch("dcaz_primary_vertex", &m_dcaz_primary_vertex, "m_dcaz_primary_vertex/F")*/
   m_tree->Branch("cluskeys", &m_cluskeys);
   m_tree->Branch("clusedge", &m_clusedge);
   m_tree->Branch("clusoverlap", &m_clusoverlap);
@@ -1866,6 +1867,7 @@ void TrackResiduals::fillResidualTreeKF(PHCompositeNode* topNode)
   auto geometry = findNode::getClass<ActsGeometry>(topNode, "ActsGeometry");
   auto vertexmap = findNode::getClass<GlobalVertexMap>(topNode, "GlobalVertexMap");
   auto alignmentmap = findNode::getClass<SvtxAlignmentStateMap>(topNode, m_alignmentMapName);
+  //auto Svtx_vertexMap = findNode::getClass<SvtxVertexMap>(topNode, "SvtxVertexMap");
 
   std::set<unsigned int> tpc_seed_ids;
   for (const auto& [key, track] : *trackmap)
@@ -1943,6 +1945,12 @@ void TrackResiduals::fillResidualTreeKF(PHCompositeNode* topNode)
     auto dcapair = TrackAnalysisUtils::get_dca(track, zero);
     m_dcaxy = dcapair.first.first;
     m_dcaz = dcapair.second.first;
+
+    /*if (Svtx_vertexMap)
+    {
+        auto svtxVertex = m_vertexMap->get(m_vertexid);
+    }*/
+
 
     auto tpcseed = track->get_tpc_seed();
     if (tpcseed)
