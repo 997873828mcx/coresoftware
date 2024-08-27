@@ -9,6 +9,8 @@
 
 #include <globalvertex/SvtxVertexMap.h>
 #include <trackbase_historic/SvtxTrackMap.h>
+#include <globalvertex/GlobalVertex.h>
+#include <globalvertex/GlobalVertexMap.h>
 
 #include <tpc/TpcClusterZCrossingCorrection.h>
 #include <tpc/TpcDistortionCorrection.h>
@@ -39,6 +41,7 @@ class PHCompositeNode;
 class SvtxTrack;
 class SvtxTrackMap;
 class SvtxVertexMap;
+class GlobalVertexMap;
 
 class KshortReconstruction : public SubsysReco
 {
@@ -95,6 +98,7 @@ class KshortReconstruction : public SubsysReco
   ActsGeometry* _tGeometry = nullptr;
   SvtxTrackMap* m_svtxTrackMap = nullptr;
   SvtxVertexMap* m_vertexMap = nullptr;
+  GlobalVertexMap* m_globalvertexMap = nullptr;
 
   std::string filepath = "";
   Float_t decaymass = 0.13957;  // pion decay mass

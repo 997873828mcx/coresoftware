@@ -226,7 +226,7 @@ int TrackResiduals::process_event(PHCompositeNode* topNode)
   auto mvtxGeom = findNode::getClass<PHG4CylinderGeomContainer>(topNode, "CYLINDERGEOM_MVTX");
   auto inttGeom = findNode::getClass<PHG4CylinderGeomContainer>(topNode, "CYLINDERGEOM_INTT");
   auto mmGeom = findNode::getClass<PHG4CylinderGeomContainer>(topNode, "CYLINDERGEOM_MICROMEGAS_FULL");
-
+    m_vx = m_vy = m_vz = std::numeric_limits<float>::quiet_NaN();
 
   if (!mmGeom)
   {
@@ -1097,7 +1097,7 @@ if(Verbosity() > 1)
 	  break;
 	}
     }
-  
+
   m_cluskeys.push_back(ckey);
 
   //! have cluster and state, fill vectors
@@ -1867,8 +1867,8 @@ void TrackResiduals::fillResidualTreeKF(PHCompositeNode* topNode)
   auto geometry = findNode::getClass<ActsGeometry>(topNode, "ActsGeometry");
   auto vertexmap = findNode::getClass<GlobalVertexMap>(topNode, "GlobalVertexMap");
   auto alignmentmap = findNode::getClass<SvtxAlignmentStateMap>(topNode, m_alignmentMapName);
-  auto svtx_vertex_map = findNode::getClass<SvtxVertexMap>(topNode, "SvtxVertexMap");
-
+  //auto svtx_vertex_map = findNode::getClass<SvtxVertexMap>(topNode, "SvtxVertexMap");
+    std::cout << "vertexmap pointer: " << vertexmap << std::endl;
   std::set<unsigned int> tpc_seed_ids;
   for (const auto& [key, track] : *trackmap)
   {
@@ -1929,14 +1929,24 @@ void TrackResiduals::fillResidualTreeKF(PHCompositeNode* topNode)
     m_vertexid = track->get_vertex_id();
     if (vertexmap)
     {
+        std::cout << "Warning: vertexmap0000 exists" << std::endl;
       auto vertexit = vertexmap->find(m_vertexid);
       if (vertexit != vertexmap->end())
       {
+
         auto vertex = vertexit->second;
         m_vx = vertex->get_x();
         m_vy = vertex->get_y();
         m_vz = vertex->get_z();
+
+          std::cout << "Found vertex with ID " << m_vertexid
+                    << " at position: (" << vertex->get_x()
+                    << ", " << vertex->get_y()
+                    << ", " << vertex->get_z() << ")" << std::endl;
       }
+    }
+    else{
+        std::cerr << "Warning: vertexmap0000 is nullptr" << std::endl;
     }
     m_pcax = track->get_x();
     m_pcay = track->get_y();
@@ -1948,7 +1958,7 @@ void TrackResiduals::fillResidualTreeKF(PHCompositeNode* topNode)
 
 
 
-      if (svtx_vertex_map)
+/*      if (svtx_vertex_map)
       {
           auto svtxVertex = svtx_vertex_map->get(m_vertexid);
 
@@ -1977,10 +1987,50 @@ void TrackResiduals::fillResidualTreeKF(PHCompositeNode* topNode)
 
           // 输出警告信息
           std::cerr << "Warning: svtx_vertex_map is nullptr" << std::endl;
+      }*/
+
+      if (vertexmap)
+      {
+          std::cerr << "Warning: vertexmap exists" << std::endl;
+          auto vertexit = vertexmap->find(m_vertexid);
+          if (vertexit != vertexmap->end())
+          {
+              std::cerr << "Warning: vertexit exists" << std::endl;
+              auto svtxVertex = vertexit->second;
+              if (svtxVertex)
+              {
+                  std::cerr << "Warning: svtxVertex exists" << std::endl;
+                  Acts::Vector3 vertex(svtxVertex->get_x(), svtxVertex->get_y(), svtxVertex->get_z());
+                  auto dca_primary_track = TrackAnalysisUtils::get_dca(track, vertex);
+                  m_dcaxy_primary_vertex = dca_primary_track.first.first;
+                  m_dcaz_primary_vertex = dca_primary_track.second.first;
+              }
+              else
+              {
+                  // 当 svtxVertex 为空时，提供默认值
+                  m_dcaxy_primary_vertex = std::numeric_limits<float>::quiet_NaN();
+                  m_dcaz_primary_vertex = std::numeric_limits<float>::quiet_NaN();
+                  std::cerr << "Warning: svtxVertex is nullptr" << std::endl;
+              }
+          }
+          else
+          {
+              // 当 m_vertexid 在 vertexmap 中找不到时，提供默认值
+              m_dcaxy_primary_vertex = std::numeric_limits<float>::quiet_NaN();
+              m_dcaz_primary_vertex = std::numeric_limits<float>::quiet_NaN();
+              std::cerr << "Warning: Vertex with id " << m_vertexid << " not found in vertexmap" << std::endl;
+          }
+      }
+      else
+      {
+          // 当 vertexmap 为空时，提供默认值
+          m_dcaxy_primary_vertex = std::numeric_limits<float>::quiet_NaN();
+          m_dcaz_primary_vertex = std::numeric_limits<float>::quiet_NaN();
+          std::cerr << "Warning: vertexmap is nullptr" << std::endl;
       }
 
 
-    auto tpcseed = track->get_tpc_seed();
+      auto tpcseed = track->get_tpc_seed();
     if (tpcseed)
     {
       m_tpcid = tpcseedmap->find(tpcseed);
@@ -2220,6 +2270,7 @@ void TrackResiduals::fillResidualTreeSeeds(PHCompositeNode* topNode)
   auto alignmentmap = findNode::getClass<SvtxAlignmentStateMap>(topNode, m_alignmentMapName);
 
   std::set<unsigned int> tpc_seed_ids;
+  std::cout<<"using seeds ResidualTree"<<std::endl;
 
   for (const auto& [key, track] : *trackmap)
   {
