@@ -1769,8 +1769,8 @@ void TrackResiduals::createBranches()
   m_tree->Branch("Y0", &m_Y0, "m_Y0/F");
   m_tree->Branch("dcaxy", &m_dcaxy, "m_dcaxy/F");
   m_tree->Branch("dcaz", &m_dcaz, "m_dcaz/F");
-  /*m_tree->Branch("dcaxy_primary_vertex", &m_dcaxy_primary_vertex, "m_dcaxy_primary_vertex/F")
-  m_tree->Branch("dcaz_primary_vertex", &m_dcaz_primary_vertex, "m_dcaz_primary_vertex/F")*/
+  m_tree->Branch("dcaxy_primary_vertex", &m_dcaxy_primary_vertex, "m_dcaxy_primary_vertex/F");
+  m_tree->Branch("dcaz_primary_vertex", &m_dcaz_primary_vertex, "m_dcaz_primary_vertex/F");
   m_tree->Branch("cluskeys", &m_cluskeys);
   m_tree->Branch("clusedge", &m_clusedge);
   m_tree->Branch("clusoverlap", &m_clusoverlap);
@@ -1867,7 +1867,7 @@ void TrackResiduals::fillResidualTreeKF(PHCompositeNode* topNode)
   auto geometry = findNode::getClass<ActsGeometry>(topNode, "ActsGeometry");
   auto vertexmap = findNode::getClass<GlobalVertexMap>(topNode, "GlobalVertexMap");
   auto alignmentmap = findNode::getClass<SvtxAlignmentStateMap>(topNode, m_alignmentMapName);
-  //auto Svtx_vertexMap = findNode::getClass<SvtxVertexMap>(topNode, "SvtxVertexMap");
+  auto svtx_vertex_map = findNode::getClass<SvtxVertexMap>(topNode, "SvtxVertexMap");
 
   std::set<unsigned int> tpc_seed_ids;
   for (const auto& [key, track] : *trackmap)
@@ -1946,10 +1946,38 @@ void TrackResiduals::fillResidualTreeKF(PHCompositeNode* topNode)
     m_dcaxy = dcapair.first.first;
     m_dcaz = dcapair.second.first;
 
-    /*if (Svtx_vertexMap)
-    {
-        auto svtxVertex = m_vertexMap->get(m_vertexid);
-    }*/
+
+
+      if (svtx_vertex_map)
+      {
+          auto svtxVertex = svtx_vertex_map->get(m_vertexid);
+
+          if (svtxVertex)
+          {
+              Acts::Vector3 primary_vertex(svtxVertex->get_x(), svtxVertex->get_y(), svtxVertex->get_z());
+              auto dca_primary_track = TrackAnalysisUtils::get_dca(track, primary_vertex);
+              m_dcaxy_primary_vertex = dca_primary_track.first.first;
+              m_dcaz_primary_vertex = dca_primary_track.second.first;
+          }
+          else
+          {
+              // 当 svtxVertex 为空时，提供默认值
+              m_dcaxy_primary_vertex = std::numeric_limits<float>::quiet_NaN();  // 或者使用其他默认值
+              m_dcaz_primary_vertex = std::numeric_limits<float>::quiet_NaN();   // 或者使用其他默认值
+
+              // 输出警告信息
+              std::cerr << "Warning: svtx_vertex_map->get returned nullptr for vertexid: " << m_vertexid << std::endl;
+          }
+      }
+      else
+      {
+          // 当 svtx_vertex_map 为空时，提供默认值
+          m_dcaxy_primary_vertex = std::numeric_limits<float>::quiet_NaN();  // 或者使用其他默认值
+          m_dcaz_primary_vertex = std::numeric_limits<float>::quiet_NaN();   // 或者使用其他默认值
+
+          // 输出警告信息
+          std::cerr << "Warning: svtx_vertex_map is nullptr" << std::endl;
+      }
 
 
     auto tpcseed = track->get_tpc_seed();
