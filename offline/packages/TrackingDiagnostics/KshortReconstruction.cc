@@ -544,12 +544,12 @@ int KshortReconstruction::getNodes(PHCompositeNode* topNode)
         return Fun4AllReturnCodes::ABORTEVENT;
     }
 
-    m_globalvertexMap = findNode::getClass<GlobalVertexMap>(topNode, "GlobalVertexMap");
+    /*m_globalvertexMap = findNode::getClass<GlobalVertexMap>(topNode, "GlobalVertexMap");
     if (!m_globalvertexMap)
     {
         std::cout << PHWHERE << "No GlobalVertexMap on node tree, exiting." << std::endl;
         return Fun4AllReturnCodes::ABORTEVENT;
-    }
+    }*/
 
     _tGeometry = findNode::getClass<ActsGeometry>(topNode, "ActsGeometry");
     if (!_tGeometry)
@@ -770,8 +770,8 @@ Acts::Vector3 KshortReconstruction::calculateDca(SvtxTrack* track, const Acts::V
         std::cout << "Could not find m_vertexmap " << std::endl;
         return outVals;
     }
-    auto vertexit = m_globalvertexMap->find(vtxid);
-    if (vertexit != m_globalvertexMap->end())
+    auto vertexit = m_vertexMap->find(vtxid);
+    if (vertexit != m_vertexMap->end())
     {
         auto svtxVertex = vertexit->second;
         vertex = Acts::Vector3(svtxVertex->get_x(), svtxVertex->get_y(), svtxVertex->get_z());
@@ -780,7 +780,7 @@ Acts::Vector3 KshortReconstruction::calculateDca(SvtxTrack* track, const Acts::V
     else
     {
         std::cout << "Warning: Could not find vtxid in m_vertexMap: " << vtxid << std::endl;
-        return outVals;
+        vertex = Acts::Vector3(-0.11, 2.756, -0.526);
     }
     Acts::Vector3 r = momentum.cross(Acts::Vector3(0., 0., 1.));
     float phi = atan2(r(1), r(0));
