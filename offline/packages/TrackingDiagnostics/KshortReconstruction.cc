@@ -681,7 +681,10 @@ int KshortReconstruction::process_event(PHCompositeNode* /**topNode*/)
             }
 
             if (tr1->get_charge() == tr2->get_charge())
+
                     {
+
+                            std::cout << "the charge is equal" << std::endl;
                             continue;
                     }
 
@@ -702,6 +705,8 @@ int KshortReconstruction::process_event(PHCompositeNode* /**topNode*/)
             // tracks with small relative pca are k short candidates
             if (!apply_pair_dca_cut || abs(pair_dca) < pair_dca_cut)
             {
+
+                std::cout<<"the pair dca cut was satisfied"<<std::endl;
                 // Pair pca and dca were calculated with nominal track parameters and are approximate
                 // Project tracks to this rough pca
                 Eigen::Vector3d projected_pos1;
@@ -746,6 +751,10 @@ int KshortReconstruction::process_event(PHCompositeNode* /**topNode*/)
                               << std::endl;
                 }
             }
+            else if(apply_pair_dca_cut)
+            {
+                std::cout<<"the pair dca cut doesn't satisfy"<<std::endl;
+            }
         }
     }
     return 0;
@@ -756,20 +765,27 @@ Acts::Vector3 KshortReconstruction::calculateDca(SvtxTrack* track, const Acts::V
     // For the purposes of this module, we set default values of zero to cause this track to be rejected if the dca calc fails
     Acts::Vector3 outVals(0, 0, 0);
     auto vtxid = track->get_vertex_id();
-
+    Acts::Vector3 vertex;
     if (!m_vertexMap)
     {
         std::cout << "Could not find m_vertexmap " << std::endl;
         return outVals;
     }
     auto svtxVertex = m_vertexMap->get(vtxid);
-    if (!svtxVertex)
+    if (svtxVertex)
+    {
+        vertex = Acts::Vector3(svtxVertex->get_x(), svtxVertex->get_y(), svtxVertex->get_z());
+        position -= vertex;
+    }
+    else if (!svtxVertex)
     {
         std::cout << "Could not find vtxid in m_vertexMap " << vtxid << std::endl;
-        return outVals;
+        vertex = Acts::Vector3(-0.11, 2.756, -0.526);
+        position -= vertex;
+        //return outVals;
     }
-    Acts::Vector3 vertex(svtxVertex->get_x(), svtxVertex->get_y(), svtxVertex->get_z());
-    position -= vertex;
+    /*Acts::Vector3 vertex(svtxVertex->get_x(), svtxVertex->get_y(), svtxVertex->get_z());
+    position -= vertex;*/
     Acts::Vector3 r = momentum.cross(Acts::Vector3(0., 0., 1.));
     float phi = atan2(r(1), r(0));
     phi *= -1;
@@ -976,28 +992,55 @@ Acts::Vector3 KshortReconstruction::getVertex(SvtxTrack* track)
 
 void KshortReconstruction::fillNtp(SvtxTrack* track1, SvtxTrack* track2, Acts::Vector3 dcavals1, Acts::Vector3 dcavals2, Acts::Vector3 pca_rel1, Acts::Vector3 pca_rel2, double pair_dca, double invariantMass, double invariantPt, float rapidity, float pseudorapidity, Eigen::Vector3d projected_pos1, Eigen::Vector3d projected_pos2, Eigen::Vector3d projected_mom1, Eigen::Vector3d projected_mom2, Acts::Vector3 pca_rel1_proj, Acts::Vector3 pca_rel2_proj, double pair_dca_proj, unsigned int track1_silicon_cluster_size, unsigned int track2_silicon_cluster_size)
 {
+
+    if (!track1 || !track2 || !m_vertexMap)
+    {
+        std::cout << "Invalid track or vertex map pointers" << std::endl;
+        return;
+    }
     double px1 = track1->get_px();
     double py1 = track1->get_py();
     double pz1 = track1->get_pz();
     auto tpcSeed1 = track1->get_tpc_seed();
+    auto tpcSeed2 = track2->get_tpc_seed();
+    if (!tpcSeed1 || !tpcSeed2)
+    {
+        std::cout << "Invalid TPC seed pointers" << std::endl;
+        return;
+    }
     size_t tpcClusters1 = tpcSeed1->size_cluster_keys();
     double eta1 = asinh(pz1 / sqrt(pow(px1, 2) + pow(py1, 2)));
     double pt1 = std::sqrt(px1*px1+py1*py1);
+
+
     double px2 = track2->get_px();
     double py2 = track2->get_py();
     double pz2 = track2->get_pz();
-    auto tpcSeed2 = track2->get_tpc_seed();
+
     size_t tpcClusters2 = tpcSeed2->size_cluster_keys();
     double eta2 = asinh(pz2 / sqrt(pow(px2, 2) + pow(py2, 2)));
     double pt2 = std::sqrt(px2*px2+py2*py2);
 
     auto vtxid = track1->get_vertex_id();
     auto svtxVertex = m_vertexMap->get(vtxid);
+    if (!svtxVertex)
+    {
+        std::cout << "Invalid vertex pointer" << std::endl;
+        return;
+    }
+
 
     Acts::Vector3 vertex(svtxVertex->get_x(), svtxVertex->get_y(), svtxVertex->get_z());  // primary vertex
 
     Acts::Vector3 pathLength = (pca_rel1 + pca_rel2) * 0.5 - vertex;
     Acts::Vector3 pathLength_proj = (pca_rel1_proj + pca_rel2_proj) * 0.5 - vertex;
+
+    if (dcavals1.size() < 3 || dcavals2.size() < 3 || pca_rel1.size() < 3 || pca_rel2.size() < 3 ||
+        pca_rel1_proj.size() < 3 || pca_rel2_proj.size() < 3)
+    {
+        std::cout << "Vector size mismatch" << std::endl;
+        return;
+    }
 
     float mag_pathLength = sqrt(pow(pathLength(0), 2) + pow(pathLength(1), 2) + pow(pathLength(2), 2));
     float mag_pathLength_proj = sqrt(pow(pathLength_proj(0), 2) + pow(pathLength_proj(1), 2) + pow(pathLength_proj(2), 2));
@@ -1005,14 +1048,19 @@ void KshortReconstruction::fillNtp(SvtxTrack* track1, SvtxTrack* track2, Acts::V
     Acts::Vector3 projected_momentum = projected_mom1 + projected_mom2;
     float cos_theta_reco = pathLength_proj.dot(projected_momentum) / (projected_momentum.norm() * pathLength_proj.norm());
 
-    if (!svtxVertex)
-    {
-        return;
-    }
+
 
     float reco_info[] = {track1->get_x(), track1->get_y(), track1->get_z(), track1->get_px(), track1->get_py(), track1->get_pz(), (float)pt1, (float) dcavals1(0), (float) dcavals1(1), (float) dcavals1(2), (float) pca_rel1(0), (float) pca_rel1(1), (float) pca_rel1(2), (float) eta1, (float) track1->get_charge(), (float) tpcClusters1, track2->get_x(), track2->get_y(), track2->get_z(), track2->get_px(), track2->get_py(), track2->get_pz(), (float) pt2, (float) dcavals2(0), (float) dcavals2(1), (float) dcavals2(2), (float) pca_rel2(0), (float) pca_rel2(1), (float) pca_rel2(2), (float) eta2, (float) track2->get_charge(), (float) tpcClusters2, svtxVertex->get_x(), svtxVertex->get_y(), svtxVertex->get_z(), (float) pair_dca, (float) invariantMass, (float) invariantPt, (float) pathLength(0), (float) pathLength(1), (float) pathLength(2), mag_pathLength, rapidity, pseudorapidity, (float) projected_pos1(0), (float) projected_pos1(1), (float) projected_pos1(2), (float) projected_pos2(0), (float) projected_pos2(1), (float) projected_pos2(2), (float) projected_mom1(0), (float) projected_mom1(1), (float) projected_mom1(2), (float) projected_mom2(0), (float) projected_mom2(1), (float) projected_mom2(2), (float) pca_rel1_proj(0), (float) pca_rel1_proj(1), (float) pca_rel1_proj(2), (float) pca_rel2_proj(0), (float) pca_rel2_proj(1), (float) pca_rel2_proj(2), (float) pair_dca_proj, (float) pathLength_proj(0), (float) pathLength_proj(1), (float) pathLength_proj(2), mag_pathLength_proj, track1->get_quality(), track2->get_quality(), cos_theta_reco, (float) track1_silicon_cluster_size, (float) track2_silicon_cluster_size};
 
-    ntp_reco_info->Fill(reco_info);
+    if (ntp_reco_info)
+    {
+        ntp_reco_info->Fill(reco_info);
+    }
+    else
+    {
+        std::cerr << "Error: ntp_reco_info is not initialized in fillNtp function" << std::endl;
+        return;
+    }
 }
 
 
