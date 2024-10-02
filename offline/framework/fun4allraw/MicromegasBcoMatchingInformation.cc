@@ -89,10 +89,12 @@ namespace
   // define limit for matching two fee_bco
   static constexpr unsigned int m_max_fee_bco_diff = 10;
 
+  // define limit for matching gtm_bco from lvl1 to enddat
+
   // define limit for matching fee_bco to fee_bco_predicted
   static constexpr unsigned int m_max_gtm_bco_diff = 100;
 
-  // needed to avoid memory leak. Assumes that we will not be assembling more than 50 events at the same time
+//   // needed to avoid memory leak. Assumes that we will not be assembling more than 50 events at the same time
   static constexpr unsigned int m_max_matching_data_size = 50;
 
   //! copied from micromegas/MicromegasDefs.h, not available here
@@ -184,6 +186,20 @@ void MicromegasBcoMatchingInformation::save_gtm_bco_information(Packet* packet)
     {
       const uint64_t gtm_bco = static_cast<uint64_t>(packet->lValue(t, "BCO"));
       m_gtm_bco_list.push_back(gtm_bco);
+      continue;
+    }
+
+    // also save ENDDAT bco
+    const bool is_endat = static_cast<uint8_t>(packet->lValue(t, "IS_ENDAT"));
+    if( is_endat )
+    {
+      const uint64_t gtm_bco = static_cast<uint64_t>(packet->lValue(t, "BCO"));
+
+      // add to list if difference to last entry is big enough
+      if( m_gtm_bco_list.empty() || (gtm_bco-m_gtm_bco_list.back()) > 10 )
+      {  m_gtm_bco_list.push_back(gtm_bco); }
+
+      continue;
     }
 
     // also save hearbeat bco
@@ -196,6 +212,7 @@ void MicromegasBcoMatchingInformation::save_gtm_bco_information(Packet* packet)
       {
         const uint64_t gtm_bco = static_cast<uint64_t>(packet->lValue(t, "BCO"));
         m_gtm_bco_list.push_back(gtm_bco);
+        continue;
       }
     }
   }
@@ -441,6 +458,19 @@ void MicromegasBcoMatchingInformation::cleanup()
   {
     m_bco_matching_list.pop_front();
   }
+
+  // clear orphans
+  m_orphans.clear();
+}
+
+//___________________________________________________
+void MicromegasBcoMatchingInformation::cleanup(uint64_t ref_bco)
+{
+  // erase all elements from bco_list that are less than or equal to ref_bco
+  m_gtm_bco_list.erase( std::remove_if( m_gtm_bco_list.begin(), m_gtm_bco_list.end(), [ref_bco](const uint64_t& bco) { return bco<=ref_bco; }), m_gtm_bco_list.end() );
+
+  // erase all elements from bco_list that are less than or equal to ref_bco
+  m_bco_matching_list.erase( std::remove_if( m_bco_matching_list.begin(), m_bco_matching_list.end(), [ref_bco](const m_bco_matching_pair_t& pair) { return pair.second<=ref_bco; }), m_bco_matching_list.end() );
 
   // clear orphans
   m_orphans.clear();

@@ -13,7 +13,7 @@ sub fill_nocombine_files;
 sub print_single_types;
 sub print_runs;
 
-my $dbh = DBI->connect("dbi:ODBC:FileCatalog","argouser") || die $DBI::error;
+my $dbh = DBI->connect("dbi:ODBC:FileCatalog_read") || die $DBI::error;
 $dbh->{LongReadLen}=2000; # full file paths need to fit in here
 
 my $getdsttypes = $dbh->prepare("select distinct(dsttype) from datasets where dsttype not like '%\_pi\_%' ESCAPE '\' and dsttype <> 'beam' and dsttype <> 'cosmic' and dataset = 'mdc2'");
@@ -74,6 +74,7 @@ my %pileupdesc = (
     "3" => "10kHz for Au+Au",
     "4" => "1MHz for pp 100us streaming",
     "5" => "2MHz for pp 20us streaming",
+    ">5" => "pileup rate in kHz"
     );
 
 my $nEvents;
@@ -170,11 +171,10 @@ elsif ($pileup == 5)
 {
     $pp_pileupstring = sprintf("2MHz");
 }
-
 else
 {
-    print "invalid pileup option $pileup\n";
-    exit(1);
+    $pp_pileupstring = sprintf("%dkHz",$pileup);
+    $AuAu_pileupstring = sprintf("%dkHz",$pileup);
 }
 
 my $embedok = 0;
