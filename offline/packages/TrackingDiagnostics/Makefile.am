@@ -3,7 +3,8 @@ AUTOMAKE_OPTIONS = foreign
 AM_CPPFLAGS = \
   -I$(includedir) \
   -isystem$(OFFLINE_MAIN)/include \
-  -isystem$(ROOTSYS)/include
+  -isystem$(ROOTSYS)/include \
+  -DHomogeneousField
 
 AM_LDFLAGS = \
   -L$(libdir) \
@@ -32,6 +33,7 @@ libTrackingDiagnostics_la_SOURCES = \
   TrkrNtuplizer.cc
 
 libTrackingDiagnostics_la_LIBADD = \
+  -lKFParticle \
   -lphool \
   -lfun4all \
   -lg4eval \
