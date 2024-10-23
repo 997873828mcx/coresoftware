@@ -141,7 +141,7 @@ int TrackSeedTrackMapConverter::process_event(PHCompositeNode* /*unused*/)
           svtxtrack->set_x(tpcseed->get_x());
           svtxtrack->set_y(tpcseed->get_y());
           svtxtrack->set_z(tpcseed->get_z());
-          svtxtrack->set_crossing(std::numeric_limits<short int>::max());
+          svtxtrack->set_crossing(0);
         }
         else
         {
@@ -173,8 +173,15 @@ int TrackSeedTrackMapConverter::process_event(PHCompositeNode* /*unused*/)
       {
         unsigned int silseedindex = trackSeed->get_silicon_seed_index();
         TrackSeed* silseed = m_siContainer->get(silseedindex);
-
-        tpcseed->circleFitByTaubin(m_clusters, m_tGeometry, 0, 58);
+        std::map<TrkrDefs::cluskey, Acts::Vector3> clustermap;
+        for(auto it = tpcseed->begin_cluster_keys(); it != tpcseed->end_cluster_keys(); ++it)
+        {
+          auto key = *it;
+          auto cluster = m_clusters->findCluster(key);
+          auto global = m_tGeometry->getGlobalPosition(key, cluster);
+          clustermap.insert(std::make_pair(key, global));
+        }
+        tpcseed->circleFitByTaubin(clustermap, 0, 58);
 
         float tpcR = fabs(1. / tpcseed->get_qOverR());
         float tpcx = tpcseed->get_X0();
@@ -284,6 +291,10 @@ int TrackSeedTrackMapConverter::process_event(PHCompositeNode* /*unused*/)
       double Z0 = trackSeed->get_Z0();
       double slope = trackSeed->get_slope();
       svtxtrack->set_crossing(trackSeed->get_crossing());
+      if(svtxtrack->get_crossing() == SHRT_MAX)
+      {
+        svtxtrack->set_crossing(0);
+      }
       std::vector<double> xy_error2;
       std::vector<double> rz_error2;
       std::vector<double> xy_residuals;
