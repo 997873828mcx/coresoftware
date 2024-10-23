@@ -877,7 +877,17 @@ std::vector<TrackSeed_v2> PHCASeeding::RemoveBadClusters(const std::vector<PHCAS
     std::cout << "removing bad clusters" << std::endl;
   }
   std::vector<TrackSeed_v2> clean_chains;
+    std::unordered_set<TrkrDefs::cluskey> used_clusters;
 
+
+    float clus_x, clus_y, clus_z;
+    int is_used;
+
+    // Create branches using the address of local variables
+    m_clustertree->Branch("x", &clus_x, "x/F");
+    m_clustertree->Branch("y", &clus_y, "y/F");
+    m_clustertree->Branch("z", &clus_z, "z/F");
+    m_clustertree->Branch("is_used", &is_used, "is_used/I");
   for (const auto& chain : chains)
   {
     if (chain.size() < 3)
@@ -908,7 +918,7 @@ std::vector<TrackSeed_v2> PHCASeeding::RemoveBadClusters(const std::vector<PHCAS
       // If fit successful, add clusters to used set
       for (const auto& key : chain)
       {
-          m_used_clusters.insert(key);
+          used_clusters.insert(key);
       }
     // calculate residuals
     const std::vector<double> xy_resid = TrackFitUtils::getCircleClusterResiduals(xy_pts, R, X0, Y0);
@@ -922,20 +932,21 @@ std::vector<TrackSeed_v2> PHCASeeding::RemoveBadClusters(const std::vector<PHCAS
     clean_chains.push_back(trackseed);
 
 
-      // Now fill tree with all clusters
-      for (const auto& [key, pos] : globalPositions)
-      {
-          m_clus_x = pos.x();
-          m_clus_y = pos.y();
-          m_clus_z = pos.z();
-          m_is_used = m_used_clusters.find(key) != m_used_clusters.end() ? 1 : 0;
-          m_clustertree->Fill();
-      }
+
     if (Verbosity() > 2)
     {
       std::cout << "pushed clean chain with " << trackseed.size_cluster_keys() << " clusters" << std::endl;
     }
   }
+    // Now fill tree with all clusters
+    for (const auto& [key, pos] : globalPositions)
+    {
+        clus_x = pos.x();
+        clus_y = pos.y();
+        clus_z = pos.z();
+        is_used = used_clusters.find(key) != used_clusters.end() ? 1 : 0;
+        m_clustertree->Fill();
+    }
 
   return clean_chains;
 }
@@ -1054,14 +1065,16 @@ int PHCASeeding::Setup(PHCompositeNode* topNode)  // This is called by ::InitRun
   _tup_chainfork = new TNtuple("chainfork", "chain with multiple links, which if forking", "event:nchain:layer:x:y:z:dzdr:d2phidr2:nlink:nlinks");  // nlinks to add, 0 ... nlinks
   _tup_chainbody = new TNtuple("chainbody", "chain body with multiple link options", "event:nchain:layer:x:y:z:dzdr:d2phidr2:nlink:nlinks");        // nlinks in chain being added to will be 0, 1, 2 ... working backward from the fork -- dZ and dphi are dropped for final links as necessary
 #endif
+    if (m_outfileName.empty()) {
+        m_outfileName = "cluster_plots.root";
+    }
 
-
-    m_outfile = new TFile("cluster_plots.root", "RECREATE");
+    m_outfile = new TFile(m_outfileName.c_str(), "RECREATE");
     m_clustertree = new TTree("clusters", "Cluster Information");
-    m_clustertree->Branch("x", &m_clus_x, "x/F");
-    m_clustertree->Branch("y", &m_clus_y, "y/F");
-    m_clustertree->Branch("z", &m_clus_z, "z/F");
-    m_clustertree->Branch("is_used", &m_is_used, "is_used/I");
+/*    m_clustertree->Branch("x", &clus_x, "x/F");
+    m_clustertree->Branch("y", &clus_y, "y/F");
+    m_clustertree->Branch("z", &clus_z, "z/F");
+    m_clustertree->Branch("is_used", &is_used, "is_used/I");*/
 
   return Fun4AllReturnCodes::EVENT_OK;
 }

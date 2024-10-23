@@ -137,6 +137,8 @@ class PHCASeeding : public PHTrackSeeding
       _fieldDir = -1;
   }
 
+  void set_outfileName(const std::string& filename) { m_outfileName = filename; }
+
   void magFieldFile(const std::string& fname) { m_magField = fname; }
   void useConstBField(bool opt) { _use_const_field = opt; }
   void constBField(float b) { _const_field = b; }
@@ -159,12 +161,14 @@ class PHCASeeding : public PHTrackSeeding
 
  private:
 
-    std::unordered_set<TrkrDefs::cluskey> m_used_clusters;
+    //std::unordered_set<TrkrDefs::cluskey> m_used_clusters;
+
+    std::string m_outfileName;
     TFile* m_outfile;
     TTree* m_clustertree;
 
-    float m_clus_x, m_clus_y, m_clus_z;
-    int m_is_used;  // 1 for used, 0 for unused
+    //float m_clus_x, m_clus_y, m_clus_z;
+    //int m_is_used;  // 1 for used, 0 for unused
   bool _save_clus_proc = false;
   TFile* _f_clustering_process = nullptr;
   int _tupout_count = -1;
