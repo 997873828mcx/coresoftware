@@ -158,6 +158,13 @@ class PHCASeeding : public PHTrackSeeding
   int End() override;
 
  private:
+
+    std::unordered_set<TrkrDefs::cluskey> m_used_clusters;
+    TFile* m_outfile;
+    TTree* m_clustertree;
+
+    float m_clus_x, m_clus_y, m_clus_z;
+    int m_is_used;  // 1 for used, 0 for unused
   bool _save_clus_proc = false;
   TFile* _f_clustering_process = nullptr;
   int _tupout_count = -1;

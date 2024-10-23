@@ -905,6 +905,11 @@ std::vector<TrackSeed_v2> PHCASeeding::RemoveBadClusters(const std::vector<PHCAS
       continue;
     }
 
+      // If fit successful, add clusters to used set
+      for (const auto& key : chain)
+      {
+          m_used_clusters.insert(key);
+      }
     // calculate residuals
     const std::vector<double> xy_resid = TrackFitUtils::getCircleClusterResiduals(xy_pts, R, X0, Y0);
 
@@ -915,6 +920,17 @@ std::vector<TrackSeed_v2> PHCASeeding::RemoveBadClusters(const std::vector<PHCAS
       trackseed.insert_cluster_key(key);
     }
     clean_chains.push_back(trackseed);
+
+
+      // Now fill tree with all clusters
+      for (const auto& [key, pos] : globalPositions)
+      {
+          m_clus_x = pos.x();
+          m_clus_y = pos.y();
+          m_clus_z = pos.z();
+          m_is_used = m_used_clusters.find(key) != m_used_clusters.end() ? 1 : 0;
+          m_clustertree->Fill();
+      }
     if (Verbosity() > 2)
     {
       std::cout << "pushed clean chain with " << trackseed.size_cluster_keys() << " clusters" << std::endl;
@@ -1039,6 +1055,14 @@ int PHCASeeding::Setup(PHCompositeNode* topNode)  // This is called by ::InitRun
   _tup_chainbody = new TNtuple("chainbody", "chain body with multiple link options", "event:nchain:layer:x:y:z:dzdr:d2phidr2:nlink:nlinks");        // nlinks in chain being added to will be 0, 1, 2 ... working backward from the fork -- dZ and dphi are dropped for final links as necessary
 #endif
 
+
+    m_outfile = new TFile("cluster_plots.root", "RECREATE");
+    m_clustertree = new TTree("clusters", "Cluster Information");
+    m_clustertree->Branch("x", &m_clus_x, "x/F");
+    m_clustertree->Branch("y", &m_clus_y, "y/F");
+    m_clustertree->Branch("z", &m_clus_z, "z/F");
+    m_clustertree->Branch("is_used", &m_is_used, "is_used/I");
+
   return Fun4AllReturnCodes::EVENT_OK;
 }
 
@@ -1049,6 +1073,11 @@ int PHCASeeding::End()
     std::cout << "Called End " << std::endl;
   }
   write_tuples();  // if defined _PHCASEEDING_CLUSTERLOG_TUPOUT_
+
+    m_outfile->cd();
+
+    m_clustertree->Write();
+    m_outfile->Close();
   return Fun4AllReturnCodes::EVENT_OK;
 }
 
