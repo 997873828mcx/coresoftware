@@ -1,6 +1,11 @@
 #include "KshortReconstruction.h"
+
 #include <KFParticle.h>
 #include <KFParticleBase.h>
+
+
+#include <trackbase/ActsGeometry.h>
+
 #include <trackbase_historic/ActsTransformations.h>
 
 #include <fun4all/Fun4AllReturnCodes.h>
