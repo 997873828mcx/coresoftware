@@ -161,11 +161,59 @@ class PHCASeeding : public PHTrackSeeding
 
  private:
 
+    // Store truly rejected clusters
+    struct RejectedCluster {
+        TrkrDefs::cluskey cluster_key;
+        int layer;
+        //std::string reject_reason;  // "failed_quality_cuts" or "close_but_not_exact"
+        Acts::Vector3 position;
+
+        bool operator<(const RejectedCluster& other) const {
+
+            return cluster_key < other.cluster_key;
+        }
+    };
+    std::set<RejectedCluster> m_rejected_clusters;
+
+
+    /*// Function to check if clusters are "close"
+    bool areClustersClose(TrkrDefs::cluskey key1, TrkrDefs::cluskey key2, const PositionMap& positions) {
+        const auto& pos1 = positions.at(key1);
+        const auto& pos2 = positions.at(key2);
+        // Define criteria for "close"
+        // Example: distance within some threshold
+        double dx = pos1.x() - pos2.x();
+        double dy = pos1.y() - pos2.y();
+        double dz = pos1.z() - pos2.z();
+        double dist = sqrt(dx*dx + dy*dy + dz*dz);
+        return dist < your_threshold;
+    }*/
+
+    // Store main seed and split seeds
+    std::vector<TrkrDefs::cluskey> m_main_seed_clusters;
+    std::vector<std::vector<TrkrDefs::cluskey>> m_split_seeds; // Vector of seeds
     //std::unordered_set<TrkrDefs::cluskey> m_used_clusters;
 
     std::string m_outfileName;
     TFile* m_outfile;
     TTree* m_clustertree;
+    TTree* m_seed_tree;
+    TTree* m_seed_analysis_tree;
+
+    //Variables for clustertree
+    float m_clus_x, m_clus_y, m_clus_z;
+    int m_is_passed_straight;
+
+    // Variables for seed tree
+    float m_seed_x, m_seed_y, m_seed_z;
+    int m_seed_layer;
+    int m_is_rejected;    // for m_seed_tree
+// Variables for seed analysis tree
+    float m_ana_x, m_ana_y, m_ana_z;
+    int m_ana_layer;
+    int m_ana_is_rejected;
+    int m_ana_seed_id;     // ID to track specific seeds
+    int m_current_seed_id; // Counter for seed IDs
 
     //float m_clus_x, m_clus_y, m_clus_z;
     //int m_is_used;  // 1 for used, 0 for unused
@@ -228,7 +276,7 @@ class PHCASeeding : public PHTrackSeeding
   Acts::Vector3 getGlobalPosition(TrkrDefs::cluskey, TrkrCluster*) const;
   std::pair<PositionMap, keyListPerLayer> FillGlobalPositions();
   std::pair<keyLinks, keyLinkPerLayer> CreateBiLinks(const PositionMap& globalPositions, const keyListPerLayer& ckeys);
-  PHCASeeding::keyLists FollowBiLinks(const keyLinks& trackSeedPairs, const keyLinkPerLayer& bilinks, const PositionMap& globalPositions) const;
+  PHCASeeding::keyLists FollowBiLinks(const keyLinks& trackSeedPairs, const keyLinkPerLayer& bilinks, const PositionMap& globalPositions);
   std::vector<coordKey> FillTree(bgi::rtree<pointKey, bgi::quadratic<16>>&, const keyList&, const PositionMap&, int layer);
   int FindSeedsWithMerger(const PositionMap&, const keyListPerLayer&);
 
@@ -249,7 +297,8 @@ class PHCASeeding : public PHTrackSeeding
   unsigned int _end_layer;
   unsigned int _min_nhits_per_cluster;
   unsigned int _min_clusters_per_track;
-  unsigned int _max_clusters_per_seed = 6;  // currently not used
+  //unsigned int _max_clusters_per_seed = 6;  // currently not used
+  unsigned int _max_clusters_per_seed = 999999;
   unsigned int _min_clusters_per_seed = 6;  // currently the abs. number used
   //  float _cluster_z_error;
   //  float _cluster_alice_y_error;
