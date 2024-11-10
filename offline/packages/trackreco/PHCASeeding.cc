@@ -663,7 +663,27 @@ double PHCASeeding::getMengerCurvature(TrkrDefs::cluskey a, TrkrDefs::cluskey b,
 
 PHCASeeding::keyLists PHCASeeding::FollowBiLinks(const PHCASeeding::keyLinks& trackSeedPairs, const PHCASeeding::keyLinkPerLayer& bilinks, const PHCASeeding::PositionMap& globalPositions)
 {
-  // form all possible starting 3-cluster tracks (we need that to calculate curvature)
+
+// First collect all input clusters
+    std::unordered_set<TrkrDefs::cluskey> input_clusters;
+  std::unordered_set<TrkrDefs::cluskey> used_in_seeds;
+
+     // Get clusters from trackSeedPairs
+    for(const auto& pair : trackSeedPairs) {
+        input_clusters.insert(pair.first);
+        input_clusters.insert(pair.second);
+    }
+
+
+        // Get clusters from bilinks
+    for(const auto& layer_links : bilinks) {
+        for(const auto& link : layer_links) {
+            input_clusters.insert(link.first);
+            input_clusters.insert(link.second);
+        }
+    }
+// form all possible starting 3-cluster tracks (we need that to calculate curvature)
+
   keyLists seeds;
   for (auto& startLink : trackSeedPairs)
   {
@@ -724,7 +744,7 @@ PHCASeeding::keyLists PHCASeeding::FollowBiLinks(const PHCASeeding::keyLinks& tr
   std::array<float, 4> phi{}, R{}, Z{};
   keyLists grown_seeds;
 
-    std::set<TrkrDefs::cluskey> all_seed_clusters;
+    //std::set<TrkrDefs::cluskey> all_seed_clusters;
     bool is_first_iteration = true;
     while (seeds.size() > 0)
   {
@@ -743,7 +763,7 @@ PHCASeeding::keyLists PHCASeeding::FollowBiLinks(const PHCASeeding::keyLinks& tr
             m_ana_seed_id = m_current_seed_id;
             m_seed_analysis_tree->Fill();
 
-            all_seed_clusters.insert(triplet_key);
+            //all_seed_clusters.insert(triplet_key);
         }
         }
       // grow the seed to the maximum length allowed
@@ -961,14 +981,21 @@ PHCASeeding::keyLists PHCASeeding::FollowBiLinks(const PHCASeeding::keyLinks& tr
         }  // end of seed length switch
 
 // Track used clusters
+/* if(passing_links.size()>0)
+{
           for (const auto& passing_link : passing_links) {
               all_seed_clusters.insert(passing_link);
           }
+} */
 
       }    // end of seed growing loop: if (!done_growing)
 
         if(is_first_iteration) {
             m_current_seed_id++;  // Only increment ID in first iteration
+        }
+
+        for(const auto& cluster : seed){
+          used_in_seeds.insert(cluster);
         }
 
       if (seed.size() >= _min_clusters_per_seed)
@@ -990,7 +1017,7 @@ PHCASeeding::keyLists PHCASeeding::FollowBiLinks(const PHCASeeding::keyLinks& tr
 
     auto it = m_rejected_clusters.begin();
     while (it != m_rejected_clusters.end()) {
-        if (all_seed_clusters.find(it->cluster_key) != all_seed_clusters.end()) {
+        if (used_in_seeds.find(it->cluster_key) != used_in_seeds.end()) {
             it = m_rejected_clusters.erase(it);
         } else {
             ++it;
@@ -999,7 +1026,7 @@ PHCASeeding::keyLists PHCASeeding::FollowBiLinks(const PHCASeeding::keyLinks& tr
 
 
 
-    // Fill used clusters tree:
+/*     // Fill used clusters tree:
     for(const auto& key : all_seed_clusters) {
         const auto& pos = globalPositions.at(key);
         m_seed_x = pos(0);
@@ -1018,8 +1045,44 @@ PHCASeeding::keyLists PHCASeeding::FollowBiLinks(const PHCASeeding::keyLinks& tr
         m_seed_layer = rej.layer;
         m_is_rejected = 1;
         m_seed_tree->Fill();
+    } */
+
+
+/*         // Add clusters from startLinks
+    for(const auto& link : trackSeedPairs) {
+        passed_straight_line.insert(link.first);   // top cluster
+        passed_straight_line.insert(link.second);  // bottom cluster
     }
 
+    // Add clusters from bodyLinks
+    for(const auto& layer_links : bodyLinks) {
+        for(const auto& link : layer_links) {
+            passed_straight_line.insert(link.first);   // top cluster
+            passed_straight_line.insert(link.second);  // bottom cluster
+        }
+    } */
+
+/* // Fill tree once with all clusters
+    for (const auto& [key, pos] : globalPositions)
+    {
+        m_seed_x = pos.x();
+        m_seed_y = pos.y();
+        m_seed_z = pos.z();
+        m_is_rejected = used_in_seeds.find(key) != used_in_seeds.end() ? 0 : 1;
+        m_seed_tree->Fill();
+    }
+ */
+
+    // Fill tree only for input clusters
+    for(const auto& key : input_clusters)
+    {
+        const auto& pos = globalPositions.at(key);
+        m_seed_x = pos.x();
+        m_seed_y = pos.y();
+        m_seed_z = pos.z();
+        m_is_rejected = used_in_seeds.find(key) != used_in_seeds.end() ? 0 : 1;
+        m_seed_tree->Fill();
+    }
 
   // old code block move to end of code under the title: "---OLD CODE 1: SKIP_LAYERS---"
   t_seed->stop();

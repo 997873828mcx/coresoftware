@@ -1,5 +1,3 @@
-// Tell emacs that this is a C++ source
-//  -*- C++ -*-.
 #ifndef TRACKRESIDUALS_H
 #define TRACKRESIDUALS_H
 
