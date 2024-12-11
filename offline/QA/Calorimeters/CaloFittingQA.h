@@ -5,6 +5,8 @@
 
 #include <caloreco/CaloTowerDefs.h>
 
+#include <cdbobjects/CDBTTree.h>  // for CDBTTree
+
 #include <string>
 #include <vector>
 
@@ -26,6 +28,7 @@ class CaloFittingQA : public SubsysReco
 
   //! full initialization
   int Init(PHCompositeNode*) override;
+  int InitRun(PHCompositeNode *) override;
 
   //! event processing method
   int process_event(PHCompositeNode*) override;
@@ -47,6 +50,22 @@ class CaloFittingQA : public SubsysReco
   {
     m_SimFlag = f;
   }
+  void set_cemc_lowadcthreshold(int lath)
+  {
+    m_cemc_adc_threshold = lath;
+  }
+  void set_cemc_highadcthreshold(int hath)
+  {
+    m_cemc_high_adc_threshold = hath;
+  }
+  void set_hcal_lowadcthreshold(int lath)
+  {
+    m_hcal_adc_threshold = lath;
+  }
+  void set_hcal_highadcthreshold(int hath)
+  {
+    m_hcal_high_adc_threshold = hath;
+  }
 
  private:
   void createHistos();
@@ -54,6 +73,12 @@ class CaloFittingQA : public SubsysReco
   TProfile2D* h_cemc_etaphi_ZScrosscalib{nullptr};
   TProfile2D* h_ihcal_etaphi_ZScrosscalib{nullptr};
   TProfile2D* h_ohcal_etaphi_ZScrosscalib{nullptr};
+  TProfile2D* h_cemc_etaphi_pedestal{nullptr};
+  TProfile2D* h_ihcal_etaphi_pedestal{nullptr};
+  TProfile2D* h_ohcal_etaphi_pedestal{nullptr};
+  TH1* h_packet_events{nullptr};
+
+  CDBTTree *cdbttree = nullptr;
 
   int _eventcounter{0};
 
@@ -61,6 +86,13 @@ class CaloFittingQA : public SubsysReco
   bool m_UseOfflinePacketFlag{true};
   bool m_SimFlag{false};
 
+  float m_cemc_adc_threshold = 200.;
+  float m_cemc_high_adc_threshold = 2000.;
+  float m_hcal_adc_threshold = 100.;
+  float m_hcal_high_adc_threshold = 2000.;
+
+  std::string m_calibName;
+  std::string m_fieldname;
   std::string m_outputFileName;
   std::string OutputFileName;
 };
