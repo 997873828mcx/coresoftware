@@ -636,8 +636,10 @@ void TrackResiduals::fillClusterTree(TrkrClusterContainer* clusters,
   {
     return;
   }
-  for (auto& det : {TrkrDefs::TrkrId::mvtxId, TrkrDefs::TrkrId::inttId,
-                    TrkrDefs::TrkrId::tpcId, TrkrDefs::TrkrId::micromegasId})
+  /* for (auto& det : {TrkrDefs::TrkrId::mvtxId, TrkrDefs::TrkrId::inttId,
+                    TrkrDefs::TrkrId::tpcId, TrkrDefs::TrkrId::micromegasId}) */
+                    for (auto& det : {
+                    TrkrDefs::TrkrId::tpcId})
   {
     for (const auto& hitsetkey : clusters->getHitSetKeys(det))
     {
@@ -647,7 +649,13 @@ void TrackResiduals::fillClusterTree(TrkrClusterContainer* clusters,
       {
         auto key = iter->first;
         auto cluster = clusters->findCluster(key);
+        unsigned int layer = TrkrDefs::getLayer(key);
+        if (layer < 7 || layer >= 55)
+        {
+          continue;
+        }
         Acts::Vector3 glob;
+        m_scluskey=key;
         // NOT IMPLEMENTED YET
         // if (TrkrDefs::getTrkrId(key) == TrkrDefs::tpcId)
         // {
@@ -677,7 +685,7 @@ void TrackResiduals::fillClusterTree(TrkrClusterContainer* clusters,
         //! Fill relevant geom info that is specific to subsystem
         switch (det)
         {
-        case TrkrDefs::TrkrId::mvtxId:
+   /*      case TrkrDefs::TrkrId::mvtxId:
           m_staveid = MvtxDefs::getStaveId(key);
           m_chipid = MvtxDefs::getChipId(key);
           m_strobeid = MvtxDefs::getStrobeId(key);
@@ -689,8 +697,8 @@ void TrackResiduals::fillClusterTree(TrkrClusterContainer* clusters,
           m_side = std::numeric_limits<int>::quiet_NaN();
           m_segtype = std::numeric_limits<int>::quiet_NaN();
           m_tileid = std::numeric_limits<int>::quiet_NaN();
-          break;
-        case TrkrDefs::TrkrId::inttId:
+          break; */
+    /*     case TrkrDefs::TrkrId::inttId:
           m_ladderzid = InttDefs::getLadderZId(key);
           m_ladderphiid = InttDefs::getLadderPhiId(key);
           m_timebucket = InttDefs::getTimeBucketId(key);
@@ -702,7 +710,7 @@ void TrackResiduals::fillClusterTree(TrkrClusterContainer* clusters,
           m_side = std::numeric_limits<int>::quiet_NaN();
           m_segtype = std::numeric_limits<int>::quiet_NaN();
           m_tileid = std::numeric_limits<int>::quiet_NaN();
-          break;
+          break; */
         case TrkrDefs::TrkrId::tpcId:
           m_clussector = TpcDefs::getSectorId(key);
           m_side = TpcDefs::getSide(key);
@@ -716,7 +724,7 @@ void TrackResiduals::fillClusterTree(TrkrClusterContainer* clusters,
           m_segtype = std::numeric_limits<int>::quiet_NaN();
           m_tileid = std::numeric_limits<int>::quiet_NaN();
           break;
-        case TrkrDefs::TrkrId::micromegasId:
+     /*    case TrkrDefs::TrkrId::micromegasId:
           m_segtype = (int) MicromegasDefs::getSegmentationType(key);
           m_tileid = MicromegasDefs::getTileId(key);
 
@@ -728,7 +736,7 @@ void TrackResiduals::fillClusterTree(TrkrClusterContainer* clusters,
           m_timebucket = std::numeric_limits<int>::quiet_NaN();
           m_clussector = std::numeric_limits<int>::quiet_NaN();
           m_side = std::numeric_limits<int>::quiet_NaN();
-          break;
+          break; */
         default:
           break;
         }
@@ -1637,6 +1645,7 @@ void TrackResiduals::createBranches()
   m_hittree->Branch("zdriftlength", &m_zdriftlength, "m_zdriftlength/F");
 
   m_clustree = new TTree("clustertree", "A tree with all clusters");
+  m_clustree->Branch("cluskey", &m_scluskey);
   m_clustree->Branch("run", &m_runnumber, "m_runnumber/I");
   m_clustree->Branch("segment", &m_segment, "m_segment/I");
   m_clustree->Branch("event", &m_event, "m_event/I");

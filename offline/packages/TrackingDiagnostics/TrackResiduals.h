@@ -225,6 +225,7 @@ class TrackResiduals : public SubsysReco
   int m_nvertices = std::numeric_limits<int>::quiet_NaN();
 
   //! cluster tree info
+  TrkrDefs::cluskey m_scluskey;
   float m_sclusgr = std::numeric_limits<float>::quiet_NaN();
   float m_sclusphi = std::numeric_limits<float>::quiet_NaN();
   float m_scluseta = std::numeric_limits<float>::quiet_NaN();

@@ -394,31 +394,23 @@ std::pair<PHCASeeding::keyLinks, PHCASeeding::keyLinkPerLayer> PHCASeeding::Crea
   keyLinks startLinks;        // bilinks at start of chains
   keyLinkPerLayer bodyLinks;  //  bilinks to build chains
                               //
-  double cluster_find_time = 0;
+  double cluster_find_time = 0;//used for performance measurement_
   double rtree_query_time = 0;
   double transform_time = 0;
   double compute_best_angle_time = 0;
   double set_insert_time = 0;
 
-/* for (const auto& [key, pos] : globalPositions)
-    {
-        m_clus_x = pos.x();
-        m_clus_y = pos.y();
-        m_clus_z = pos.z();
-        //m_is_used = used_clusters.find(key) != used_clusters.end() ? 1 : 0;
-        m_is_used = 0;
-        m_clustertree->Fill();
-    } */
+
 
   // there are three coord_array (only the current layer is used at a time,
   // but it is filled the same time as the _rtrees, which are used two at
   // a time -- the prior padplane row and the next padplain row
-  std::array<std::vector<coordKey>, 3> coord_arr;
+  std::array<std::vector<coordKey>, 3> coord_arr;//stores [[phi,z],cluskey] for all clusters in three consecutive TPC layers
   std::array<std::unordered_set<keyLink>, 2> previous_downlinks_arr;
   std::array<std::unordered_set<TrkrDefs::cluskey>, 2> bottom_of_bilink_arr;
 
   // iterate from outer to inner layers
-  const int inner_index = _start_layer - _FIRST_LAYER_TPC + 1;
+  const int inner_index = _start_layer - _FIRST_LAYER_TPC + 1;//_start_layer=7,_end_layer=55,_FIRST_LAYER_TPC=7
   const int outer_index = _end_layer - _FIRST_LAYER_TPC - 2;
 
   // fill the current and prior row coord and ttrees for the first iteration
@@ -616,19 +608,19 @@ std::pair<PHCASeeding::keyLinks, PHCASeeding::keyLinkPerLayer> PHCASeeding::Crea
 
      // Add clusters from startLinks
     for(const auto& link : startLinks) {
-        passed_straight_line.insert(link.first);   // top cluster
-        passed_straight_line.insert(link.second);  // bottom cluster
+        _passed_straight_line.insert(link.first);   // top cluster
+        _passed_straight_line.insert(link.second);  // bottom cluster
     }
 
     // Add clusters from bodyLinks
     for(const auto& layer_links : bodyLinks) {
         for(const auto& link : layer_links) {
-            passed_straight_line.insert(link.first);   // top cluster
-            passed_straight_line.insert(link.second);  // bottom cluster
+            _passed_straight_line.insert(link.first);   // top cluster
+            _passed_straight_line.insert(link.second);  // bottom cluster
         }
     }
 
-     // Fill tree again for passed clusters
+   /*   // Fill tree again for passed clusters
     for (const auto& [key, pos] : globalPositions)
     {
         m_clus_x = pos.x();
@@ -636,7 +628,7 @@ std::pair<PHCASeeding::keyLinks, PHCASeeding::keyLinkPerLayer> PHCASeeding::Crea
         m_clus_z = pos.z();
         m_is_passed_straight = passed_straight_line.find(key) != passed_straight_line.end() ? 1 : 0;
         m_clustertree->Fill();
-    }
+    } */
 
   // sort the body links per layer so that links can be binary-searched per layer
   /* for (auto& layer : bodyLinks) { std::sort(layer.begin(), layer.end()); } */
@@ -668,20 +660,20 @@ PHCASeeding::keyLists PHCASeeding::FollowBiLinks(const PHCASeeding::keyLinks& tr
     std::unordered_set<TrkrDefs::cluskey> input_clusters;
   std::unordered_set<TrkrDefs::cluskey> used_in_seeds;
 
-     // Get clusters from trackSeedPairs
+/*      // Get clusters from trackSeedPairs
     for(const auto& pair : trackSeedPairs) {
         input_clusters.insert(pair.first);
         input_clusters.insert(pair.second);
-    }
+    } */
 
 
-        // Get clusters from bilinks
+  /*       // Get clusters from bilinks
     for(const auto& layer_links : bilinks) {
         for(const auto& link : layer_links) {
             input_clusters.insert(link.first);
             input_clusters.insert(link.second);
         }
-    }
+    } */
 // form all possible starting 3-cluster tracks (we need that to calculate curvature)
 
   keyLists seeds;
@@ -1073,7 +1065,7 @@ PHCASeeding::keyLists PHCASeeding::FollowBiLinks(const PHCASeeding::keyLinks& tr
     }
  */
 
-    // Fill tree only for input clusters
+/*     // Fill tree only for input clusters
     for(const auto& key : input_clusters)
     {
         const auto& pos = globalPositions.at(key);
@@ -1082,7 +1074,17 @@ PHCASeeding::keyLists PHCASeeding::FollowBiLinks(const PHCASeeding::keyLinks& tr
         m_seed_z = pos.z();
         m_is_rejected = used_in_seeds.find(key) != used_in_seeds.end() ? 0 : 1;
         m_seed_tree->Fill();
-    }
+    } */
+
+     for(const auto& [key, pos] : globalPositions) {
+      m_cluskey = key; 
+    m_cluster_x = pos.x();
+    m_cluster_y = pos.y();
+    m_cluster_z = pos.z();
+    m_passed_straight = _passed_straight_line.find(key) != _passed_straight_line.end() ? 1 : 0;
+    m_used_in_seed = used_in_seeds.find(key) != used_in_seeds.end() ? 1 : 0;
+    m_tracking_tree->Fill();
+  }
 
   // old code block move to end of code under the title: "---OLD CODE 1: SKIP_LAYERS---"
   t_seed->stop();
@@ -1296,20 +1298,27 @@ int PHCASeeding::Setup(PHCompositeNode* topNode)  // This is called by ::InitRun
     }
 
     m_outfile = new TFile(m_outfileName.c_str(), "RECREATE");
-    m_clustertree = new TTree("clusters", "Cluster Information");
+    /* m_clustertree = new TTree("clusters", "Cluster Information");
     m_clustertree->Branch("x", &m_clus_x, "x/F");
     m_clustertree->Branch("y", &m_clus_y, "y/F");
     m_clustertree->Branch("z", &m_clus_z, "z/F");
-    m_clustertree->Branch("m_is_passed_straight", &m_is_passed_straight, "m_is_passed_straight/I");
+    m_clustertree->Branch("m_is_passed_straight", &m_is_passed_straight, "m_is_passed_straight/I"); */
 
 // Tree for seed building clusters
-    m_seed_tree = new TTree("seed_clusters", "Seed and Rejected Clusters");
+   /*  m_seed_tree = new TTree("seed_clusters", "Seed and Rejected Clusters");
     m_seed_tree->Branch("x", &m_seed_x, "x/F");
     m_seed_tree->Branch("y", &m_seed_y, "y/F");
     m_seed_tree->Branch("z", &m_seed_z, "z/F");
     //m_seed_tree->Branch("layer", &m_seed_layer, "layer/I");
     m_seed_tree->Branch("is_rejected", &m_is_rejected, "is_rejected/I");
-
+ */
+m_tracking_tree = new TTree("tracking_clusters", "Cluster Tracking Information");
+m_tracking_tree->Branch("cluskey", &m_cluskey, "cluskey/l"); 
+  m_tracking_tree->Branch("x", &m_cluster_x, "x/F");
+  m_tracking_tree->Branch("y", &m_cluster_y, "y/F"); 
+  m_tracking_tree->Branch("z", &m_cluster_z, "z/F");
+  m_tracking_tree->Branch("passed_straight", &m_passed_straight, "passed_straight/I");
+  m_tracking_tree->Branch("used_in_seed", &m_used_in_seed, "used_in_seed/I");
     m_seed_analysis_tree = new TTree("seed_analysis", "Seed Building Analysis");
     m_seed_analysis_tree->Branch("x", &m_ana_x, "x/F");
     m_seed_analysis_tree->Branch("y", &m_ana_y, "y/F");
@@ -1333,8 +1342,9 @@ int PHCASeeding::End()
 
     m_outfile->cd();
 
-    m_clustertree->Write();
-    m_seed_tree->Write();
+    //m_clustertree->Write();
+    //m_seed_tree->Write();
+    m_tracking_tree->Write();
     m_seed_analysis_tree->Write();
     m_outfile->Close();
   return Fun4AllReturnCodes::EVENT_OK;

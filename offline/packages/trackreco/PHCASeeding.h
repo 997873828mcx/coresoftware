@@ -193,21 +193,28 @@ class PHCASeeding : public PHTrackSeeding
     std::vector<TrkrDefs::cluskey> m_main_seed_clusters;
     std::vector<std::vector<TrkrDefs::cluskey>> m_split_seeds; // Vector of seeds
     //std::unordered_set<TrkrDefs::cluskey> m_used_clusters;
+    std::unordered_set<TrkrDefs::cluskey> _passed_straight_line;
 
     std::string m_outfileName;
     TFile* m_outfile;
-    TTree* m_clustertree;
-    TTree* m_seed_tree;
+    //TTree* m_clustertree;
+    //TTree* m_seed_tree;
+    TTree* m_tracking_tree; 
     TTree* m_seed_analysis_tree;
 
-    //Variables for clustertree
-    float m_clus_x, m_clus_y, m_clus_z;
-    int m_is_passed_straight;
+     float m_cluster_x, m_cluster_y, m_cluster_z;
+  int m_passed_straight;   
+  int m_used_in_seed;
+  TrkrDefs::cluskey m_cluskey;
 
-    // Variables for seed tree
+/*     //Variables for clustertree
+    float m_clus_x, m_clus_y, m_clus_z;
+    int m_is_passed_straight; */
+
+/*     // Variables for seed tree
     float m_seed_x, m_seed_y, m_seed_z;
     int m_seed_layer;
-    int m_is_rejected;    // for m_seed_tree
+    int m_is_rejected;    // for m_seed_tree */
 // Variables for seed analysis tree
     float m_ana_x, m_ana_y, m_ana_z;
     int m_ana_layer;
