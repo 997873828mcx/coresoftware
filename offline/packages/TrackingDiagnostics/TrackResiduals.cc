@@ -23,6 +23,7 @@
 #include <micromegas/MicromegasDefs.h>
 
 #include <mvtx/CylinderGeom_Mvtx.h>
+#include <mvtx/CylinderGeom_MvtxHelper.h>
 
 #include <mvtx/CylinderGeom_MvtxHelper.h>
 #include <trackbase_historic/ActsTransformations.h>

@@ -13,10 +13,10 @@ AM_LDFLAGS = \
 
 pkginclude_HEADERS = \
   BeamCrossingAnalysis.h \
-  KshortReconstruction.h \
   helixResiduals.h \
-  TrackResiduals.h \
+  KshortReconstruction.h \
   TrackContainerCombiner.h \
+  TrackResiduals.h \
   TrackSeedTrackMapConverter.h \
   TrkrNtuplizer.h
 
@@ -25,10 +25,10 @@ lib_LTLIBRARIES = \
 
 libTrackingDiagnostics_la_SOURCES = \
   BeamCrossingAnalysis.cc \
-  KshortReconstruction.cc \
   helixResiduals.cc \
-  TrackResiduals.cc \
+  KshortReconstruction.cc \
   TrackContainerCombiner.cc \
+  TrackResiduals.cc \
   TrackSeedTrackMapConverter.cc \
   TrkrNtuplizer.cc
 
@@ -40,15 +40,16 @@ libTrackingDiagnostics_la_LIBADD = \
   -lg4eval_io \
   -lphg4hit \
   -lg4detectors_io \
-  -ltrack_io \
-  -ltrackbase_historic_io \
-  -ltpc_io \
+  -lmvtx \
   -lmvtx_io \
   -lintt \
   -lintt_io \
   -lmicromegas_io \
   -lSubsysReco \
-  -ltrackeralign
+  -ltpc_io \
+  -ltrack_io \
+  -ltrackeralign \
+  -ltrackbase_historic_io
 
 BUILT_SOURCES = testexternals.cc
 
