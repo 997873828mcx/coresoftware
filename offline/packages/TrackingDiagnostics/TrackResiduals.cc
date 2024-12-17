@@ -652,7 +652,7 @@ void TrackResiduals::fillClusterTree(TrkrClusterContainer* clusters,
       {
         auto key = iter->first;
         auto cluster = clusters->findCluster(key);
-        unsigned int layer = TrkrDefs::getLayer(key);
+        //unsigned int layer = TrkrDefs::getLayer(key);
         /* if (layer < 7 || layer >= 55)
         {
           continue;
