@@ -24,6 +24,7 @@
 
 #include <mvtx/CylinderGeom_Mvtx.h>
 
+#include <mvtx/CylinderGeom_MvtxHelper.h>
 #include <trackbase_historic/ActsTransformations.h>
 #include <trackbase_historic/SvtxAlignmentState.h>
 #include <trackbase_historic/SvtxAlignmentStateMap.h>
@@ -652,10 +653,10 @@ void TrackResiduals::fillClusterTree(TrkrClusterContainer* clusters,
         auto key = iter->first;
         auto cluster = clusters->findCluster(key);
         unsigned int layer = TrkrDefs::getLayer(key);
-        if (layer < 7 || layer >= 55)
+        /* if (layer < 7 || layer >= 55)
         {
           continue;
-        }
+        } */
         Acts::Vector3 glob;
         m_scluskey=key;
         // NOT IMPLEMENTED YET
@@ -875,7 +876,7 @@ void TrackResiduals::fillHitTree(TrkrHitSetContainer* hitmap,
 
       switch (det)
       {
-      case TrkrDefs::TrkrId::mvtxId:
+      /* case TrkrDefs::TrkrId::mvtxId:
       {
         m_row = MvtxDefs::getRow(hitkey);
         m_col = MvtxDefs::getCol(hitkey);
@@ -885,7 +886,7 @@ void TrackResiduals::fillHitTree(TrkrHitSetContainer* hitmap,
         local.SetX(local_coords.X());
         local.SetY(local_coords.Z());
         auto surf = geometry->maps().getSiliconSurface(m_hitsetkey);
-        auto glob = layergeom->get_world_from_local_coords(surf, geometry, local);
+        auto glob = CylinderGeom_MvtxHelper::get_world_from_local_coords(surf, geometry, local);
         m_hitgx = glob.X();
         m_hitgy = glob.Y();
         m_hitgz = glob.Z();
@@ -898,8 +899,8 @@ void TrackResiduals::fillHitTree(TrkrHitSetContainer* hitmap,
 
         m_zdriftlength = std::numeric_limits<float>::quiet_NaN();
         break;
-      }
-      case TrkrDefs::TrkrId::inttId:
+      } */
+      /* case TrkrDefs::TrkrId::inttId:
       {
         m_row = InttDefs::getRow(hitkey);
         m_col = InttDefs::getCol(hitkey);
@@ -922,7 +923,7 @@ void TrackResiduals::fillHitTree(TrkrHitSetContainer* hitmap,
         m_hittbin = std::numeric_limits<int>::quiet_NaN();
         m_zdriftlength = std::numeric_limits<float>::quiet_NaN();
         break;
-      }
+      } */
       case TrkrDefs::TrkrId::tpcId:
       {
         m_row = std::numeric_limits<int>::quiet_NaN();
@@ -945,7 +946,7 @@ void TrackResiduals::fillHitTree(TrkrHitSetContainer* hitmap,
 
         break;
       }
-      case TrkrDefs::TrkrId::micromegasId:
+      /* case TrkrDefs::TrkrId::micromegasId:
       {
         const auto layergeom = dynamic_cast<CylinderGeomMicromegas*>(mmGeom->GetLayerGeom(m_hitlayer));
         m_strip = MicromegasDefs::getStrip(hitkey);
@@ -961,7 +962,7 @@ void TrackResiduals::fillHitTree(TrkrHitSetContainer* hitmap,
         m_hittbin = std::numeric_limits<int>::quiet_NaN();
 
         m_zdriftlength = std::numeric_limits<float>::quiet_NaN();
-      }
+      } */
       default:
         break;
       }
