@@ -28,6 +28,7 @@ class TrkrHitSetContainer;
 class PHG4TpcCylinderGeomContainer;
 class PHG4CylinderGeomContainer;
 class TpcDistortionCorrectionContainer;
+class TrkrClusterHitAssoc;
 class TrackResiduals : public SubsysReco
 {
  public:
@@ -68,7 +69,7 @@ class TrackResiduals : public SubsysReco
   void createBranches();
   float convertTimeToZ(ActsGeometry *geometry, TrkrDefs::cluskey cluster_key, TrkrCluster *cluster);
   void fillEventTree(PHCompositeNode *topNode);
-  void fillClusterTree(TrkrClusterContainer *clusters, ActsGeometry *geometry);
+  void fillClusterTree(TrkrClusterHitAssoc* clusterhitassoc, TrkrClusterContainer *clusters, ActsGeometry *geometry);
   void fillHitTree(TrkrHitSetContainer *hitmap, ActsGeometry *geometry,
                    PHG4TpcCylinderGeomContainer *tpcGeom, PHG4CylinderGeomContainer *mvtxGeom,
                    PHG4CylinderGeomContainer *inttGeom, PHG4CylinderGeomContainer *mmGeom);
@@ -232,6 +233,7 @@ class TrackResiduals : public SubsysReco
 
   //! cluster tree info
   TrkrDefs::cluskey m_scluskey;
+  std::vector<TrkrDefs::hitkey> m_clust_hitkeys;
   float m_sclusgr = std::numeric_limits<float>::quiet_NaN();
   float m_sclusphi = std::numeric_limits<float>::quiet_NaN();
   float m_scluseta = std::numeric_limits<float>::quiet_NaN();

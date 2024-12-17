@@ -11,6 +11,7 @@
 #include <trackbase/TrkrHit.h>
 #include <trackbase/TrkrHitSet.h>
 #include <trackbase/TrkrHitSetContainer.h>
+#include <trackbase/TrkrClusterHitAssocv3.h>
 
 #include <g4detectors/PHG4CylinderGeomContainer.h>
 #include <g4detectors/PHG4TpcCylinderGeom.h>
@@ -213,7 +214,14 @@ int TrackResiduals::process_event(PHCompositeNode* topNode)
   auto mvtxGeom = findNode::getClass<PHG4CylinderGeomContainer>(topNode, "CYLINDERGEOM_MVTX");
   auto inttGeom = findNode::getClass<PHG4CylinderGeomContainer>(topNode, "CYLINDERGEOM_INTT");
   auto mmGeom = findNode::getClass<PHG4CylinderGeomContainer>(topNode, "CYLINDERGEOM_MICROMEGAS_FULL");
+  auto clusterhitassocmap = findNode::getClass<TrkrClusterHitAssoc>(topNode, "TRKR_CLUSTERHITASSOC");
+if(!clusterhitassocmap)
+{
+  std::cerr << "ERROR: Can't find TRKR_CLUSTERHITASSOC node!" << std::endl;
+  return Fun4AllReturnCodes::ABORTRUN;
+}
 
+std::cout << "TRKR_CLUSTERHITASSOC size: " << clusterhitassocmap->size() << std::endl;
 
     m_vx = m_vy = m_vz = std::numeric_limits<float>::quiet_NaN();
 
@@ -277,7 +285,7 @@ int TrackResiduals::process_event(PHCompositeNode* topNode)
 
   if (m_doClusters)
   {
-    fillClusterTree(clustermap, geometry);
+    fillClusterTree(clusterhitassocmap, clustermap, geometry);
   }
 
   if (m_convertSeeds)
@@ -633,17 +641,24 @@ void TrackResiduals::lineFitClusters(std::vector<TrkrDefs::cluskey>& keys,
   m_yzslope = std::get<0>(yzparams);
 }
 
-void TrackResiduals::fillClusterTree(TrkrClusterContainer* clusters,
+void TrackResiduals::fillClusterTree(TrkrClusterHitAssoc* clusterhitassoc, TrkrClusterContainer* clusters,
                                      ActsGeometry* geometry)
 {
   if (clusters->size()< m_min_cluster_size)
   {
     return;
   }
-  /* for (auto& det : {TrkrDefs::TrkrId::mvtxId, TrkrDefs::TrkrId::inttId,
-                    TrkrDefs::TrkrId::tpcId, TrkrDefs::TrkrId::micromegasId}) */
-                    for (auto& det : {
-                    TrkrDefs::TrkrId::tpcId})
+
+  //auto clusterhitassoc = findNode::getClass<TrkrClusterHitAssoc>(topNode, "TRKR_CLUSTERHITASSOC");
+    if (!clusterhitassoc)
+    {
+        std::cerr << "ERROR: Can't find TRKR_CLUSTERHITASSOC node!" << std::endl;
+        return;
+    }
+  for (auto& det : {TrkrDefs::TrkrId::mvtxId, TrkrDefs::TrkrId::inttId,
+                    TrkrDefs::TrkrId::tpcId, TrkrDefs::TrkrId::micromegasId})
+                    /* for (auto& det : {
+                    TrkrDefs::TrkrId::tpcId}) */
   {
     for (const auto& hitsetkey : clusters->getHitSetKeys(det))
     {
@@ -689,7 +704,7 @@ void TrackResiduals::fillClusterTree(TrkrClusterContainer* clusters,
         //! Fill relevant geom info that is specific to subsystem
         switch (det)
         {
-   /*      case TrkrDefs::TrkrId::mvtxId:
+        case TrkrDefs::TrkrId::mvtxId:
           m_staveid = MvtxDefs::getStaveId(key);
           m_chipid = MvtxDefs::getChipId(key);
           m_strobeid = MvtxDefs::getStrobeId(key);
@@ -701,8 +716,8 @@ void TrackResiduals::fillClusterTree(TrkrClusterContainer* clusters,
           m_side = std::numeric_limits<int>::quiet_NaN();
           m_segtype = std::numeric_limits<int>::quiet_NaN();
           m_tileid = std::numeric_limits<int>::quiet_NaN();
-          break; */
-    /*     case TrkrDefs::TrkrId::inttId:
+          break;
+        case TrkrDefs::TrkrId::inttId:
           m_ladderzid = InttDefs::getLadderZId(key);
           m_ladderphiid = InttDefs::getLadderPhiId(key);
           m_timebucket = InttDefs::getTimeBucketId(key);
@@ -714,7 +729,7 @@ void TrackResiduals::fillClusterTree(TrkrClusterContainer* clusters,
           m_side = std::numeric_limits<int>::quiet_NaN();
           m_segtype = std::numeric_limits<int>::quiet_NaN();
           m_tileid = std::numeric_limits<int>::quiet_NaN();
-          break; */
+          break;
         case TrkrDefs::TrkrId::tpcId:
           m_clussector = TpcDefs::getSectorId(key);
           m_side = TpcDefs::getSide(key);
@@ -728,7 +743,7 @@ void TrackResiduals::fillClusterTree(TrkrClusterContainer* clusters,
           m_segtype = std::numeric_limits<int>::quiet_NaN();
           m_tileid = std::numeric_limits<int>::quiet_NaN();
           break;
-     /*    case TrkrDefs::TrkrId::micromegasId:
+        case TrkrDefs::TrkrId::micromegasId:
           m_segtype = (int) MicromegasDefs::getSegmentationType(key);
           m_tileid = MicromegasDefs::getTileId(key);
 
@@ -740,11 +755,23 @@ void TrackResiduals::fillClusterTree(TrkrClusterContainer* clusters,
           m_timebucket = std::numeric_limits<int>::quiet_NaN();
           m_clussector = std::numeric_limits<int>::quiet_NaN();
           m_side = std::numeric_limits<int>::quiet_NaN();
-          break; */
+          break;
         default:
           break;
         }
+        m_clust_hitkeys.clear();
+        auto hitrange = clusterhitassoc->getHits(key);
+         size_t num_hits = std::distance(hitrange.first, hitrange.second);
+         std::cout << "Cluster Key: " << key << " has " << num_hits << " associated hits." << std::endl;
+        for (auto hit_iter = hitrange.first; hit_iter != hitrange.second; ++hit_iter)
+          {
+            TrkrDefs::hitkey hkey = hit_iter->second;
 
+          
+              m_clust_hitkeys.push_back(hkey);
+              std::cout << "  Hitkey: " << hkey << std::endl;
+              
+          }
         m_clustree->Fill();
       }
     }
@@ -1691,6 +1718,7 @@ void TrackResiduals::createBranches()
   m_clustree->Branch("timebucket", &m_timebucket, "m_timebucket/I");
   m_clustree->Branch("segtype", &m_segtype, "m_segtype/I");
   m_clustree->Branch("tile", &m_tileid, "m_tileid/I");
+  m_clustree->Branch("clus_hitkeys", &m_clust_hitkeys);
 
   m_tree = new TTree("residualtree", "A tree with track, cluster, and state info");
   m_tree->Branch("run", &m_runnumber, "m_runnumber/I");

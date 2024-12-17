@@ -77,6 +77,21 @@ public:
   bool is_in_sector_boundary(int phibin, int sector, PHG4TpcCylinderGeom *layergeom) const;
   bool record_ClusHitsVerbose{false};
 
+  
+  // cluster and hit associate
+  TrkrDefs::cluskey m_scluskey;
+  std::vector<TrkrDefs::hitkey> m_tpc_clust_hitkeys;
+  TFile *m_outfile = nullptr;
+  TTree *m_tpc_clust_tree = nullptr;
+
+
+  void process_cluster(TrkrCluster* cluster, TrkrDefs::cluskey key, 
+                        TrkrClusterHitAssoc* clusterhitassoc, 
+                        TrkrHitSetContainer* hitsetcontainer,
+                        ActsGeometry* geometry);
+
+    bool m_debug = true;                    
+
   TrkrHitSetContainer *m_hits = nullptr;
   RawHitSetContainer *m_rawhits = nullptr;
   TrkrClusterContainer *m_clusterlist = nullptr;
