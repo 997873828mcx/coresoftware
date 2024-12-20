@@ -1228,66 +1228,39 @@ int TpcClusterizer::InitRun(PHCompositeNode *topNode)
       DetNode->addNode(newNode);
     }
   }
-  m_outfile = new TFile("tpc_clusters.root", "RECREATE");
- if (!m_outfile->IsOpen())
+  if (m_outfileName.empty()) {
+        m_outfileName = "tpc_clusters.root";
+    }
+  //m_outfile = new TFile("tpc_clusters.root", "RECREATE");
+  m_outfile = new TFile(m_outfileName.c_str(), "RECREATE");
+
+  if (!m_outfile->IsOpen())
     {
-        std::cerr << "ERROR: Could not open output file!" << std::endl;
+        std::cerr << "ERROR: Could not open output file: " << m_outfileName << std::endl;
         return Fun4AllReturnCodes::ABORTRUN;
     }
+    else
+    {
+        std::cout << "Successfully opened output file: " << m_outfileName << std::endl;
+    }
+
 
     // Create the TPC cluster tree
     m_tpc_clust_tree = new TTree("tpc_clustertree", "TPC Clusters with Associated Hitkeys");
-
+     m_scluskey = 0; 
+    m_tpc_clust_hitkeys.clear();
+    m_num_hits = 0;
     // Create branches
     m_tpc_clust_tree->Branch("cluskey", &m_scluskey, "cluskey/l");
     m_tpc_clust_tree->Branch("clus_hitkeys", &m_tpc_clust_hitkeys);
+    m_tpc_clust_tree->Branch("num_hits", &m_num_hits, "num_hits/I");
 
-    std::cout << "TPC Cluster Tree initialized with two branches." << std::endl;
+    std::cout << "TPC Cluster Tree initialized with three branches (cluskey, clus_hitkeys, num_hits)." << std::endl;
 
 
   return Fun4AllReturnCodes::EVENT_OK;
 }
 
-void Tpcclusterizer::process_cluster(TrkrCluster* cluster, TrkrDefs::cluskey key, 
-                                     TrkrClusterHitAssoc* clusterhitassoc, 
-                                     TrkrHitSetContainer* hitsetcontainer,
-                                     ActsGeometry* geometry)
-{
-    if (!cluster)
-    {
-        std::cerr << "ERROR: Null cluster pointer encountered." << std::endl;
-        return;
-    }
-
-    // Store the cluster key
-    m_scluskey = key;
-
-    //! Retrieve and store associated hitkeys
-    m_tpc_clust_hitkeys.clear();  // Clear previous cluster's hitkeys
-
-    // Get the range of associated hits for this cluster
-    auto hitrange = clusterhitassoc->getHits(key);
-
-    size_t num_hits = std::distance(hitrange.first, hitrange.second);
-    if (m_debug)
-    {
-        std::cout << "TPC Cluster Key: " << key << " has " << num_hits << " associated hits." << std::endl;
-    }
-
-    for (auto hit_iter = hitrange.first; hit_iter != hitrange.second; ++hit_iter)
-    {
-        TrkrDefs::hitkey hkey = hit_iter->second;
-        m_tpc_clust_hitkeys.push_back(hkey);
-
-        if (m_debug)
-        {
-            std::cout << "  Hitkey: " << hkey << std::endl;
-        }
-    }
-
-    // Fill the tree with the current cluster's data
-    m_tpc_clust_tree->Fill();
-}
 
 int TpcClusterizer::process_event(PHCompositeNode *topNode)
 {
@@ -1716,21 +1689,36 @@ int TpcClusterizer::process_event(PHCompositeNode *topNode)
         }
       }
 
-      //std::map<uint32_t, std::vector<TrkrDefs::hitkey>> cluster_to_hits;
-      std::map<decltype(thread_pair.data.association_vector[0].first), std::vector<TrkrDefs::hitkey>> cluster_to_hits;
+      std::map<uint32_t, std::vector<TrkrDefs::hitkey>> cluster_to_hits;
+      //std::map<decltype(thread_pair.data.association_vector[0].first), std::vector<TrkrDefs::hitkey>> cluster_to_hits;
 
 
       for (const auto &[index, hkey] : thread_pair.data.association_vector)
             {
+              
                 cluster_to_hits[index].push_back(hkey);
             }
 
+            std::cout << "Number of clusters to fill: " << cluster_to_hits.size() << std::endl;
+
+
       for (const auto &[index, hitkeys] : cluster_to_hits)
             {
+
                 const auto ckey = TrkrDefs::genClusKey(hitsetkey, index);
                 m_scluskey = ckey;
                 m_tpc_clust_hitkeys = hitkeys; 
-                m_tpc_clust_tree->Fill();
+                if (m_tpc_clust_tree)
+                  {
+                      std::cout << "Filling tree with cluskey: " << ckey << " and " << hitkeys.size() << " hitkeys." << std::endl;
+                      m_tpc_clust_tree->Fill();
+                      std::cout << "Tree entry count: " << m_tpc_clust_tree->GetEntries() << std::endl;
+                  }
+                  else
+                  {
+                      std::cerr << "ERROR: Tree is not initialized when attempting to fill." << std::endl;
+                  }
+
             }  
       // copy hit associations to map
       for (const auto &[index, hkey] : thread_pair.data.association_vector)
@@ -1750,6 +1738,10 @@ int TpcClusterizer::process_event(PHCompositeNode *topNode)
         }
         delete v_hit;
       }
+      std::cout << "Thread for hitsetkey " << hitsetkey << " generated " << data.cluster_vector.size() << " clusters." << std::endl;
+      std::cout << "Thread for hitsetkey " << hitsetkey << " has " << cluster_to_hits.size() << " clusters with associations." << std::endl;
+
+
     }
   }
 
@@ -1765,6 +1757,18 @@ int TpcClusterizer::process_event(PHCompositeNode *topNode)
 
 int TpcClusterizer::End(PHCompositeNode * /*topNode*/)
 {
+
+  if (!m_outfile)
+{
+    std::cerr << "ERROR: Failed to create output file" << std::endl;
+    return Fun4AllReturnCodes::ABORTRUN;
+}
+
+if (!m_tpc_clust_tree)
+{
+    std::cerr << "ERROR: Failed to create TPC cluster tree" << std::endl;
+    return Fun4AllReturnCodes::ABORTRUN;
+}
    if (m_outfile && m_tpc_clust_tree)
     {
         m_outfile->cd();

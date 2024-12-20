@@ -761,15 +761,15 @@ void TrackResiduals::fillClusterTree(TrkrClusterHitAssoc* clusterhitassoc, TrkrC
         }
         m_clust_hitkeys.clear();
         auto hitrange = clusterhitassoc->getHits(key);
-         size_t num_hits = std::distance(hitrange.first, hitrange.second);
-         std::cout << "Cluster Key: " << key << " has " << num_hits << " associated hits." << std::endl;
+         //size_t num_hits = std::distance(hitrange.first, hitrange.second);
+         //std::cout << "Cluster Key: " << key << " has " << num_hits << " associated hits." << std::endl;
         for (auto hit_iter = hitrange.first; hit_iter != hitrange.second; ++hit_iter)
           {
             TrkrDefs::hitkey hkey = hit_iter->second;
 
           
               m_clust_hitkeys.push_back(hkey);
-              std::cout << "  Hitkey: " << hkey << std::endl;
+             // std::cout << "  Hitkey: " << hkey << std::endl;
               
           }
         m_clustree->Fill();

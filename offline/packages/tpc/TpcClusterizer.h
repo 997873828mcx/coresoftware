@@ -8,6 +8,8 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <TFile.h>
+#include <TNtuple.h>
 
 class ClusHitsVerbosev1;
 class PHCompositeNode;
@@ -34,6 +36,7 @@ public:
   int process_event(PHCompositeNode *topNode) override;
   int End(PHCompositeNode *topNode) override;
 
+  void set_outfileName(const std::string& filename) { m_outfileName = filename; }
   void set_sector_fiducial_cut(const double cut) { SectorFiducialCut = cut; }
   void set_store_hits(bool store_hits) { _store_hits = store_hits; }
   void set_use_nn(bool use_nn) { _use_nn = use_nn; }
@@ -58,7 +61,7 @@ public:
   void set_nzbins(int val){NZBinsSide = val; is_reco = true;}
   void set_rawdata_reco()
   {
-    set_do_hit_association(false);
+    set_do_hit_association(true);
     set_do_split(false);
     set_pedestal(0);
     set_seed_threshold(5);
@@ -83,14 +86,11 @@ public:
   std::vector<TrkrDefs::hitkey> m_tpc_clust_hitkeys;
   TFile *m_outfile = nullptr;
   TTree *m_tpc_clust_tree = nullptr;
+  std::string m_outfileName;
+ int m_num_hits = 0;
+  
 
-
-  void process_cluster(TrkrCluster* cluster, TrkrDefs::cluskey key, 
-                        TrkrClusterHitAssoc* clusterhitassoc, 
-                        TrkrHitSetContainer* hitsetcontainer,
-                        ActsGeometry* geometry);
-
-    bool m_debug = true;                    
+ //   bool m_debug = true;                    
 
   TrkrHitSetContainer *m_hits = nullptr;
   RawHitSetContainer *m_rawhits = nullptr;
