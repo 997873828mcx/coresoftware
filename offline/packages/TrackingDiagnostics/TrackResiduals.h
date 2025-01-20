@@ -241,11 +241,17 @@ class TrackResiduals : public SubsysReco
   float m_clusmaxadc = std::numeric_limits<float>::quiet_NaN();
   int m_phisize = std::numeric_limits<int>::quiet_NaN();
   int m_zsize = std::numeric_limits<int>::quiet_NaN();
+  int m_aclussize = std::numeric_limits<int>::quiet_NaN();
   float m_scluslx = std::numeric_limits<float>::quiet_NaN();
   float m_scluslz = std::numeric_limits<float>::quiet_NaN();
   float m_sclusgx = std::numeric_limits<float>::quiet_NaN();
   float m_sclusgy = std::numeric_limits<float>::quiet_NaN();
   float m_sclusgz = std::numeric_limits<float>::quiet_NaN();
+
+  float m_sclusgx_corr = std::numeric_limits<float>::quiet_NaN();
+  float m_sclusgy_corr = std::numeric_limits<float>::quiet_NaN();
+  float m_sclusgz_corr = std::numeric_limits<float>::quiet_NaN();
+
   int m_scluslayer = std::numeric_limits<int>::quiet_NaN();
   float m_scluselx = std::numeric_limits<float>::quiet_NaN();
   float m_scluselz = std::numeric_limits<float>::quiet_NaN();

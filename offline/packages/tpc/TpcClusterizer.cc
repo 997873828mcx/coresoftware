@@ -1689,37 +1689,35 @@ int TpcClusterizer::process_event(PHCompositeNode *topNode)
         }
       }
 
-      std::map<uint32_t, std::vector<TrkrDefs::hitkey>> cluster_to_hits;
-      //std::map<decltype(thread_pair.data.association_vector[0].first), std::vector<TrkrDefs::hitkey>> cluster_to_hits;
+std::map<TrkrDefs::cluskey, std::vector<TrkrDefs::hitkey>> cluster_to_hits;
 
+        for (const auto &[index, hkey] : thread_pair.data.association_vector)
+        {
+            const auto ckey = TrkrDefs::genClusKey(hitsetkey, index);
+            cluster_to_hits[ckey].push_back(hkey);
+        }
+           std::cout << "Sequential processing for hitsetkey " << hitsetkey 
+                  << " has " << cluster_to_hits.size() 
+                  << " clusters with associations." << std::endl;
 
-      for (const auto &[index, hkey] : thread_pair.data.association_vector)
+      for (const auto &[ckey, hitkeys] : cluster_to_hits)
+        {
+            m_scluskey = ckey;
+            m_tpc_clust_hitkeys = hitkeys; 
+            m_num_hits = hitkeys.size(); // **Assign Number of Hits**
+
+            if (m_tpc_clust_tree)
             {
-              
-                cluster_to_hits[index].push_back(hkey);
+                m_tpc_clust_tree->Fill();
+                std::cout << "Filled tree with cluskey: " << ckey 
+                          << ", num_hits: " << m_num_hits 
+                          << ", and " << hitkeys.size() << " hitkeys." << std::endl;
             }
-
-            std::cout << "Number of clusters to fill: " << cluster_to_hits.size() << std::endl;
-
-
-      for (const auto &[index, hitkeys] : cluster_to_hits)
+            else
             {
-
-                const auto ckey = TrkrDefs::genClusKey(hitsetkey, index);
-                m_scluskey = ckey;
-                m_tpc_clust_hitkeys = hitkeys; 
-                if (m_tpc_clust_tree)
-                  {
-                      std::cout << "Filling tree with cluskey: " << ckey << " and " << hitkeys.size() << " hitkeys." << std::endl;
-                      m_tpc_clust_tree->Fill();
-                      std::cout << "Tree entry count: " << m_tpc_clust_tree->GetEntries() << std::endl;
-                  }
-                  else
-                  {
-                      std::cerr << "ERROR: Tree is not initialized when attempting to fill." << std::endl;
-                  }
-
-            }  
+                std::cerr << "ERROR: Tree is not initialized when attempting to fill." << std::endl;
+            }
+        } 
       // copy hit associations to map
       for (const auto &[index, hkey] : thread_pair.data.association_vector)
       {

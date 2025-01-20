@@ -684,7 +684,7 @@ void TrackResiduals::fillClusterTree(TrkrClusterHitAssoc* clusterhitassoc, TrkrC
         // {
         //   glob = geometry->getGlobalPosition(key, cluster);
         // }
-        glob = geometry->getGlobalPosition(key, cluster);
+        glob = geometry->getGlobalPosition(key, cluster);//uncorrected position
         m_sclusgx = glob.x();
         m_sclusgy = glob.y();
         m_sclusgz = glob.z();
@@ -696,10 +696,45 @@ void TrackResiduals::fillClusterTree(TrkrClusterHitAssoc* clusterhitassoc, TrkrC
         m_scluslx = cluster->getLocalX();
         m_scluslz = cluster->getLocalY();
         auto para_errors = m_clusErrPara.get_clusterv5_modified_error(cluster, m_sclusgr, key);
+
         m_phisize = cluster->getPhiSize();
         m_zsize = cluster->getZSize();
+        m_aclussize=cluster->getSize();
         m_scluselx = std::sqrt(para_errors.first);
         m_scluselz = std::sqrt(para_errors.second);
+
+        float sclusgx_corr = std::numeric_limits<float>::quiet_NaN();
+        float sclusgy_corr = std::numeric_limits<float>::quiet_NaN();
+        float sclusgz_corr = std::numeric_limits<float>::quiet_NaN();
+
+        // Only apply corrections if this is a TPC cluster
+        if (det == TrkrDefs::TrkrId::tpcId)
+        {
+          // Define or retrieve a valid crossing value
+          // TODO: adapt logic to obtain a real crossing per event/track
+          short int crossing = 0; 
+
+          // Retrieve distortion-corrected global position
+          //   (no “move-back” to readout surface)
+          Acts::Vector3 correctedGlobal =
+            m_globalPositionWrapper.getGlobalPositionDistortionCorrected(
+                key, cluster, crossing);
+
+          sclusgx_corr = correctedGlobal.x();
+          sclusgy_corr = correctedGlobal.y();
+          sclusgz_corr = correctedGlobal.z();
+        }
+        else
+        {
+          sclusgx_corr = glob.x();
+          sclusgy_corr = glob.y();
+          sclusgz_corr = glob.z();
+        }
+
+        
+        m_sclusgx_corr = sclusgx_corr;
+        m_sclusgy_corr = sclusgy_corr;
+        m_sclusgz_corr = sclusgz_corr;
 
         //! Fill relevant geom info that is specific to subsystem
         switch (det)
@@ -1698,12 +1733,17 @@ void TrackResiduals::createBranches()
   m_clustree->Branch("gx", &m_sclusgx, "m_sclusgx/F");
   m_clustree->Branch("gy", &m_sclusgy, "m_sclusgy/F");
   m_clustree->Branch("gz", &m_sclusgz, "m_sclusgz/F");
+  m_clustree->Branch("gx_corr", &m_sclusgx_corr, "m_sclusgx_corr/F");
+  m_clustree->Branch("gy_corr", &m_sclusgy_corr, "m_sclusgy_corr/F");
+  m_clustree->Branch("gz_corr", &m_sclusgz_corr, "m_sclusgz_corr/F");
+
   m_clustree->Branch("r", &m_sclusgr, "m_sclusgr/F");
   m_clustree->Branch("phi", &m_sclusphi, "m_sclusphi/F");
   m_clustree->Branch("eta", &m_scluseta, "m_scluseta/F");
   m_clustree->Branch("adc", &m_adc, "m_adc/F");
   m_clustree->Branch("phisize", &m_phisize, "m_phisize/I");
   m_clustree->Branch("zsize", &m_zsize, "m_zsize/I");
+  m_clustree->Branch("clussize", &m_aclussize, "m_aclussize/I");
   m_clustree->Branch("layer", &m_scluslayer, "m_scluslayer/I");
   m_clustree->Branch("erphi", &m_scluselx, "m_scluselx/F");
   m_clustree->Branch("ez", &m_scluselz, "m_scluselz/F");
