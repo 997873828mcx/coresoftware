@@ -16,7 +16,7 @@
 #include <trackbase/TrkrClusterv3.h>
 #include <trackbase/TrkrClusterv4.h>
 #include <trackbase/TrkrClusterv5.h>
-#include <trackbase/TrkrDefs.h>  // for hitkey, getLayer
+#include <trackbase/TrkrDefs.h> // for hitkey, getLayer
 #include <trackbase/TrkrHit.h>
 #include <trackbase/TrkrHitSet.h>
 #include <trackbase/TrkrHitSetContainer.h>
@@ -28,7 +28,7 @@
 #include <trackbase/RawHitSet.h>
 
 #include <fun4all/Fun4AllReturnCodes.h>
-#include <fun4all/SubsysReco.h>  // for SubsysReco
+#include <fun4all/SubsysReco.h> // for SubsysReco
 
 #include <g4detectors/PHG4TpcCylinderGeom.h>
 #include <g4detectors/PHG4TpcCylinderGeomContainer.h>
@@ -37,26 +37,26 @@
 #include <Acts/Surfaces/Surface.hpp>
 
 #include <phool/PHCompositeNode.h>
-#include <phool/PHIODataNode.h>  // for PHIODataNode
-#include <phool/PHNode.h>        // for PHNode
+#include <phool/PHIODataNode.h> // for PHIODataNode
+#include <phool/PHNode.h>       // for PHNode
 #include <phool/PHNodeIterator.h>
-#include <phool/PHObject.h>  // for PHObject
+#include <phool/PHObject.h> // for PHObject
 #include <phool/getClass.h>
-#include <phool/phool.h>  // for PHWHERE
+#include <phool/phool.h> // for PHWHERE
 
-#include <TMatrixFfwd.h>    // for TMatrixF
-#include <TMatrixT.h>       // for TMatrixT, ope...
-#include <TMatrixTUtils.h>  // for TMatrixTRow
+#include <TMatrixFfwd.h>   // for TMatrixF
+#include <TMatrixT.h>      // for TMatrixT, ope...
+#include <TMatrixTUtils.h> // for TMatrixTRow
 
 #include <TFile.h>
 
 #include <array>
-#include <cmath>  // for sqrt, cos, sin
+#include <cmath> // for sqrt, cos, sin
 #include <iostream>
 #include <limits>
-#include <map>  // for _Rb_tree_cons...
+#include <map> // for _Rb_tree_cons...
 #include <string>
-#include <utility>  // for pair
+#include <utility> // for pair
 #include <vector>
 // Terra incognita....
 #include <pthread.h>
@@ -124,8 +124,8 @@ namespace
     std::vector<TrainingHits *> v_hits;
     int verbosity = 0;
     bool fillClusHitsVerbose = false;
-    vec_dVerbose phivec_ClusHitsVerbose;  // only fill if fillClusHitsVerbose
-    vec_dVerbose zvec_ClusHitsVerbose;    // only fill if fillClusHitsVerbose
+    vec_dVerbose phivec_ClusHitsVerbose; // only fill if fillClusHitsVerbose
+    vec_dVerbose zvec_ClusHitsVerbose;   // only fill if fillClusHitsVerbose
   };
 
   pthread_mutex_t mythreadlock;
@@ -167,9 +167,9 @@ namespace
 
   void find_t_range(int phibin, int tbin, const thread_data &my_data, const std::vector<std::vector<unsigned short>> &adcval, int &tdown, int &tup, int &touch, int &edge)
   {
-    const int FitRangeT = (int) my_data.maxHalfSizeT;
-    const int NTBinsMax = (int) my_data.tbins;
-    const int FixedWindow = (int) my_data.FixedWindow;
+    const int FitRangeT = (int)my_data.maxHalfSizeT;
+    const int NTBinsMax = (int)my_data.tbins;
+    const int FixedWindow = (int)my_data.FixedWindow;
     tup = 0;
     tdown = 0;
     if (FixedWindow != 0)
@@ -196,7 +196,7 @@ namespace
       {
         // tup = it;
         edge++;
-        break;  // truncate edge
+        break; // truncate edge
       }
 
       if (adcval[phibin][ct] <= 0)
@@ -212,10 +212,10 @@ namespace
       {
         // check local minima and break at minimum.
         if (ct < NTBinsMax - 4)
-        {  // make sure we stay clear from the edge
+        { // make sure we stay clear from the edge
           if (adcval[phibin][ct] + adcval[phibin][ct + 1] <
               adcval[phibin][ct + 2] + adcval[phibin][ct + 3])
-          {  // rising again
+          { // rising again
             tup = it + 1;
             touch++;
             break;
@@ -231,7 +231,7 @@ namespace
       {
         //      tdown = it;
         edge++;
-        break;  // truncate edge
+        break; // truncate edge
       }
       if (adcval[phibin][ct] <= 0)
       {
@@ -243,12 +243,12 @@ namespace
         break;
       }
       if (my_data.do_split)
-      {  // check local minima and break at minimum.
+      { // check local minima and break at minimum.
         if (ct > 4)
-        {  // make sure we stay clear from the edge
+        { // make sure we stay clear from the edge
           if (adcval[phibin][ct] + adcval[phibin][ct - 1] <
               adcval[phibin][ct - 2] + adcval[phibin][ct - 3])
-          {  // rising again
+          { // rising again
             tdown = it + 1;
             touch++;
             break;
@@ -262,9 +262,9 @@ namespace
 
   void find_phi_range(int phibin, int tbin, const thread_data &my_data, const std::vector<std::vector<unsigned short>> &adcval, int &phidown, int &phiup, int &touch, int &edge)
   {
-    int FitRangePHI = (int) my_data.maxHalfSizePhi;
-    int NPhiBinsMax = (int) my_data.phibins;
-    const int FixedWindow = (int) my_data.FixedWindow;
+    int FitRangePHI = (int)my_data.maxHalfSizePhi;
+    int NPhiBinsMax = (int)my_data.phibins;
+    const int FixedWindow = (int)my_data.FixedWindow;
     phidown = 0;
     phiup = 0;
     if (FixedWindow != 0)
@@ -290,7 +290,7 @@ namespace
       {
         // phiup = iphi;
         edge++;
-        break;  // truncate edge
+        break; // truncate edge
       }
 
       // break when below minimum
@@ -305,12 +305,12 @@ namespace
         break;
       }
       if (my_data.do_split)
-      {  // check local minima and break at minimum.
+      { // check local minima and break at minimum.
         if (cphi < NPhiBinsMax - 4)
-        {  // make sure we stay clear from the edge
+        { // make sure we stay clear from the edge
           if (adcval[cphi][tbin] + adcval[cphi + 1][tbin] <
               adcval[cphi + 2][tbin] + adcval[cphi + 3][tbin])
-          {  // rising again
+          { // rising again
             phiup = iphi + 1;
             touch++;
             break;
@@ -327,7 +327,7 @@ namespace
       {
         // phidown = iphi;
         edge++;
-        break;  // truncate edge
+        break; // truncate edge
       }
 
       if (adcval[cphi][tbin] <= 0)
@@ -341,12 +341,12 @@ namespace
         break;
       }
       if (my_data.do_split)
-      {  // check local minima and break at minimum.
+      { // check local minima and break at minimum.
         if (cphi > 4)
-        {  // make sure we stay clear from the edge
+        { // make sure we stay clear from the edge
           if (adcval[cphi][tbin] + adcval[cphi - 1][tbin] <
               adcval[cphi - 2][tbin] + adcval[cphi - 3][tbin])
-          {  // rising again
+          { // rising again
             phidown = iphi + 1;
             touch++;
             break;
@@ -441,7 +441,7 @@ namespace
         {
           if (my_data.do_singles)
           {
-            if (is_hit_isolated(iphi, it, (int) my_data.phibins, (int) my_data.tbins, adcval))
+            if (is_hit_isolated(iphi, it, (int)my_data.phibins, (int)my_data.tbins, adcval))
             {
               continue;
             }
@@ -485,7 +485,7 @@ namespace
     double iphi_sum = 0.0;
     double iphi2_sum = 0.0;
 
-    double radius = my_data.layergeom->get_radius();  // returns center of layer
+    double radius = my_data.layergeom->get_radius(); // returns center of layer
 
     int phibinhi = -1;
     int phibinlo = 666666;
@@ -615,7 +615,7 @@ namespace
     if (adc_sum < my_data.min_adc_sum)
     {
       hitkeyvec.clear();
-      return;  // skip obvious noise "clusters"
+      return; // skip obvious noise "clusters"
     }
 
     // This is the global position
@@ -720,8 +720,8 @@ namespace
 
         // Execute the model and turn its output into a tensor
         at::Tensor ten_pos = module_pos.forward(inputs).toTensor();
-        float nn_phi = training_hits->phi + std::clamp(ten_pos[0][0][0].item<float>(), -(float) nd, (float) nd) * training_hits->phistep;
-        float nn_z = training_hits->z + std::clamp(ten_pos[0][1][0].item<float>(), -(float) nd, (float) nd) * training_hits->zstep;
+        float nn_phi = training_hits->phi + std::clamp(ten_pos[0][0][0].item<float>(), -(float)nd, (float)nd) * training_hits->phistep;
+        float nn_z = training_hits->z + std::clamp(ten_pos[0][1][0].item<float>(), -(float)nd, (float)nd) * training_hits->zstep;
         float nn_x = radius * std::cos(nn_phi);
         float nn_y = radius * std::sin(nn_phi);
         Acts::Vector3 nn_global(nn_x, nn_y, nn_z);
@@ -736,7 +736,7 @@ namespace
       {
         std::cout << PHWHERE << "Error: Failed to execute NN modules" << std::endl;
       }
-    }  // use_nn
+    } // use_nn
 
     if (my_data.fillClusHitsVerbose && b_made_cluster)
     {
@@ -847,11 +847,11 @@ namespace
         {
           continue;
         }
-        float_t fadc = (hitr->second->getAdc()) - pedestal;  // proper int rounding +0.5
+        float_t fadc = (hitr->second->getAdc()) - pedestal; // proper int rounding +0.5
         unsigned short adc = 0;
         if (fadc > 0)
         {
-          adc = (unsigned short) fadc;
+          adc = (unsigned short)fadc;
         }
         if (phibin >= phibins)
         {
@@ -859,7 +859,7 @@ namespace
         }
         if (tbin >= tbins)
         {
-          continue;  // tbin is unsigned int, <0 cannot happen
+          continue; // tbin is unsigned int, <0 cannot happen
         }
 
         if (adc > 0)
@@ -876,7 +876,7 @@ namespace
           }
           if (adc > my_data->edge_threshold)
           {
-            adcval[phibin][tbin] = (unsigned short) adc;
+            adcval[phibin][tbin] = (unsigned short)adc;
           }
         }
       }
@@ -924,7 +924,7 @@ namespace
             else
             {
               if (((*(hitset->getHits(nphi)))[nt - 1] == 0) && ((*(hitset->getHits(nphi)))[nt + 1] == 0))
-              {  // found zero count
+              { // found zero count
                 pindex += val;
               }
               else
@@ -982,7 +982,7 @@ namespace
       double adc = hiHit.adc;
       if (my_data->do_singles)
       {
-        if (is_hit_isolated(iphi, it, (int) my_data->phibins, (int) my_data->tbins, adcval))
+        if (is_hit_isolated(iphi, it, (int)my_data->phibins, (int)my_data->tbins, adcval))
         {
           remove_hit(adc, iphi, it, edge, all_hit_map, adcval);
           continue;
@@ -1081,11 +1081,10 @@ namespace
     ProcessSectorData(my_data);
     pthread_exit(nullptr);
   }
-}  // namespace
+} // namespace
 
 TpcClusterizer::TpcClusterizer(const std::string &name)
-  : SubsysReco(name)
-  , m_training(nullptr)
+    : SubsysReco(name), m_training(nullptr)
 {
 }
 
@@ -1098,13 +1097,13 @@ bool TpcClusterizer::is_in_sector_boundary(int phibin, int sector, PHG4TpcCylind
   int PhiBinsSector = PhiBins / 12;
 
   double radius = layergeom->get_radius();
-  double PhiBinSize = 2.0 * radius * M_PI / (double) PhiBins;
+  double PhiBinSize = 2.0 * radius * M_PI / (double)PhiBins;
 
   // sector starts where?
   int sector_lo = sector * PhiBinsSector;
   int sector_hi = sector_lo + PhiBinsSector - 1;
 
-  int sector_fiducial_bins = (int) (SectorFiducialCut / PhiBinSize);
+  int sector_fiducial_bins = (int)(SectorFiducialCut / PhiBinSize);
 
   if (phibin < sector_lo + sector_fiducial_bins || phibin > sector_hi - sector_fiducial_bins)
   {
@@ -1228,39 +1227,37 @@ int TpcClusterizer::InitRun(PHCompositeNode *topNode)
       DetNode->addNode(newNode);
     }
   }
-  if (m_outfileName.empty()) {
-        m_outfileName = "tpc_clusters.root";
-    }
-  //m_outfile = new TFile("tpc_clusters.root", "RECREATE");
+  if (m_outfileName.empty())
+  {
+    m_outfileName = "tpc_clusters.root";
+  }
+  // m_outfile = new TFile("tpc_clusters.root", "RECREATE");
   m_outfile = new TFile(m_outfileName.c_str(), "RECREATE");
 
   if (!m_outfile->IsOpen())
-    {
-        std::cerr << "ERROR: Could not open output file: " << m_outfileName << std::endl;
-        return Fun4AllReturnCodes::ABORTRUN;
-    }
-    else
-    {
-        std::cout << "Successfully opened output file: " << m_outfileName << std::endl;
-    }
+  {
+    std::cerr << "ERROR: Could not open output file: " << m_outfileName << std::endl;
+    return Fun4AllReturnCodes::ABORTRUN;
+  }
+  else
+  {
+    std::cout << "Successfully opened output file: " << m_outfileName << std::endl;
+  }
 
+  // Create the TPC cluster tree
+  m_tpc_clust_tree = new TTree("tpc_clustertree", "TPC Clusters with Associated Hitkeys");
+  m_scluskey = 0;
+  m_tpc_clust_hitkeys.clear();
+  m_num_hits = 0;
+  // Create branches
+  m_tpc_clust_tree->Branch("cluskey", &m_scluskey, "cluskey/l");
+  m_tpc_clust_tree->Branch("clus_hitkeys", &m_tpc_clust_hitkeys);
+  m_tpc_clust_tree->Branch("num_hits", &m_num_hits, "num_hits/I");
 
-    // Create the TPC cluster tree
-    m_tpc_clust_tree = new TTree("tpc_clustertree", "TPC Clusters with Associated Hitkeys");
-     m_scluskey = 0; 
-    m_tpc_clust_hitkeys.clear();
-    m_num_hits = 0;
-    // Create branches
-    m_tpc_clust_tree->Branch("cluskey", &m_scluskey, "cluskey/l");
-    m_tpc_clust_tree->Branch("clus_hitkeys", &m_tpc_clust_hitkeys);
-    m_tpc_clust_tree->Branch("num_hits", &m_num_hits, "num_hits/I");
-
-    std::cout << "TPC Cluster Tree initialized with three branches (cluskey, clus_hitkeys, num_hits)." << std::endl;
-
+  std::cout << "TPC Cluster Tree initialized with three branches (cluskey, clus_hitkeys, num_hits)." << std::endl;
 
   return Fun4AllReturnCodes::EVENT_OK;
 }
-
 
 int TpcClusterizer::process_event(PHCompositeNode *topNode)
 {
@@ -1392,7 +1389,7 @@ int TpcClusterizer::process_event(PHCompositeNode *topNode)
               << " mutex init failed" << std::endl;
     return 1;
   }
-//  int count = 0;
+  //  int count = 0;
 
   if (!do_read_raw)
   {
@@ -1436,7 +1433,7 @@ int TpcClusterizer::process_event(PHCompositeNode *topNode)
       thread_pair.data.min_err_squared = min_err_squared;
       thread_pair.data.min_clus_size = min_clus_size;
       thread_pair.data.min_adc_sum = min_adc_sum;
-      unsigned short NPhiBins = (unsigned short) layergeom->get_phibins();
+      unsigned short NPhiBins = (unsigned short)layergeom->get_phibins();
       unsigned short NPhiBinsSector = NPhiBins / 12;
       unsigned short NTBins = 0;
       if (is_reco)
@@ -1445,7 +1442,7 @@ int TpcClusterizer::process_event(PHCompositeNode *topNode)
       }
       else
       {
-        NTBins = (unsigned short) layergeom->get_zbins();
+        NTBins = (unsigned short)layergeom->get_zbins();
       }
       unsigned short NTBinsSide = NTBins;
       unsigned short NTBinsMin = 0;
@@ -1465,7 +1462,7 @@ int TpcClusterizer::process_event(PHCompositeNode *topNode)
       thread_pair.data.pads_per_sector = 0;
       thread_pair.data.phistep = 0;
       int rc;
-      rc = pthread_create(&thread_pair.thread, &attr, ProcessSector, (void *) &thread_pair.data);
+      rc = pthread_create(&thread_pair.thread, &attr, ProcessSector, (void *)&thread_pair.data);
 
       if (rc)
       {
@@ -1519,7 +1516,7 @@ int TpcClusterizer::process_event(PHCompositeNode *topNode)
           m_clusterhitassoc->addAssoc(ckey, hkey);
         }
       }
-//      count++;
+      //      count++;
     }
   }
   else
@@ -1556,9 +1553,9 @@ int TpcClusterizer::process_event(PHCompositeNode *topNode)
       thread_pair.data.sampa_tbias = m_sampa_tbias;
       thread_pair.data.verbosity = Verbosity();
 
-      unsigned short NPhiBins = (unsigned short) layergeom->get_phibins();
+      unsigned short NPhiBins = (unsigned short)layergeom->get_phibins();
       unsigned short NPhiBinsSector = NPhiBins / 12;
-      unsigned short NTBins = (unsigned short) layergeom->get_zbins();
+      unsigned short NTBins = (unsigned short)layergeom->get_zbins();
       unsigned short NTBinsSide = NTBins;
       unsigned short NTBinsMin = 0;
       unsigned short PhiOffset = NPhiBinsSector * sector;
@@ -1597,7 +1594,7 @@ int TpcClusterizer::process_event(PHCompositeNode *topNode)
       */
       int rc = 0;
       //      if(layer==32)
-      rc = pthread_create(&thread_pair.thread, &attr, ProcessSector, (void *) &thread_pair.data);
+      rc = pthread_create(&thread_pair.thread, &attr, ProcessSector, (void *)&thread_pair.data);
       //      else
       // continue;
 
@@ -1641,12 +1638,12 @@ int TpcClusterizer::process_event(PHCompositeNode *topNode)
           m_clusterhitassoc->addAssoc(ckey, hkey);
         }
       }
-//      count++;
+      //      count++;
     }
   }
 
   pthread_attr_destroy(&attr);
-//  count = 0;
+  //  count = 0;
   // wait for completion of all threads
   if (!do_sequential)
   {
@@ -1679,45 +1676,45 @@ int TpcClusterizer::process_event(PHCompositeNode *topNode)
         {
           for (auto &hit : data.phivec_ClusHitsVerbose[index])
           {
-            mClusHitsVerbose->addPhiHit(hit.first, (float) hit.second);
+            mClusHitsVerbose->addPhiHit(hit.first, (float)hit.second);
           }
           for (auto &hit : data.zvec_ClusHitsVerbose[index])
           {
-            mClusHitsVerbose->addZHit(hit.first, (float) hit.second);
+            mClusHitsVerbose->addZHit(hit.first, (float)hit.second);
           }
           mClusHitsVerbose->push_hits(ckey);
         }
       }
 
-std::map<TrkrDefs::cluskey, std::vector<TrkrDefs::hitkey>> cluster_to_hits;
+      std::map<TrkrDefs::cluskey, std::vector<TrkrDefs::hitkey>> cluster_to_hits;
 
-        for (const auto &[index, hkey] : thread_pair.data.association_vector)
-        {
-            const auto ckey = TrkrDefs::genClusKey(hitsetkey, index);
-            cluster_to_hits[ckey].push_back(hkey);
-        }
-           std::cout << "Sequential processing for hitsetkey " << hitsetkey 
-                  << " has " << cluster_to_hits.size() 
-                  << " clusters with associations." << std::endl;
+      for (const auto &[index, hkey] : thread_pair.data.association_vector)
+      {
+        const auto ckey = TrkrDefs::genClusKey(hitsetkey, index);
+        cluster_to_hits[ckey].push_back(hkey);
+      }
+      // std::cout << "Sequential processing for hitsetkey " << hitsetkey
+      //         << " has " << cluster_to_hits.size()
+      //       << " clusters with associations." << std::endl;
 
       for (const auto &[ckey, hitkeys] : cluster_to_hits)
-        {
-            m_scluskey = ckey;
-            m_tpc_clust_hitkeys = hitkeys; 
-            m_num_hits = hitkeys.size(); // **Assign Number of Hits**
+      {
+        m_scluskey = ckey;
+        m_tpc_clust_hitkeys = hitkeys;
+        m_num_hits = hitkeys.size(); // **Assign Number of Hits**
 
-            if (m_tpc_clust_tree)
-            {
-                m_tpc_clust_tree->Fill();
-                std::cout << "Filled tree with cluskey: " << ckey 
-                          << ", num_hits: " << m_num_hits 
-                          << ", and " << hitkeys.size() << " hitkeys." << std::endl;
-            }
-            else
-            {
-                std::cerr << "ERROR: Tree is not initialized when attempting to fill." << std::endl;
-            }
-        } 
+        if (m_tpc_clust_tree)
+        {
+          m_tpc_clust_tree->Fill();
+          // std::cout << "Filled tree with cluskey: " << ckey
+          //         << ", num_hits: " << m_num_hits
+          //       << ", and " << hitkeys.size() << " hitkeys." << std::endl;
+        }
+        else
+        {
+          std::cerr << "ERROR: Tree is not initialized when attempting to fill." << std::endl;
+        }
+      }
       // copy hit associations to map
       for (const auto &[index, hkey] : thread_pair.data.association_vector)
       {
@@ -1736,10 +1733,8 @@ std::map<TrkrDefs::cluskey, std::vector<TrkrDefs::hitkey>> cluster_to_hits;
         }
         delete v_hit;
       }
-      std::cout << "Thread for hitsetkey " << hitsetkey << " generated " << data.cluster_vector.size() << " clusters." << std::endl;
-      std::cout << "Thread for hitsetkey " << hitsetkey << " has " << cluster_to_hits.size() << " clusters with associations." << std::endl;
-
-
+      // std::cout << "Thread for hitsetkey " << hitsetkey << " generated " << data.cluster_vector.size() << " clusters." << std::endl;
+      // std::cout << "Thread for hitsetkey " << hitsetkey << " has " << cluster_to_hits.size() << " clusters with associations." << std::endl;
     }
   }
 
@@ -1757,29 +1752,29 @@ int TpcClusterizer::End(PHCompositeNode * /*topNode*/)
 {
 
   if (!m_outfile)
-{
+  {
     std::cerr << "ERROR: Failed to create output file" << std::endl;
     return Fun4AllReturnCodes::ABORTRUN;
-}
+  }
 
-if (!m_tpc_clust_tree)
-{
+  if (!m_tpc_clust_tree)
+  {
     std::cerr << "ERROR: Failed to create TPC cluster tree" << std::endl;
     return Fun4AllReturnCodes::ABORTRUN;
-}
-   if (m_outfile && m_tpc_clust_tree)
-    {
-        m_outfile->cd();
-        m_tpc_clust_tree->Write();
-        m_outfile->Close();
-        std::cout << "TPC Cluster Tree written to tpc_clusters.root" << std::endl;
-    }
-    else
-    {
-        std::cerr << "ERROR: Output file or tree not initialized!" << std::endl;
-    }
+  }
+  if (m_outfile && m_tpc_clust_tree)
+  {
+    m_outfile->cd();
+    m_tpc_clust_tree->Write();
+    m_outfile->Close();
+    std::cout << "TPC Cluster Tree written to tpc_clusters.root" << std::endl;
+  }
+  else
+  {
+    std::cerr << "ERROR: Output file or tree not initialized!" << std::endl;
+  }
 
-    // Cleanup
-    delete m_outfile;
+  // Cleanup
+  delete m_outfile;
   return Fun4AllReturnCodes::EVENT_OK;
 }

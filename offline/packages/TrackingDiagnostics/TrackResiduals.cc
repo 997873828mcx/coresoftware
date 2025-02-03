@@ -12,6 +12,8 @@
 #include <trackbase/TrkrHitSet.h>
 #include <trackbase/TrkrHitSetContainer.h>
 #include <trackbase/TrkrClusterHitAssocv3.h>
+#include <trackbase/TrkrClusterCrossingAssocv1.h>
+
 
 #include <g4detectors/PHG4CylinderGeomContainer.h>
 #include <g4detectors/PHG4TpcCylinderGeom.h>
@@ -215,11 +217,19 @@ int TrackResiduals::process_event(PHCompositeNode* topNode)
   auto inttGeom = findNode::getClass<PHG4CylinderGeomContainer>(topNode, "CYLINDERGEOM_INTT");
   auto mmGeom = findNode::getClass<PHG4CylinderGeomContainer>(topNode, "CYLINDERGEOM_MICROMEGAS_FULL");
   auto clusterhitassocmap = findNode::getClass<TrkrClusterHitAssoc>(topNode, "TRKR_CLUSTERHITASSOC");
+  auto clustercrossingassoc = findNode::getClass<TrkrClusterCrossingAssoc>(
+    topNode, "TRKR_CLUSTERCROSSINGASSOC");
+    if (!clustercrossingassoc)
+    {
+      std::cerr << "ERROR: Can't find TRKR_CLUSTERCROSSINGASSOC node!" << std::endl;
+      return Fun4AllReturnCodes::ABORTEVENT;
+    }
 if(!clusterhitassocmap)
 {
   std::cerr << "ERROR: Can't find TRKR_CLUSTERHITASSOC node!" << std::endl;
   return Fun4AllReturnCodes::ABORTRUN;
 }
+
 
 std::cout << "TRKR_CLUSTERHITASSOC size: " << clusterhitassocmap->size() << std::endl;
 
@@ -285,7 +295,7 @@ std::cout << "TRKR_CLUSTERHITASSOC size: " << clusterhitassocmap->size() << std:
 
   if (m_doClusters)
   {
-    fillClusterTree(clusterhitassocmap, clustermap, geometry);
+    fillClusterTree(clusterhitassocmap, clustermap, clustercrossingassoc, geometry);
   }
 
   if (m_convertSeeds)
@@ -642,7 +652,7 @@ void TrackResiduals::lineFitClusters(std::vector<TrkrDefs::cluskey>& keys,
 }
 
 void TrackResiduals::fillClusterTree(TrkrClusterHitAssoc* clusterhitassoc, TrkrClusterContainer* clusters,
-                                     ActsGeometry* geometry)
+TrkrClusterCrossingAssoc* clustercrossingassoc, ActsGeometry* geometry)
 {
   if (clusters->size()< m_min_cluster_size)
   {
@@ -706,6 +716,16 @@ void TrackResiduals::fillClusterTree(TrkrClusterHitAssoc* clusterhitassoc, TrkrC
         float sclusgx_corr = std::numeric_limits<float>::quiet_NaN();
         float sclusgy_corr = std::numeric_limits<float>::quiet_NaN();
         float sclusgz_corr = std::numeric_limits<float>::quiet_NaN();
+
+
+        m_clust_crossings.clear();  
+        auto crossingRange = clustercrossingassoc->getCrossings(key);
+          for (auto cxit = crossingRange.first; cxit != crossingRange.second; ++cxit) {
+          short int crossing_number = cxit->second;
+          m_clust_crossings.push_back(crossing_number);
+        }
+        
+
 
         // Only apply corrections if this is a TPC cluster
         if (det == TrkrDefs::TrkrId::tpcId)
@@ -1759,6 +1779,7 @@ void TrackResiduals::createBranches()
   m_clustree->Branch("segtype", &m_segtype, "m_segtype/I");
   m_clustree->Branch("tile", &m_tileid, "m_tileid/I");
   m_clustree->Branch("clus_hitkeys", &m_clust_hitkeys);
+  m_clustree->Branch("clust_crossings", &m_clust_crossings);
 
   m_tree = new TTree("residualtree", "A tree with track, cluster, and state info");
   m_tree->Branch("run", &m_runnumber, "m_runnumber/I");

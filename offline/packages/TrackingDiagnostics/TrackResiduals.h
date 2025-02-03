@@ -29,6 +29,7 @@ class PHG4TpcCylinderGeomContainer;
 class PHG4CylinderGeomContainer;
 class TpcDistortionCorrectionContainer;
 class TrkrClusterHitAssoc;
+class TrkrClusterCrossingAssoc;
 class TrackResiduals : public SubsysReco
 {
  public:
@@ -69,7 +70,7 @@ class TrackResiduals : public SubsysReco
   void createBranches();
   float convertTimeToZ(ActsGeometry *geometry, TrkrDefs::cluskey cluster_key, TrkrCluster *cluster);
   void fillEventTree(PHCompositeNode *topNode);
-  void fillClusterTree(TrkrClusterHitAssoc* clusterhitassoc, TrkrClusterContainer *clusters, ActsGeometry *geometry);
+  void fillClusterTree(TrkrClusterHitAssoc* clusterhitassoc, TrkrClusterContainer *clusters, TrkrClusterCrossingAssoc* clustercrossingassoc, ActsGeometry *geometry);
   void fillHitTree(TrkrHitSetContainer *hitmap, ActsGeometry *geometry,
                    PHG4TpcCylinderGeomContainer *tpcGeom, PHG4CylinderGeomContainer *mvtxGeom,
                    PHG4CylinderGeomContainer *inttGeom, PHG4CylinderGeomContainer *mmGeom);
@@ -266,6 +267,7 @@ class TrackResiduals : public SubsysReco
   int m_segtype = std::numeric_limits<int>::quiet_NaN();
   int m_tileid = std::numeric_limits<int>::quiet_NaN();
 
+  std::vector<short int> m_clust_crossings;
   //! clusters on track information
   std::vector<float> m_clusAdc;
   std::vector<float> m_clusMaxAdc;
