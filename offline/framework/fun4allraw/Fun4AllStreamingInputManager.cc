@@ -788,6 +788,11 @@ int Fun4AllStreamingInputManager::FillIntt()
     for (auto iter : m_InttInputVector)
     {
       iter->CleanupUsedPackets(m_InttRawHitMap.begin()->first);
+      if(m_intt_negative_bco < 2) //triggered mode
+      {
+        iter->clearPacketBClkStackMap(m_InttRawHitMap.begin()->first);
+        iter->clearFeeGTML1BCOMap(m_InttRawHitMap.begin()->first);
+      }
     }
     m_InttRawHitMap.begin()->second.InttRawHitVector.clear();
     m_InttRawHitMap.erase(m_InttRawHitMap.begin());
@@ -1009,7 +1014,7 @@ int Fun4AllStreamingInputManager::FillMvtx()
   }
   else
   {
-    while (m_MvtxRawHitMap.begin()->first <= select_crossings - m_mvtx_bco_range) //streamed
+    while (select_crossings - m_mvtx_bco_range - m_mvtx_negative_bco <= m_MvtxRawHitMap.begin()->first && m_MvtxRawHitMap.begin()->first <= select_crossings) //streamed
     {
       if (Verbosity() > 2)
       {

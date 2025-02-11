@@ -1276,6 +1276,15 @@ int TpcClusterizer::InitRun(PHCompositeNode *topNode)
   m_tpc_hit_tree->Branch("tdriftmax", &tdriftmax, "tdriftmax/F");
   m_tpc_hit_tree->Branch("drift_velocity", &drift_velocity, "drift_velocity/F");
   std::cout << "TPC Cluster Tree initialized with three branches (cluskey, clus_hitkeys, num_hits)." << std::endl;
+  auto geom =
+      findNode::getClass<PHG4TpcCylinderGeomContainer>(topNode, "CYLINDERCELLGEOM_SVTX");
+  if (!geom)
+  {
+    std::cout << PHWHERE << "ERROR: Can't find node CYLINDERCELLGEOM_SVTX" << std::endl;
+    return Fun4AllReturnCodes::ABORTRUN;
+  }
+
+  AdcClockPeriod = geom->GetFirstLayerCellGeom()->get_zstep();
 
   return Fun4AllReturnCodes::EVENT_OK;
 }

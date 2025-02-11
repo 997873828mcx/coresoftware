@@ -41,7 +41,6 @@ class Fun4AllDstOutputManager : public Fun4AllOutputManager
   int m_SaveRunNodeFlag{1};
   int m_SaveDstNodeFlag{1};
   int m_CompressionSetting{505};
-  int m_CurrentSegment{0};
   std::string m_FileNameStem;
   std::string m_UsedOutFileName;
   std::set<std::string> savenodes;
