@@ -126,6 +126,7 @@ namespace
     bool fillClusHitsVerbose = false;
     vec_dVerbose phivec_ClusHitsVerbose; // only fill if fillClusHitsVerbose
     vec_dVerbose zvec_ClusHitsVerbose;   // only fill if fillClusHitsVerbose
+    void *parent = nullptr;              // Pointer to parent TpcClusterizer
   };
 
   pthread_mutex_t mythreadlock;
@@ -610,6 +611,19 @@ namespace
           training_hits->v_adc[(iphi_diff + nd) * (2 * nd + 1) + (it_diff + nd)] = adc;
         }
       }
+      TpcClusterizer *clusterizer = static_cast<TpcClusterizer *>(my_data.parent);
+      clusterizer->hit_hitkey = hitkey;
+      clusterizer->hit_t = t;
+      clusterizer->hit_adc = adc;
+      clusterizer->tdriftmax = my_data.m_tdriftmax;
+      clusterizer->drift_velocity = my_data.tGeometry->get_drift_velocity();
+
+      pthread_mutex_lock(&mythreadlock);
+      if (clusterizer->m_tpc_hit_tree)
+      {
+        clusterizer->m_tpc_hit_tree->Fill();
+      }
+      pthread_mutex_unlock(&mythreadlock);
     }
     //      std::cout << "done process list" << std::endl;
     if (adc_sum < my_data.min_adc_sum)
@@ -1243,6 +1257,7 @@ int TpcClusterizer::InitRun(PHCompositeNode *topNode)
   {
     std::cout << "Successfully opened output file: " << m_outfileName << std::endl;
   }
+  m_outfile->cd();
 
   // Create the TPC cluster tree
   m_tpc_clust_tree = new TTree("tpc_clustertree", "TPC Clusters with Associated Hitkeys");
@@ -1254,6 +1269,12 @@ int TpcClusterizer::InitRun(PHCompositeNode *topNode)
   m_tpc_clust_tree->Branch("clus_hitkeys", &m_tpc_clust_hitkeys);
   m_tpc_clust_tree->Branch("num_hits", &m_num_hits, "num_hits/I");
 
+  m_tpc_hit_tree = new TTree("hitTree", "Hit data with t, adc, tdriftmax and drift velocity");
+  m_tpc_hit_tree->Branch("hitkey", &hit_hitkey, "hitkey/l");
+  m_tpc_hit_tree->Branch("t", &hit_t, "t/F");
+  m_tpc_hit_tree->Branch("adc", &hit_adc, "adc/F");
+  m_tpc_hit_tree->Branch("tdriftmax", &tdriftmax, "tdriftmax/F");
+  m_tpc_hit_tree->Branch("drift_velocity", &drift_velocity, "drift_velocity/F");
   std::cout << "TPC Cluster Tree initialized with three branches (cluskey, clus_hitkeys, num_hits)." << std::endl;
 
   return Fun4AllReturnCodes::EVENT_OK;
@@ -1410,6 +1431,8 @@ int TpcClusterizer::process_event(PHCompositeNode *topNode)
       {
         thread_pair.data.fillClusHitsVerbose = true;
       };
+
+      thread_pair.data.parent = this;
 
       thread_pair.data.layergeom = layergeom;
       thread_pair.data.hitset = hitset;
@@ -1750,7 +1773,6 @@ int TpcClusterizer::process_event(PHCompositeNode *topNode)
 
 int TpcClusterizer::End(PHCompositeNode * /*topNode*/)
 {
-
   if (!m_outfile)
   {
     std::cerr << "ERROR: Failed to create output file" << std::endl;
@@ -1762,16 +1784,37 @@ int TpcClusterizer::End(PHCompositeNode * /*topNode*/)
     std::cerr << "ERROR: Failed to create TPC cluster tree" << std::endl;
     return Fun4AllReturnCodes::ABORTRUN;
   }
-  if (m_outfile && m_tpc_clust_tree)
+
+  if (!m_tpc_hit_tree)
+  {
+    std::cerr << "ERROR: Failed to create TPC hit tree" << std::endl;
+    return Fun4AllReturnCodes::ABORTRUN;
+  }
+
+  // Write both trees before closing the file
+  if (m_outfile)
   {
     m_outfile->cd();
-    m_tpc_clust_tree->Write();
+    if (m_tpc_clust_tree)
+    {
+      m_tpc_clust_tree->Write();
+      std::cout << "TPC Cluster Tree written with " << m_tpc_clust_tree->GetEntries()
+                << " entries" << std::endl;
+    }
+
+    if (m_tpc_hit_tree)
+    {
+      m_tpc_hit_tree->Write();
+      std::cout << "TPC Hit Tree written with " << m_tpc_hit_tree->GetEntries()
+                << " entries" << std::endl;
+    }
+
     m_outfile->Close();
-    std::cout << "TPC Cluster Tree written to tpc_clusters.root" << std::endl;
+    std::cout << "Trees written to " << m_outfileName << std::endl;
   }
   else
   {
-    std::cerr << "ERROR: Output file or tree not initialized!" << std::endl;
+    std::cerr << "ERROR: Output file not initialized!" << std::endl;
   }
 
   // Cleanup

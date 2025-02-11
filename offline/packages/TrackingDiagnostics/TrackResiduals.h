@@ -32,7 +32,7 @@ class TrkrClusterHitAssoc;
 class TrkrClusterCrossingAssoc;
 class TrackResiduals : public SubsysReco
 {
- public:
+public:
   TrackResiduals(const std::string &name = "TrackResiduals");
 
   ~TrackResiduals() override;
@@ -47,8 +47,8 @@ class TrackResiduals : public SubsysReco
   void trackmapName(const std::string &name) { m_trackMapName = name; }
   void clusterTree() { m_doClusters = true; }
   void hitTree() { m_doHits = true; }
-  void noEventTree() {m_doEventTree = false;}
-  void MatchedTracksOnly() {m_doMatchedOnly = true;}
+  void noEventTree() { m_doEventTree = false; }
+  void MatchedTracksOnly() { m_doMatchedOnly = true; }
   void ppmode() { m_ppmode = true; }
   void convertSeeds(bool flag) { m_convertSeeds = flag; }
   void dropClustersNoState(bool flag) { m_dropClustersNoState = flag; }
@@ -61,16 +61,16 @@ class TrackResiduals : public SubsysReco
   void failedTree() { m_doFailedSeeds = true; }
   void setSegment(const int segment) { m_segment = segment; }
 
-  void set_doMicromegasOnly( bool value ) { m_doMicromegasOnly = value; }
+  void set_doMicromegasOnly(bool value) { m_doMicromegasOnly = value; }
 
- private:
+private:
   void fillStatesWithLineFit(const TrkrDefs::cluskey &ckey,
                              TrkrCluster *cluster, ActsGeometry *geometry);
   void clearClusterStateVectors();
   void createBranches();
   float convertTimeToZ(ActsGeometry *geometry, TrkrDefs::cluskey cluster_key, TrkrCluster *cluster);
   void fillEventTree(PHCompositeNode *topNode);
-  void fillClusterTree(TrkrClusterHitAssoc* clusterhitassoc, TrkrClusterContainer *clusters, TrkrClusterCrossingAssoc* clustercrossingassoc, ActsGeometry *geometry);
+  void fillClusterTree(TrkrClusterHitAssoc *clusterhitassoc, TrkrClusterContainer *clusters, TrkrClusterCrossingAssoc *clustercrossingassoc, ActsGeometry *geometry);
   void fillHitTree(TrkrHitSetContainer *hitmap, ActsGeometry *geometry,
                    PHG4TpcCylinderGeomContainer *tpcGeom, PHG4CylinderGeomContainer *mvtxGeom,
                    PHG4CylinderGeomContainer *inttGeom, PHG4CylinderGeomContainer *mmGeom);
@@ -79,7 +79,7 @@ class TrackResiduals : public SubsysReco
   void fillClusterBranchesKF(TrkrDefs::cluskey ckey, SvtxTrack *track,
                              const std::vector<std::pair<TrkrDefs::cluskey, Acts::Vector3>> &global_moved,
                              PHCompositeNode *topNode);
-  void fillClusterBranchesSeeds(TrkrDefs::cluskey ckey,  // SvtxTrack* track,
+  void fillClusterBranchesSeeds(TrkrDefs::cluskey ckey, // SvtxTrack* track,
                                 const std::vector<std::pair<TrkrDefs::cluskey, Acts::Vector3>> &global,
                                 PHCompositeNode *topNode);
   void lineFitClusters(std::vector<TrkrDefs::cluskey> &keys, TrkrClusterContainer *clusters, const short int &crossing);
@@ -138,9 +138,9 @@ class TrackResiduals : public SubsysReco
   int m_ntpc_hits1 = std::numeric_limits<int>::quiet_NaN();
   int m_ntpc_clus0 = std::numeric_limits<int>::quiet_NaN();
   int m_ntpc_clus1 = std::numeric_limits<int>::quiet_NaN();
-  int m_nmms_all  = std::numeric_limits<int>::quiet_NaN();
-  int m_nsiseed   = std::numeric_limits<int>::quiet_NaN();
-  int m_ntpcseed  = std::numeric_limits<int>::quiet_NaN();
+  int m_nmms_all = std::numeric_limits<int>::quiet_NaN();
+  int m_nsiseed = std::numeric_limits<int>::quiet_NaN();
+  int m_ntpcseed = std::numeric_limits<int>::quiet_NaN();
   int m_ntracks_all = std::numeric_limits<int>::quiet_NaN();
 
   //! Track level quantities
@@ -217,6 +217,9 @@ class TrackResiduals : public SubsysReco
 
   //! hit tree info
   uint32_t m_hitsetkey = std::numeric_limits<uint32_t>::quiet_NaN();
+
+  TrkrDefs::hitkey m_hitkey = -1;
+
   float m_hitgx = std::numeric_limits<float>::quiet_NaN();
   float m_hitgy = std::numeric_limits<float>::quiet_NaN();
   float m_hitgz = std::numeric_limits<float>::quiet_NaN();
@@ -267,7 +270,6 @@ class TrackResiduals : public SubsysReco
   int m_segtype = std::numeric_limits<int>::quiet_NaN();
   int m_tileid = std::numeric_limits<int>::quiet_NaN();
 
-  std::vector<short int> m_clust_crossings;
   //! clusters on track information
   std::vector<float> m_clusAdc;
   std::vector<float> m_clusMaxAdc;
@@ -313,6 +315,7 @@ class TrackResiduals : public SubsysReco
   std::vector<float> m_missurfalpha;
   std::vector<float> m_missurfbeta;
   std::vector<float> m_missurfgamma;
+  std::vector<short int> m_clust_crossings;
 
   //! states on track information
   std::vector<float> m_statelx;
@@ -354,4 +357,4 @@ class TrackResiduals : public SubsysReco
   std::vector<float> m_statelzlocderivqop;
 };
 
-#endif  // TRACKRESIDUALS_H
+#endif // TRACKRESIDUALS_H

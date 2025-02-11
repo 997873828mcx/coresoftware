@@ -36,7 +36,7 @@ public:
   int process_event(PHCompositeNode *topNode) override;
   int End(PHCompositeNode *topNode) override;
 
-  void set_outfileName(const std::string& filename) { m_outfileName = filename; }
+  void set_outfileName(const std::string &filename) { m_outfileName = filename; }
   void set_sector_fiducial_cut(const double cut) { SectorFiducialCut = cut; }
   void set_store_hits(bool store_hits) { _store_hits = store_hits; }
   void set_use_nn(bool use_nn) { _use_nn = use_nn; }
@@ -58,7 +58,11 @@ public:
   void set_reject_event(bool reject) { m_rejectEvent = reject; }
 
   void set_ClusHitsVerbose(bool set = true) { record_ClusHitsVerbose = set; }
-  void set_nzbins(int val){NZBinsSide = val; is_reco = true;}
+  void set_nzbins(int val)
+  {
+    NZBinsSide = val;
+    is_reco = true;
+  }
   void set_rawdata_reco()
   {
     set_do_hit_association(true);
@@ -75,22 +79,27 @@ public:
     set_fixed_window(3);
   };
   ClusHitsVerbosev1 *mClusHitsVerbose{nullptr};
+  Float_t hit_t;
+  TrkrDefs::hitkey hit_hitkey;
+  Float_t hit_adc;
+  Float_t tdriftmax;
+  Float_t drift_velocity;
+  TTree *m_tpc_hit_tree = nullptr;
 
- private:
+private:
   bool is_in_sector_boundary(int phibin, int sector, PHG4TpcCylinderGeom *layergeom) const;
   bool record_ClusHitsVerbose{false};
 
-  
   // cluster and hit associate
   TrkrDefs::cluskey m_scluskey;
   std::vector<TrkrDefs::hitkey> m_tpc_clust_hitkeys;
   TFile *m_outfile = nullptr;
   TTree *m_tpc_clust_tree = nullptr;
-  std::string m_outfileName;
- int m_num_hits = 0;
-  
 
- //   bool m_debug = true;                    
+  std::string m_outfileName;
+  int m_num_hits = 0;
+
+  //   bool m_debug = true;
 
   TrkrHitSetContainer *m_hits = nullptr;
   RawHitSetContainer *m_rawhits = nullptr;
@@ -119,12 +128,12 @@ public:
   unsigned short MaxClusterHalfSizeT = 5;
 
   double m_tdriftmax = 0;
-  double AdcClockPeriod = 53.0;  // ns
+  double AdcClockPeriod = 53.0; // ns
   double NZBinsSide = 249;
 
   // TPC shaping offset correction parameter
   // From Tony Frawley July 5, 2022
-  double m_sampa_tbias = 39.6;  // ns
+  double m_sampa_tbias = 39.6; // ns
 
   TrainingHitsContainer *m_training;
 };
