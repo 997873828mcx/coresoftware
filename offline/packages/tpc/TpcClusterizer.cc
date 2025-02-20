@@ -78,6 +78,20 @@ namespace
     unsigned short adc = 0;
     unsigned short edge = 0;
   };
+  struct HitIdentifier
+  {
+    int event;
+    int hitsetkey;
+    int hitkey;
+    bool operator<(const HitIdentifier &other) const
+    {
+      if (event != other.event)
+        return event < other.event;
+      if (hitsetkey != other.hitsetkey)
+        return hitsetkey < other.hitsetkey;
+      return hitkey < other.hitkey;
+    }
+  };
 
   using vec_dVerbose = std::vector<std::vector<std::pair<int, int>>>;
 
@@ -94,6 +108,7 @@ namespace
     RawHitSet *rawhitset = nullptr;
     ActsGeometry *tGeometry = nullptr;
     unsigned int layer = 0;
+    int event = 0;
     int side = 0;
     unsigned int sector = 0;
     float radius = 0;
@@ -566,7 +581,7 @@ namespace
 
       // if(it==it_center){ yg_sum += adc; }
       // update phi sums
-      //	double phi_center = my_data.layergeom->get_phicenter(iphi);
+      float phi_center = my_data.layergeom->get_phicenter(iphi);
 
       // phi_sum += phi_center * adc;
       // phi2_sum += square(phi_center)*adc;
@@ -615,8 +630,11 @@ namespace
       clusterizer->hit_hitkey = hitkey;
       clusterizer->hit_t = t;
       clusterizer->hit_adc = adc;
+      clusterizer->m_phi = phi_center;
+      clusterizer->m_hitsetkey = TpcDefs::genHitSetKey(my_data.layer, my_data.sector, my_data.side);
       clusterizer->tdriftmax = my_data.m_tdriftmax;
       clusterizer->drift_velocity = my_data.tGeometry->get_drift_velocity();
+      clusterizer->m_event = my_data.event;
 
       pthread_mutex_lock(&mythreadlock);
       if (clusterizer->m_tpc_hit_tree)
@@ -777,7 +795,7 @@ namespace
     {
       // get cluster index in vector. It is used to store associations, and build relevant cluster keys when filling the containers
       uint32_t index = my_data.cluster_vector.size() - 1;
-      for (unsigned int &i : hitkeyvec)
+      for (TrkrDefs::hitkey &i : hitkeyvec)
       {
         my_data.association_vector.emplace_back(index, i);
       }
@@ -1266,11 +1284,16 @@ int TpcClusterizer::InitRun(PHCompositeNode *topNode)
   m_num_hits = 0;
   // Create branches
   m_tpc_clust_tree->Branch("cluskey", &m_scluskey, "cluskey/l");
+  m_tpc_clust_tree->Branch("event", &m_event, "event/I");
+  m_tpc_clust_tree->Branch("hitsetkey", &m_hitsetkey, "hitsetkey/I");
   m_tpc_clust_tree->Branch("clus_hitkeys", &m_tpc_clust_hitkeys);
   m_tpc_clust_tree->Branch("num_hits", &m_num_hits, "num_hits/I");
 
   m_tpc_hit_tree = new TTree("hitTree", "Hit data with t, adc, tdriftmax and drift velocity");
-  m_tpc_hit_tree->Branch("hitkey", &hit_hitkey, "hitkey/l");
+  m_tpc_hit_tree->Branch("hitsetkey", &m_hitsetkey, "hitsetkey/I");
+  m_tpc_hit_tree->Branch("hitkey", &hit_hitkey, "hitkey/I");
+  m_tpc_hit_tree->Branch("phi", &m_phi, "phi/F");
+  m_tpc_hit_tree->Branch("event", &m_event, "event/I");
   m_tpc_hit_tree->Branch("t", &hit_t, "t/F");
   m_tpc_hit_tree->Branch("adc", &hit_adc, "adc/F");
   m_tpc_hit_tree->Branch("tdriftmax", &tdriftmax, "tdriftmax/F");
@@ -1442,6 +1465,7 @@ int TpcClusterizer::process_event(PHCompositeNode *topNode)
       };
 
       thread_pair.data.parent = this;
+      thread_pair.data.event = m_event;
 
       thread_pair.data.layergeom = layergeom;
       thread_pair.data.hitset = hitset;
@@ -1569,6 +1593,7 @@ int TpcClusterizer::process_event(PHCompositeNode *topNode)
 
       // instanciate new thread pair, at the end of thread vector
       thread_pair_t &thread_pair = threads.emplace_back();
+      thread_pair.data.event = m_event;
 
       thread_pair.data.layergeom = layergeom;
       thread_pair.data.hitset = nullptr;
@@ -1734,6 +1759,7 @@ int TpcClusterizer::process_event(PHCompositeNode *topNode)
         m_scluskey = ckey;
         m_tpc_clust_hitkeys = hitkeys;
         m_num_hits = hitkeys.size(); // **Assign Number of Hits**
+        m_hitsetkey = hitsetkey;
 
         if (m_tpc_clust_tree)
         {
@@ -1769,7 +1795,7 @@ int TpcClusterizer::process_event(PHCompositeNode *topNode)
       // std::cout << "Thread for hitsetkey " << hitsetkey << " has " << cluster_to_hits.size() << " clusters with associations." << std::endl;
     }
   }
-
+  m_event++;
   // set the flag to use alignment transformations, needed by the rest of reconstruction
   alignmentTransformationContainer::use_alignment = true;
 
@@ -1803,6 +1829,33 @@ int TpcClusterizer::End(PHCompositeNode * /*topNode*/)
   // Write both trees before closing the file
   if (m_outfile)
   {
+
+    int totalHits = m_tpc_hit_tree->GetEntries();
+    std::set<HitIdentifier> uniqueHitKeys;
+    int duplicateCount = 0;
+
+    // Set branch addresses if not already set (assuming they're still in memory)
+    int tpc_event_debug = 0;
+    int tpc_hitkey_debug = 0;
+    int tpc_hitsetkey_debug = 0;
+    m_tpc_hit_tree->SetBranchAddress("event", &tpc_event_debug);
+    m_tpc_hit_tree->SetBranchAddress("hitkey", &tpc_hitkey_debug);
+    m_tpc_hit_tree->SetBranchAddress("hitsetkey", &tpc_hitsetkey_debug);
+
+    for (int i = 0; i < totalHits; i++)
+    {
+      m_tpc_hit_tree->GetEntry(i);
+      HitIdentifier key = {tpc_event_debug, tpc_hitsetkey_debug, tpc_hitkey_debug};
+
+      if (!uniqueHitKeys.insert(key).second)
+      {
+        duplicateCount++;
+      }
+    }
+
+    std::cout << "Total entries in hitTree: " << totalHits << std::endl;
+    std::cout << "Unique hit key combinations: " << uniqueHitKeys.size() << std::endl;
+    std::cout << "Number of duplicate hit key entries: " << duplicateCount << std::endl;
     m_outfile->cd();
     if (m_tpc_clust_tree)
     {

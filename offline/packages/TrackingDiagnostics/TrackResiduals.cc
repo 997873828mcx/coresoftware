@@ -854,7 +854,7 @@ void TrackResiduals::fillHitTree(TrkrHitSetContainer *hitmap,
                                  PHG4CylinderGeomContainer *inttGeom,
                                  PHG4CylinderGeomContainer *mmGeom)
 {
-  m_hitkey = -1;
+  m_hitkey = std::numeric_limits<uint32_t>::max();
   if (!tpcGeom or !mvtxGeom or !inttGeom or !mmGeom)
   {
     std::cout << PHWHERE << "missing hit map, can't continue with hit tree"
@@ -1021,6 +1021,8 @@ void TrackResiduals::fillHitTree(TrkrHitSetContainer *hitmap,
         m_hitgx = glob.x();
         m_hitgy = glob.y();
         m_hitgz = glob.z();
+        // m_hit_phi = phi;
+
         m_hittree->Fill();
         break;
       }
@@ -1161,7 +1163,7 @@ void TrackResiduals::fillClusterBranchesKF(TrkrDefs::cluskey ckey, SvtxTrack *tr
 
   // get new local coords from moved cluster
   Surface surf = geometry->maps().getSurface(ckey, cluster);
-  Surface surf_ideal = geometry->maps().getSurface(ckey, cluster); //Unchanged by distortion corrections
+  Surface surf_ideal = geometry->maps().getSurface(ckey, cluster); // Unchanged by distortion corrections
   // if this is a TPC cluster, the crossing correction may have moved it across the central membrane, check the surface
   auto trkrid = TrkrDefs::getTrkrId(ckey);
   if (trkrid == TrkrDefs::tpcId)
@@ -1708,7 +1710,7 @@ void TrackResiduals::createBranches()
   m_hittree->Branch("run", &m_runnumber, "m_runnumber/I");
   m_hittree->Branch("segment", &m_segment, "m_segment/I");
   m_hittree->Branch("job", &m_job, "m_job/I");
-  m_hittree->Branch("hitkey", &m_hitkey, "m_hitkey/l");
+  m_hittree->Branch("hitkey", &m_hitkey, "m_hitkey/i");
   m_hittree->Branch("event", &m_event, "m_event/I");
   m_hittree->Branch("gl1bco", &m_bco, "m_bco/l");
   m_hittree->Branch("trbco", &m_bcotr, "m_bcotr/l");
@@ -1716,6 +1718,7 @@ void TrackResiduals::createBranches()
   m_hittree->Branch("gx", &m_hitgx, "m_hitgx/F");
   m_hittree->Branch("gy", &m_hitgy, "m_hitgy/F");
   m_hittree->Branch("gz", &m_hitgz, "m_hitgz/F");
+  m_hittree->Branch("phi", &m_hit_phi, "m_hit_phi/F");
   m_hittree->Branch("layer", &m_hitlayer, "m_hitlayer/I");
   m_hittree->Branch("sector", &m_sector, "m_sector/I");
   m_hittree->Branch("side", &m_side, "m_side/I");

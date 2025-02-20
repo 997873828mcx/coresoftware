@@ -854,17 +854,17 @@ PHCASeeding::keyLists PHCASeeding::FollowBiLinks(const PHCASeeding::keyLinks &tr
           /* if (fabs(dZdR_01 - dZdR_12) > _clusadd_delta_dzdr_window)
            {
              continue;
-           }
-           const float dphi_01 = wrap_dphi(phi[i1], phi[i0]);
-           const float dphi_12 = wrap_dphi(phi[i2], phi[i1]);
-           const float dphi_23 = wrap_dphi(phi[i3], phi[i2]);
-           const float dR_23 = R[i2] - R[i3];
-           const float d2phidr2_01 = dphi_01 / dR_01 / dR_01 - dphi_12 / dR_12 / dR_12;
-           const float d2phidr2_12 = dphi_12 / dR_12 / dR_12 - dphi_23 / dR_23 / dR_23;
-           /*if (fabs(d2phidr2_01 - d2phidr2_12) > _clusadd_delta_dphidr2_window)
-           {
-             continue;
            }*/
+          const float dphi_01 = wrap_dphi(phi[i1], phi[i0]);
+          const float dphi_12 = wrap_dphi(phi[i2], phi[i1]);
+          const float dphi_23 = wrap_dphi(phi[i3], phi[i2]);
+          const float dR_23 = R[i2] - R[i3];
+          const float d2phidr2_01 = dphi_01 / dR_01 / dR_01 - dphi_12 / dR_12 / dR_12;
+          const float d2phidr2_12 = dphi_12 / dR_12 / dR_12 - dphi_23 / dR_23 / dR_23;
+          /*if (fabs(d2phidr2_01 - d2phidr2_12) > _clusadd_delta_dphidr2_window)
+          {
+            continue;
+          }*/
 
           // passing_links.push_back(link);
 

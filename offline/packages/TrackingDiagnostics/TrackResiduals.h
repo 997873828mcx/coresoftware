@@ -218,9 +218,9 @@ private:
   float m_dedx = std::numeric_limits<float>::quiet_NaN();
 
   //! hit tree info
-  uint32_t m_hitsetkey = std::numeric_limits<uint32_t>::quiet_NaN();
+  uint32_t m_hitsetkey = std::numeric_limits<uint32_t>::max();
 
-  TrkrDefs::hitkey m_hitkey = -1;
+  TrkrDefs::hitkey m_hitkey = std::numeric_limits<uint32_t>::max();
 
   float m_hitgx = std::numeric_limits<float>::quiet_NaN();
   float m_hitgy = std::numeric_limits<float>::quiet_NaN();
@@ -229,6 +229,7 @@ private:
   int m_sector = std::numeric_limits<int>::quiet_NaN();
   int m_hitpad = std::numeric_limits<int>::quiet_NaN();
   int m_hittbin = std::numeric_limits<int>::quiet_NaN();
+  float m_hit_phi = std::numeric_limits<float>::quiet_NaN();
   int m_col = std::numeric_limits<int>::quiet_NaN();
   int m_row = std::numeric_limits<int>::quiet_NaN();
   int m_strip = std::numeric_limits<int>::quiet_NaN();

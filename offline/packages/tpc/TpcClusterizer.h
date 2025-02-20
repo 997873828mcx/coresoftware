@@ -76,13 +76,17 @@ public:
     set_max_cluster_half_size_z(20);
     set_fixed_window(3);
   };
-  void set_sampa_tbias(double value ) { m_sampa_tbias = value; }
+  void set_sampa_tbias(double value) { m_sampa_tbias = value; }
   ClusHitsVerbosev1 *mClusHitsVerbose{nullptr};
   Float_t hit_t;
   TrkrDefs::hitkey hit_hitkey;
+  TrkrDefs::hitsetkey m_hitsetkey;
+  float m_phi;
   Float_t hit_adc;
   Float_t tdriftmax;
   Float_t drift_velocity;
+  unsigned int m_event = 0;
+
   TTree *m_tpc_hit_tree = nullptr;
 
 private:
@@ -94,8 +98,8 @@ private:
   std::vector<TrkrDefs::hitkey> m_tpc_clust_hitkeys;
   TFile *m_outfile = nullptr;
   TTree *m_tpc_clust_tree = nullptr;
-
   std::string m_outfileName;
+
   int m_num_hits = 0;
 
   //   bool m_debug = true;
