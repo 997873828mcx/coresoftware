@@ -241,6 +241,7 @@ private:
   //! cluster tree info
   TrkrDefs::cluskey m_scluskey;
   std::vector<TrkrDefs::hitkey> m_clust_hitkeys;
+  uint32_t m_clustHitsetkey = std::numeric_limits<uint32_t>::max();
   float m_sclusgr = std::numeric_limits<float>::quiet_NaN();
   float m_sclusphi = std::numeric_limits<float>::quiet_NaN();
   float m_scluseta = std::numeric_limits<float>::quiet_NaN();

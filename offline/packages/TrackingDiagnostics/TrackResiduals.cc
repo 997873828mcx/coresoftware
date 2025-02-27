@@ -666,10 +666,14 @@ void TrackResiduals::fillClusterTree(TrkrClusterHitAssoc *clusterhitassoc, TrkrC
   /* for (auto& det : {
   TrkrDefs::TrkrId::tpcId}) */
   {
+
     for (const auto &hitsetkey : clusters->getHitSetKeys(det))
     {
       m_scluslayer = TrkrDefs::getLayer(hitsetkey);
       auto range = clusters->getClusters(hitsetkey);
+      m_clustHitsetkey = std::numeric_limits<uint32_t>::max();
+      m_clustHitsetkey = hitsetkey;
+
       for (auto iter = range.first; iter != range.second; ++iter)
       {
         auto key = iter->first;
@@ -1021,7 +1025,10 @@ void TrackResiduals::fillHitTree(TrkrHitSetContainer *hitmap,
         m_hitgx = glob.x();
         m_hitgy = glob.y();
         m_hitgz = glob.z();
-        // m_hit_phi = phi;
+        m_hit_phi = phi;
+        // std::cout << "phi type: " << typeid(phi).name() << " value: " << phi << std::endl;
+        // std::cout << "m_hit_phi type: " << typeid(m_hit_phi).name() << " value: " << m_hit_phi << std::endl;
+        std::cout << "phi value is" << m_hit_phi << std::endl;
 
         m_hittree->Fill();
         break;
@@ -1740,6 +1747,7 @@ void TrackResiduals::createBranches()
 
   m_clustree = new TTree("clustertree", "A tree with all clusters");
   m_clustree->Branch("cluskey", &m_scluskey);
+  m_clustree->Branch("hitsetkey", &m_clustHitsetkey, "m_clustHitsetkey/i");
   m_clustree->Branch("run", &m_runnumber, "m_runnumber/I");
   m_clustree->Branch("segment", &m_segment, "m_segment/I");
   m_clustree->Branch("job", &m_job, "m_job/I");
