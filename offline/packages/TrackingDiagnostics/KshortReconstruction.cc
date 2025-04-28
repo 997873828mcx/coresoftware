@@ -58,6 +58,11 @@ int KshortReconstruction::getNodes(PHCompositeNode* topNode)
 int KshortReconstruction::InitRun(PHCompositeNode* topNode)
 {
 
+
+    h_AP_all = new TH2D("h_AP_all",
+        "Armenteros-Podolanski; #alpha; q_{T}^{+}  (GeV/c)",
+        200, -2, 2,        // α axis
+        200,  0.0, 0.5);      // qT axis  (≈ pT of + daughter)
     KFParticle::SetField(14.0);
     KFParticle testParticle;
 
@@ -260,6 +265,33 @@ int KshortReconstruction::process_event(PHCompositeNode* /**topNode*/)
 
                 // if(pair_dca_proj > pair_dca_cut) continue;
 
+                // ----------------------------------------------------------
+            //  ALPHA  and  qT   (Armenteros–Podolanski variables)
+            // ----------------------------------------------------------
+
+                // total V0 momentum (at the projected PCA point)
+                TVector3 v0P = TVector3(projected_mom1(0), projected_mom1(1), projected_mom1(2))
+                            + TVector3(projected_mom2(0), projected_mom2(1), projected_mom2(2));
+            
+                TVector3  n = v0P.Unit();                  // flight direction
+                TVector3  p1 = TVector3(projected_mom1(0), projected_mom1(1), projected_mom1(2));
+                TVector3  p2 = TVector3(projected_mom2(0), projected_mom2(1), projected_mom2(2));
+            
+                // choose the *positive* daughter
+                TVector3 pPlus  = (tr1->get_charge() > 0) ? p1 : p2;
+                TVector3 pMinus = (tr1->get_charge() > 0) ? p2 : p1;
+            
+                double pL_plus  =  pPlus  * n;             // longitudinal comps.
+                double pL_minus =  pMinus * n;
+            
+                double alpha = (pL_plus - pL_minus) / (pL_plus + pL_minus);
+            
+                TVector3 pT_plus = pPlus - n * pL_plus;    // transverse w.r.t V0
+                double   qT      = pT_plus.Mag();
+            
+                // --------- fill the global AP histogram -----------------
+                h_AP_all->Fill(alpha, qT);
+  
                 // invariant mass is calculated in this method
                 fillHistogram(projected_mom1, projected_mom2, recomass, invariantMass, invariantPt, rapidity, pseudorapidity);
                 fillNtp(tr1, tr2, dcaVals1, dcaVals2, pca_rel1, pca_rel2, pair_dca, invariantMass, invariantPt, rapidity, pseudorapidity, projected_pos1, projected_pos2, projected_mom1, projected_mom2, pca_rel1_proj, pca_rel2_proj, pair_dca_proj, track1_silicon_cluster_size, track2_silicon_cluster_size);
@@ -632,6 +664,7 @@ void KshortReconstruction::fillHistogram(Eigen::Vector3d mom1, Eigen::Vector3d m
 int KshortReconstruction::End(PHCompositeNode* /**topNode*/)
 {
     fout->cd();
+    h_AP_all->Write(); 
     ntp_reco_info->Write();
     recomass->Write();
     fout->Close();

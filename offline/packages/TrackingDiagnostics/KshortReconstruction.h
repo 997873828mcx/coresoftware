@@ -114,6 +114,7 @@ class KshortReconstruction : public SubsysReco
   double invariant_pt_cut = 0.1;
   TFile* fout = nullptr;
   TH1D* recomass = nullptr;
+  TH2D* h_AP_all = nullptr; 
 };
 
 #endif  // KSHORTRECONSTRUCTION_H
