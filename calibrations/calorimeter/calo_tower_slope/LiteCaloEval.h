@@ -1,4 +1,3 @@
-
 // Tell emacs that this is a C++ source
 //  -*- C++ -*-.
 #ifndef CALOTOWERSLOPE_LITECALOEVAL_H
@@ -8,19 +7,12 @@
 
 #include <string>
 
-class PHCompositeNode;
 class TFile;
 class TH1;
 class TH2;
 class TH3;
 class TGraph;
-class TNtuple;
-class TF1;
 class TriggerAnalyzer;
-
-double LCE_fitf(double *f, double *p);
-
-TGraph *LCE_grff{nullptr};
 
 class LiteCaloEval : public SubsysReco
 {
@@ -36,35 +28,14 @@ class LiteCaloEval : public SubsysReco
     HCALOUT = 3
   };
 
-  LiteCaloEval(const std::string &name = "LiteCaloEval", const std::string &caloNm = "CEMC", const std::string &fnm = "outJF");
+  LiteCaloEval(const std::string &name = "LiteCaloEval", const std::string &caloname = "CEMC", const std::string &filename = "outJF");
 
-  // to distinguish when we want to implement input decal (for simulations work)
-  void set_mode(int modeset)
-  {
-    mode = modeset;
-  }
+  virtual ~LiteCaloEval() = default;
 
-  void set_UseTowerInfo(int setTowerInfo)
-  {
-    m_UseTowerInfo = setTowerInfo;
-  }
-
-  virtual ~LiteCaloEval() {}
-
-  /** Called for first event when run number is known.
-      Typically this is where you may want to fetch data from
-      database, because you know the run number. A place
-
-      to book histograms which have to know the run number.
-   */
   int InitRun(PHCompositeNode *topNode) override;
 
-  /** Called for each event.
-      This is where you do the real work.
-   */
   int process_event(PHCompositeNode *topNode) override;
 
-  /// Called at the end of all processing.
   int End(PHCompositeNode *topNode) override;
 
   void CaloType(const Calo i)
@@ -72,42 +43,18 @@ class LiteCaloEval : public SubsysReco
     calotype = i;
   }
 
-  TFile *f_temp{nullptr};
+  /// Setters_____________________________________________
 
-  void Get_Histos(const std::string &infile, const std::string &fun4all_file = "");
-
-  void FitRelativeShifts(LiteCaloEval *ref_lce, int modeFitShifts);
-
-  /// Setters
   void setFitMax(float fitMax) { fitmax = fitMax; }
+
   void setFitMin(float fitMin) { fitmin = fitMin; }
+
   void set_spectra_binWidth(double binWidth) { binwidth = binWidth; }
 
-  bool chk_isChimney(int, int);
-
-  /// Getters
-  float getFitMax() { return fitmax; }
-  float getFitMin() { return fitmin; }
-  float get_spectra_binWidth() { return binwidth; }
-
-  void setInputTowerNodeName(const std::string &inpNodenm)
+  void set_mode(int modeset)  // to distinguish when we want to implement input decal (for simulations work)
   {
-    _inputnodename = inpNodenm;
+    mode = modeset;
   }
-
-  float spec_QA(TH1 *h_spec, TH1 *h_ref, bool retFloat);
-  bool spec_QA(TH1 *h_spec, TH1 *h_ref);
-
-  void plot_cemc(const std::string &path);
-
-  void set_doQA(bool status = true)
-  {
-    doQA = status;
-  }
-
-  void draw_spectra(const char *);
-
-  void fit_info(const char *, const int);
 
   void set_reqMinBias(bool status)
   {
@@ -115,7 +62,53 @@ class LiteCaloEval : public SubsysReco
     return;
   }
 
+  void set_doQA(bool status = true)
+  {
+    doQA = status;
+  }
+
+  void setInputTowerNodeName(const std::string &inpNodenm)
+  {
+    _inputnodename = inpNodenm;
+  }
+
+  void set_UseTowerInfo(int setTowerInfo)
+  {
+    m_UseTowerInfo = setTowerInfo;
+  }
+
+  /// Getters________________________________________
+
+  void Get_Histos(const std::string &infile, const std::string &outfile = "");
+
+  float getFitMax() { return fitmax; }
+
+  float getFitMin() { return fitmin; }
+
+  float get_spectra_binWidth() { return binwidth; }
+
+  /// Others__________________________________________
+
+  void FitRelativeShifts(LiteCaloEval *ref_lce, int modeFitShifts);
+
+  static float spec_QA(TH1 *h_spec, TH1 *h_ref, bool retFloat);
+
+  static bool spec_QA(TH1 *h_spec, TH1 *h_ref);
+
+  void plot_cemc(const std::string &path);
+
+  void draw_spectra(const char *);
+
+  void draw_spectra(const char *, const char *);
+
+  void fit_info(const char *, const int);
+
+  void fit_info(const char *, const char *, const int);
+
+  static bool chk_isChimney(int, int);
+
  private:
+  TFile *f_temp{nullptr};
   TFile *cal_output{nullptr};
 
   TH1 *hcal_out_eta_phi[24][64] = {};
@@ -133,7 +126,7 @@ class LiteCaloEval : public SubsysReco
   TH2 *energy_eta_hist{nullptr};
   TH3 *e_eta_phi{nullptr};
 
-  TH1* h_event{nullptr};
+  TH1 *h_event{nullptr};
 
   Calo calotype{NONE};
   int _ievent{0};
@@ -141,22 +134,22 @@ class LiteCaloEval : public SubsysReco
   float fitmin{0.};
   float fitmax{0.};
 
-  bool doQA = false;
+  bool doQA{false};
 
   double binwidth{0.001};
 
   std::string _caloname;
   std::string _filename;
-  std::string _inputnodename;
+  std::string _inputnodename{"TOWERINFO"};
 
-  bool reqMinBias = true;
+  bool reqMinBias{true};
 
-  int mode = 0;
+  int mode{0};
 
-  TriggerAnalyzer* trigAna{nullptr};
+  TriggerAnalyzer *trigAna{nullptr};
 
   // flag for using tower info
-  int m_UseTowerInfo{0};
+  int m_UseTowerInfo{1};
 };
 
 #endif  // LITECALOEVAL_H

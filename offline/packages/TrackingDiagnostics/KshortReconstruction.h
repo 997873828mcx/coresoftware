@@ -2,6 +2,7 @@
 #define KSHORTRECONSTRUCTION_H
 
 #include <fun4all/SubsysReco.h>
+#include <TH2D.h>
 
 #include <trackbase/ActsTrackingGeometry.h>
 #include <trackbase/TpcDefs.h>
@@ -94,7 +95,8 @@ class KshortReconstruction : public SubsysReco
   bool projectTrackToPoint(SvtxTrack* track, Eigen::Vector3d PCA, Eigen::Vector3d& pos, Eigen::Vector3d& mom);
 
   Acts::Vector3 getVertex(SvtxTrack* track);
-
+  std::vector<unsigned int> getTrackStates(SvtxTrack *track);
+  
   TNtuple* ntp_reco_info = nullptr;
   ActsGeometry* _tGeometry = nullptr;
   SvtxTrackMap* m_svtxTrackMap = nullptr;

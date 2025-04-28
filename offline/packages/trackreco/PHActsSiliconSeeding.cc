@@ -36,7 +36,7 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wstringop-overread"
 #endif
-#include <Acts/Seeding/BinnedSPGroup.hpp>
+#include <Acts/Seeding/BinnedGroup.hpp>
 #ifndef __clang__
 #pragma GCC diagnostic pop
 #endif
@@ -58,7 +58,27 @@ PHActsSiliconSeeding::PHActsSiliconSeeding(const std::string& name)
   : SubsysReco(name)
 {
 }
-
+PHActsSiliconSeeding::~PHActsSiliconSeeding()
+{
+  delete m_file;
+  delete m_tree;
+  delete h_nInttProj;
+  delete h_nMvtxHits;
+  delete h_nInttHits;
+  delete h_nMatchedClusters;
+  delete h_nHits;
+  delete h_nSeeds;
+  delete h_nActsSeeds;
+  delete h_nTotSeeds;
+  delete h_nInputMeas;
+  delete h_nInputMvtxMeas;
+  delete h_nInputInttMeas;
+  delete h_hits;
+  delete h_zhits;
+  delete h_projHits;
+  delete h_zprojHits;
+  delete h_resids;
+}
 int PHActsSiliconSeeding::Init(PHCompositeNode* /*topNode*/)
 {
   Acts::SeedFilterConfig sfCfg = configureSeedFilter();
@@ -75,10 +95,11 @@ int PHActsSiliconSeeding::Init(PHCompositeNode* /*topNode*/)
     printSeedConfigs(sfCfg);
   }
   // vector containing the map of z bins in the top and bottom layers
-  m_bottomBinFinder = std::make_shared<const Acts::BinFinder<SpacePoint>>(
-      zBinNeighborsBottom, nphineighbors);
-  m_topBinFinder = std::make_shared<const Acts::BinFinder<SpacePoint>>(
-      zBinNeighborsTop, nphineighbors);
+ 
+  m_bottomBinFinder = std::make_unique<const Acts::GridBinFinder<2ul>>(
+      nphineighbors, zBinNeighborsBottom);
+  m_topBinFinder = std::make_unique<const Acts::GridBinFinder<2ul>>(
+      nphineighbors, zBinNeighborsTop);
 
   if (m_seedAnalysis)
   {
@@ -115,48 +136,19 @@ int PHActsSiliconSeeding::process_event(PHCompositeNode* topNode)
     }
   }
 
-  auto eventTimer = std::make_unique<PHTimer>("eventTimer");
-  eventTimer->stop();
-  eventTimer->restart();
-
   if (Verbosity() > 0)
   {
     std::cout << "Processing PHActsSiliconSeeding event "
               << m_event << std::endl;
   }
 
-  std::vector<const SpacePoint*> spVec;
-  auto seedVector = runSeeder(spVec);
-
-  eventTimer->stop();
-  auto seederTime = eventTimer->get_accumulated_time();
-  eventTimer->restart();
-
-  makeSvtxTracks(seedVector);
-
-  eventTimer->stop();
-  auto circleFitTime = eventTimer->get_accumulated_time();
-
-  for (auto sp : spVec)
-  {
-    delete sp;
-  }
-  spVec.clear();
+  runSeeder();
+ 
 
   if (Verbosity() > 0)
   {
     std::cout << "Finished PHActsSiliconSeeding process_event"
               << std::endl;
-  }
-
-  if (Verbosity() > 0)
-  {
-    std::cout << "PHActsSiliconSeeding Acts seed time "
-              << seederTime << std::endl;
-    std::cout << "PHActsSiliconSeeding circle fit time "
-              << circleFitTime << std::endl;
-    std::cout << "PHActsSiliconSeeding total event time "
-              << circleFitTime + seederTime << std::endl;
   }
 
   m_event++;
@@ -182,72 +174,107 @@ int PHActsSiliconSeeding::End(PHCompositeNode* /*topNode*/)
   return Fun4AllReturnCodes::EVENT_OK;
 }
 
-GridSeeds PHActsSiliconSeeding::runSeeder(std::vector<const SpacePoint*>& spVec)
+void PHActsSiliconSeeding::runSeeder()
 {
-  Acts::SeedFinder<SpacePoint> seedFinder(m_seedFinderCfg);
-  GridSeeds seedVector;
+  Acts::SeedFinder<SpacePoint,Acts::CylindricalSpacePointGrid<SpacePoint>> seedFinder(m_seedFinderCfg);
+
+  auto eventTimer = std::make_unique<PHTimer>("eventTimer");
+  eventTimer->stop();
+  int circleFitTime = 0;
+  int seederTime = 0;
+  int spTime = 0;
   for (int strobe = m_lowStrobeIndex; strobe < m_highStrobeIndex; strobe++)
   {
+    GridSeeds seedVector;
     /// Covariance converter functor needed by seed finder
-    auto covConverter =
-        [=](const SpacePoint& sp, float zAlign, float rAlign, float sigmaError)
-        -> std::pair<Acts::Vector3, Acts::Vector2>
+    auto covConverter = [=](const SpacePoint& sp, float zAlign, float rAlign,
+                                       float sigmaError)
     {
       Acts::Vector3 position{sp.x(), sp.y(), sp.z()};
       Acts::Vector2 cov;
       cov[0] = (sp.m_varianceR + rAlign * rAlign) * sigmaError;
       cov[1] = (sp.m_varianceZ + zAlign * zAlign) * sigmaError;
-      return std::make_pair(position, cov);
+      return std::make_tuple(position, cov, sp.t());
     };
 
     Acts::Extent rRangeSPExtent;
-
-    spVec = getSiliconSpacePoints(rRangeSPExtent, strobe);
-
+    eventTimer->restart();
+    auto spVec = getSiliconSpacePoints(rRangeSPExtent, strobe);
+    eventTimer->stop();
+    spTime += eventTimer->get_accumulated_time();
     if (m_seedAnalysis)
     {
       h_nInputMeas->Fill(spVec.size());
     }
 
-    auto grid =
-        Acts::SpacePointGridCreator::createGrid<SpacePoint>(m_gridCfg,
-                                                            m_gridOptions);
+    Acts::CylindricalSpacePointGrid<SpacePoint> grid =
+        Acts::CylindricalSpacePointGridCreator::createGrid<SpacePoint>(
+            m_gridCfg, m_gridOptions);
+    Acts::CylindricalSpacePointGridCreator::fillGrid(
+        m_seedFinderCfg, m_seedFinderOptions, grid,
+        spVec.begin(), spVec.end(), covConverter,
+        rRangeSPExtent);
 
-    auto spGroup = Acts::BinnedSPGroup<SpacePoint>(spVec.begin(),
-                                                   spVec.end(),
-                                                   covConverter,
-                                                   m_bottomBinFinder,
-                                                   m_topBinFinder,
-                                                   std::move(grid),
-                                                   rRangeSPExtent,
-                                                   m_seedFinderCfg,
-                                                   m_seedFinderOptions);
+    std::array<std::vector<std::size_t>, 2ul> navigation;
+    navigation[1ul] = m_seedFinderCfg.zBinsCustomLooping;
 
+    auto spacePointsGrouping = Acts::CylindricalBinnedGroup<SpacePoint>(
+        std::move(grid), *m_bottomBinFinder, *m_topBinFinder,
+        std::move(navigation));
+   
     /// variable middle SP radial region of interest
     const Acts::Range1D<float> rMiddleSPRange(
         std::floor(rRangeSPExtent.min(Acts::binR) / 2) * 2 + 1.5,
         std::floor(rRangeSPExtent.max(Acts::binR) / 2) * 2 - 1.5);
+   
 
+
+    eventTimer->restart();
     SeedContainer seeds;
     seeds.clear();
     decltype(seedFinder)::SeedingState state;
     state.spacePointData.resize(spVec.size(),
                                 m_seedFinderCfg.useDetailedDoubleMeasurementInfo);
-    for (const auto [bottom, middle, top] : spGroup)
+    for (const auto [bottom, middle, top] : spacePointsGrouping)
     {
       seedFinder.createSeedsForGroup(m_seedFinderOptions,
-                                     state, spGroup.grid(),
+                                     state, spacePointsGrouping.grid(),
                                      std::back_inserter(seeds),
                                      bottom,
                                      middle,
                                      top,
                                      rMiddleSPRange);
     }
+    eventTimer->stop();
+    seederTime += eventTimer->get_accumulated_time();
+    eventTimer->restart();
 
     seedVector.push_back(seeds);
+
+    makeSvtxTracks(seedVector);
+
+    eventTimer->stop();
+    circleFitTime += eventTimer->get_accumulated_time();
+
+    for (auto sp : spVec)
+    {
+      delete sp;
+    }
+    spVec.clear();
   }
 
-  return seedVector;
+  if (Verbosity() > 0)
+  {
+    std::cout << "PHActsSiliconSeeding spacepoint time "
+              << spTime << std::endl;
+    std::cout << "PHActsSiliconSeeding Acts seed time "
+              << seederTime << std::endl;
+    std::cout << "PHActsSiliconSeeding circle fit time "
+              << circleFitTime << std::endl;
+    std::cout << "PHActsSiliconSeeding total event time "
+              << spTime + circleFitTime + seederTime << std::endl;
+  }
+  return;
 }
 
 void PHActsSiliconSeeding::makeSvtxTracks(GridSeeds& seedVector)
@@ -296,13 +323,7 @@ void PHActsSiliconSeeding::makeSvtxTracks(GridSeeds& seedVector)
         {
           m_mvtxgx.push_back(globalPosition(0));
           m_mvtxgy.push_back(globalPosition(1));
-          float clusr = std::sqrt(square(globalPosition(0)) + square(globalPosition(1)));
-          if (globalPosition.y() < 0)
-          {
-            clusr *= -1;
-          }
-          m_mvtxgr.push_back(clusr);
-          m_mvtxgz.push_back(globalPosition(2));
+	  m_mvtxgz.push_back(globalPosition(2));
         }
         positions.insert(std::make_pair(cluskey, globalPosition));
         if (Verbosity() > 1)
@@ -472,22 +493,39 @@ short int PHActsSiliconSeeding::getCrossingIntt(TrackSeed& si_track)
     crossing_keep = intt_crossings[0];
     for (unsigned int ic = 1; ic < intt_crossings.size(); ++ic)
     {
-      if (intt_crossings[ic] != crossing_keep)
-      {
-        if (Verbosity() > 1)
-        {
-          std::cout << " Warning: INTT crossings not all the same "
-                    << " crossing_keep " << crossing_keep << " new crossing " << intt_crossings[ic] << " keep the first one in the list" << std::endl;
-        }
-      }
+      if(intt_crossings[ic] != crossing_keep)
+	{
+	  if(abs(intt_crossings[ic] - crossing_keep) > 1)
+	    {
+	      keep_it = false;
+	      
+	      if (Verbosity() > 1)
+		{
+		  std::cout << " Warning: INTT crossings not all the same "
+			    << " crossing_keep " << crossing_keep << " new crossing " << intt_crossings[ic] << " setting crossing to SHRT_MAX" << std::endl;
+		}
+	    }
+	  else
+	    {
+	      // we have INTT clusters with crossing values that differ by 1
+	      // This can be a readout issue, we take the lower value as the correct one
+
+	      if(Verbosity() > 1) { std::cout << " ic " << ic << " crossing keep " << crossing_keep << " intt_crossings " << intt_crossings[ic] << std::endl; }
+	      if(intt_crossings[ic] < crossing_keep)
+		{
+		  crossing_keep = intt_crossings[ic];
+		  if(Verbosity() > 1) { std::cout << "         ----- crossing keep changed to " << crossing_keep << std::endl; }
+		}
+	    }
+	}
     }
   }
-
+  
   if (keep_it)
-  {
-    return crossing_keep;
-  }
-
+    {
+      return crossing_keep;
+    }
+  
   return SHRT_MAX;
 }
 
@@ -543,7 +581,7 @@ std::vector<short int> PHActsSiliconSeeding::getInttCrossings(TrackSeed& si_trac
       auto crossings = _cluster_crossing_map->getCrossings(cluster_key);
       for (auto iter1 = crossings.first; iter1 != crossings.second; ++iter1)
       {
-        if (Verbosity() > 1)
+	if (Verbosity() > 1)
         {
           std::cout << "                si Track with cluster " << iter1->first << " layer " << layer << " crossing " << iter1->second << std::endl;
         }
@@ -805,7 +843,7 @@ SpacePointPtr PHActsSiliconSeeding::makeSpacePoint(
    * uncertainties by a tuned factor that gives the v17 performance
    * Track reconstruction is an art as much as it is a science...
    */
-  SpacePointPtr spPtr(new SpacePoint{key, x, y, z, r, surf->geometryId(), var[0] * m_uncfactor, var[1] * m_uncfactor});
+  SpacePointPtr spPtr(new SpacePoint{key, x, y, z, r, surf->geometryId(), var[0] * m_uncfactor, var[1] * m_uncfactor, std::nullopt});
 
   if (Verbosity() > 2)
   {
@@ -953,7 +991,7 @@ void PHActsSiliconSeeding::configureSeeder()
   m_seedFinderCfg.toleranceParam = m_tolerance;
   m_seedFinderCfg.maxPtScattering = m_maxPtScattering;
   m_seedFinderCfg.sigmaError = m_sigmaError;
-  m_seedFinderCfg.helixCut = m_helixcut;
+  m_seedFinderCfg.helixCutTolerance = m_helixcut;
 
   m_seedFinderCfg =
       m_seedFinderCfg.toInternalUnits().calculateDerivedQuantities();
@@ -1240,7 +1278,7 @@ void PHActsSiliconSeeding::printSeedConfigs(Acts::SeedFilterConfig& sfconfig)
             << std::endl
             << "sigmaError = " << m_seedFinderCfg.sigmaError
             << std::endl
-            << "helixcut = " << m_seedFinderCfg.helixcut
+            << "helixcut = " << m_seedFinderCfg.helixCutTolerance
             << std::endl;
 
   std::cout << " --------------- SeedFinderOptions ------------------ " << std::endl;

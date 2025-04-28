@@ -1,5 +1,5 @@
-#ifndef __MBDRECO_H__
-#define __MBDRECO_H__
+#ifndef MBD_MBDRECO_H
+#define MBD_MBDRECO_H
 
 #include <fun4all/SubsysReco.h>
 
@@ -15,6 +15,7 @@ class MbdGeom;
 class Event;
 class CaloPacketContainer;
 class Gl1Packet;
+class EventHeader;
 class TF1;
 class TH1;
 
@@ -23,9 +24,9 @@ class MbdReco : public SubsysReco
  public:
   MbdReco(const std::string &name = "MbdReco");
 
-  ~MbdReco() override;
+  ~MbdReco() override = default;
 
-  int Init(PHCompositeNode *topNode) override;
+  int Init(PHCompositeNode * /*topNode*/) override;
   int InitRun(PHCompositeNode *topNode) override;
   int process_event(PHCompositeNode *topNode) override;
   int End(PHCompositeNode *topNode) override;
@@ -51,6 +52,7 @@ class MbdReco : public SubsysReco
   MbdPmtContainer *m_mbdpmts{nullptr};
   MbdGeom *m_mbdgeom{nullptr};
   MbdVertexMap *m_mbdvtxmap{nullptr};
+  EventHeader *m_evtheader{nullptr};
 };
 
 #endif  // __MBDRECO_H__

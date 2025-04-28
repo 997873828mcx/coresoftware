@@ -10,6 +10,7 @@
 
 #include <fun4all/Fun4AllReturnCodes.h>
 
+
 #include <Event/Event.h>
 
 #include <phool/PHCompositeNode.h>
@@ -21,6 +22,7 @@
 #include <phool/getClass.h>
 #include <phool/phool.h>
 
+#include <ffaobjects/EventHeader.h>
 #include <ffarawobjects/CaloPacketContainer.h>
 #include <ffarawobjects/Gl1Packet.h>
 
@@ -33,20 +35,12 @@ MbdReco::MbdReco(const std::string &name)
 }
 
 //____________________________________________________________________________..
-MbdReco::~MbdReco() = default;
-
-//____________________________________________________________________________..
-int MbdReco::Init(PHCompositeNode *topNode)
+int MbdReco::Init(PHCompositeNode * /*topNode*/)
 {
   m_gaussian = std::make_unique<TF1>("gaussian", "gaus", 0, 20);
   m_gaussian->FixParameter(2, m_tres);
 
   m_mbdevent = std::make_unique<MbdEvent>(_calpass);
-
-  if (createNodes(topNode) == Fun4AllReturnCodes::ABORTEVENT)
-  {
-    return Fun4AllReturnCodes::ABORTEVENT;
-  }
 
   return Fun4AllReturnCodes::EVENT_OK;
 }
@@ -54,6 +48,11 @@ int MbdReco::Init(PHCompositeNode *topNode)
 //____________________________________________________________________________..
 int MbdReco::InitRun(PHCompositeNode *topNode)
 {
+  if (createNodes(topNode) == Fun4AllReturnCodes::ABORTEVENT)
+  {
+    return Fun4AllReturnCodes::ABORTEVENT;
+  }
+
   int ret = getNodes(topNode);
 
   m_mbdevent->SetSim(_simflag);
@@ -82,6 +81,10 @@ int MbdReco::process_event(PHCompositeNode *topNode)
   if ( m_mbdevent!=nullptr || m_mbdraw!=nullptr )
   {
     int status = Fun4AllReturnCodes::EVENT_OK;
+    if ( m_evtheader!=nullptr )
+    {
+      m_mbdevent->set_EventNumber( m_evtheader->get_EvtSequence() );
+    }
     if ( m_event!=nullptr )
     {
       status = m_mbdevent->SetRawData(m_event, m_mbdpmts);
@@ -101,7 +104,7 @@ int MbdReco::process_event(PHCompositeNode *topNode)
       }
       return Fun4AllReturnCodes::DISCARDEVENT;
     }
-    else if (status == Fun4AllReturnCodes::ABORTEVENT )
+    if (status == Fun4AllReturnCodes::ABORTEVENT )
     {
       static int counter = 0;
       if ( counter<3 )
@@ -111,12 +114,12 @@ int MbdReco::process_event(PHCompositeNode *topNode)
       }
       return Fun4AllReturnCodes::ABORTEVENT;
     }
-    else if ( status == -1001 )
+    if ( status == -1001 )
     {
       // calculating sampmax on this event
       return Fun4AllReturnCodes::DISCARDEVENT;
     }
-    else if (status < 0)
+    if (status < 0)
     {
       return Fun4AllReturnCodes::EVENT_OK;
     }
@@ -128,12 +131,12 @@ int MbdReco::process_event(PHCompositeNode *topNode)
     m_mbdevent->ProcessRawPackets( m_mbdpmts );
   }
 
-  m_mbdevent->Calculate(m_mbdpmts, m_mbdout);
+  m_mbdevent->Calculate(m_mbdpmts, m_mbdout, topNode);
 
   // For multiple global vertex
-  if (m_mbdevent->get_bbcn(0) > 0 && m_mbdevent->get_bbcn(1) > 0)
+  if (m_mbdevent->get_bbcn(0) > 0 && m_mbdevent->get_bbcn(1) > 0 && _calpass==0 )
   {
-    auto vertex = new MbdVertexv2();
+    auto *vertex = new MbdVertexv2();
     vertex->set_t(m_mbdevent->get_bbct0());
     vertex->set_z(m_mbdevent->get_bbcz());
     vertex->set_z_err(0.6);
@@ -202,7 +205,7 @@ int MbdReco::createNodes(PHCompositeNode *topNode)
     bbcNode->addNode(MbdOutNode);
   }
 
-  m_mbdpmts = findNode::getClass<MbdPmtContainer>(bbcNode, "MbdPmtContainer");
+  m_mbdpmts = findNode::getClass<MbdPmtSimContainerV1>(bbcNode, "MbdPmtContainer");
   if (!m_mbdpmts)
   {
     m_mbdpmts = new MbdPmtContainerV1();
@@ -282,6 +285,17 @@ int MbdReco::getNodes(PHCompositeNode *topNode)
   {
     std::cout << PHWHERE << "MbdVertexMap node not found on node tree" << std::endl;
     return Fun4AllReturnCodes::ABORTEVENT;
+  }
+
+  m_evtheader = findNode::getClass<EventHeader>(topNode, "EventHeader");
+  if (!m_evtheader )
+  {
+    static int ctr = 0;
+    if ( ctr<4 )
+    {
+      std::cout << PHWHERE << " EventHeader node not found on node tree" << std::endl;
+      ctr++;
+    }
   }
 
   return Fun4AllReturnCodes::EVENT_OK;

@@ -17,14 +17,11 @@ public:
   int Query(int);
 
   bool IsStreaming() {return m_is_streaming;}
-  std::string Type() {return m_type;}
-  std::set<std::string>::const_iterator FileListBegin(int which_intt) {return m_file_set.at(which_intt).begin();}
-  std::set<std::string>::const_iterator FileListEnd(int which_intt) {return m_file_set.at(which_intt).end();}
+  const std::string &Type() {return m_type;}
 
 private:
   int QueryStreaming(void*, int);
   int QueryType(void*, int);
-  int QueryFiles(void*, int, int);
 
   static const int m_MAX_NUM_RETRIES = 3000;
   static const int m_MIN_SLEEP_DUR =  200; // milliseconds

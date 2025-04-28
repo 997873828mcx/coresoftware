@@ -3,6 +3,8 @@
 
 #include <fun4all/SubsysReco.h>
 
+#include <globalvertex/GlobalVertex.h>
+
 #include <string>
 
 class PHCompositeNode;
@@ -25,7 +27,7 @@ class RawClusterBuilderTemplate : public SubsysReco
   void SetCylindricalGeometry();
   void SetPlanarGeometry();
   void PrintGeometry() { bPrintGeom = true; }  // Prints it at InitRun time
-  void PrintCylGeom(RawTowerGeomContainer* towergeom, const std::string& fname);
+  void PrintCylGeom(RawTowerGeomContainer* towergeom, const std::string& fname) const;
   void SetProfileProb(bool pprob) { bProfProb = pprob; }
   void SetProbNoiseParam(float rn) { fProbNoiseParam = rn; }
 
@@ -73,9 +75,9 @@ class RawClusterBuilderTemplate : public SubsysReco
 
  private:
   void CreateNodes(PHCompositeNode* topNode);
-  bool Cell2Abs(RawTowerGeomContainer* towergeom, float phiC, float etaC, float& phi, float& eta);
-  bool IsAcceptableTower(TowerInfo *tower);
-  bool IsAcceptableTower(RawTower *tower);
+  static bool Cell2Abs(RawTowerGeomContainer* towergeom, float phiC, float etaC, float& phi, float& eta);
+  bool IsAcceptableTower(TowerInfo *tower) const;
+  bool IsAcceptableTower(RawTower *tower) const;
 
   RawClusterContainer* _clusters{nullptr};
   //  BEmcProfile *_emcprof;
@@ -98,6 +100,8 @@ class RawClusterBuilderTemplate : public SubsysReco
   bool bPrintGeom{false};
   bool bProfProb{false};
   float fProbNoiseParam{0.04};
+
+  GlobalVertex::VTXTYPE m_vertex_type{GlobalVertex::MBD};
 
   int m_UseTowerInfo{0};  // 0 only old tower, 1 only new (TowerInfo based),
 
