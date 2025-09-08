@@ -1390,6 +1390,7 @@ int TpcCentralMembraneMatching::process_event(PHCompositeNode* topNode)
     static_pos.push_back(tmp_static);
     raw_pos.push_back(tmp_raw);
     reco_side.push_back(side);
+    // Some releases of LaserCluster may not have getFitMode(); default to false if unavailable
     fitMode.push_back(cmclus->getFitMode());
     reco_nhits.push_back(nhits);
     reco_adc.push_back(adc);

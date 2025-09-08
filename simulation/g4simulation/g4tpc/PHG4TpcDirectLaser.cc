@@ -33,6 +33,7 @@
 #include <cassert>
 #include <iostream>  // for operator<<, basic_os...
 #include <optional>
+#include <cstdlib>  // for std::getenv
 
 namespace
 {
@@ -283,14 +284,40 @@ int PHG4TpcDirectLaser::InitRun(PHCompositeNode* topNode)
   std::cout << "PHG4TpcDirectLaser::InitRun - electrons_per_cm: " << electrons_per_cm << std::endl;
   std::cout << "PHG4TpcDirectLaser::InitRun - electrons_per_gev " << electrons_per_gev << std::endl;
 
-  // TFile * infile1 = TFile::Open("theta_phi_laser.root");
-
-  std::string LASER_ANGLES_ROOTFILE = std::string(getenv("CALIBRATIONROOT")) + "/TPC/DirectLaser/theta_phi_laser.root";
-  TFile* infile1 = TFile::Open(LASER_ANGLES_ROOTFILE.c_str());
-
-  pattern = (TNtuple*) infile1->Get("angles");
-  pattern->SetBranchAddress("#theta", &theta_p);
-  pattern->SetBranchAddress("#phi", &phi_p);
+  // If using pattern stepping from file, load angles from CALIBRATIONROOT only then
+  if (m_steppingpattern)
+  {
+    const char* calibroot_env = std::getenv("CALIBRATIONROOT");
+    if (!calibroot_env)
+    {
+      std::cout << Name() << ": CALIBRATIONROOT is not set; disabling file-based pattern stepping" << std::endl;
+      m_steppingpattern = false;
+    }
+    else
+    {
+      const std::string LASER_ANGLES_ROOTFILE = std::string(calibroot_env) + "/TPC/DirectLaser/theta_phi_laser.root";
+      TFile* infile1 = TFile::Open(LASER_ANGLES_ROOTFILE.c_str());
+      if (!infile1 || infile1->IsZombie())
+      {
+        std::cout << Name() << ": cannot open " << LASER_ANGLES_ROOTFILE << "; disabling file-based pattern stepping" << std::endl;
+        m_steppingpattern = false;
+      }
+      else
+      {
+        pattern = dynamic_cast<TNtuple*>(infile1->Get("angles"));
+        if (!pattern)
+        {
+          std::cout << Name() << ": TNtuple 'angles' not found in " << LASER_ANGLES_ROOTFILE << "; disabling file-based pattern stepping" << std::endl;
+          m_steppingpattern = false;
+        }
+        else
+        {
+          pattern->SetBranchAddress("#theta", &theta_p);
+          pattern->SetBranchAddress("#phi", &phi_p);
+        }
+      }
+    }
+  }
 
   return Fun4AllReturnCodes::EVENT_OK;
 }
@@ -428,8 +455,11 @@ void PHG4TpcDirectLaser::SetupLasers()
     // rotate around z
     laser.m_position.RotateZ(laser.m_phi);
 
-    // append
-    m_lasers.push_back(laser);  // All lasers
+    // append: either all lasers or a selected single index
+    if (m_selected_laser_index < 0 || i == m_selected_laser_index)
+    {
+      m_lasers.push_back(laser);
+    }
     //  if(i==0) m_lasers.push_back(laser);//Only laser 1
     //  if(i==3) m_lasers.push_back(laser);// Laser 4
     // if(i<4) m_lasers.push_back(laser);//Lasers 1, 2, 3, 4
@@ -511,6 +541,15 @@ void PHG4TpcDirectLaser::AimToPatternStep_File(int n)
 
   // store as current pattern
   currentPatternStep = n;
+
+  if (!pattern)
+  {
+    if (Verbosity())
+    {
+      std::cout << Name() << ": pattern TNtuple not available; skipping file-based pattern step" << std::endl;
+    }
+    return;
+  }
 
   pattern->GetEntry(n);
 

@@ -81,6 +81,12 @@ class PHG4TpcDirectLaser : public SubsysReco, public PHParameterInterface
     arbitrary_phi = phi;
   }
 
+  /// select a single laser index (0..7). Set to -1 to use all.
+  void SetSingleLaserIndex(int idx)
+  {
+    m_selected_laser_index = idx;
+  }
+
  private:
   /// define lasers
   /* by default there are 4 lasers on each side of the TPC */
@@ -171,6 +177,9 @@ class PHG4TpcDirectLaser : public SubsysReco, public PHParameterInterface
   /// track map, used to store track parameters
   std::string m_track_map_name{"SvtxTrackMap"};
   SvtxTrackMap *m_track_map{nullptr};
+
+  /// single-laser selection; -1 means all lasers
+  int m_selected_laser_index{-1};
 };
 
 #endif
