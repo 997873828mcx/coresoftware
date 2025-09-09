@@ -33,6 +33,7 @@
 #include <cassert>
 #include <iostream>  // for operator<<, basic_os...
 #include <optional>
+#include <cstdlib>  // for std::getenv
 
 namespace
 {
@@ -42,34 +43,34 @@ namespace
 
   // utility
   template <class T>
-  inline constexpr T square(const T& x)
+  constexpr T square(const T& x)
   {
     return x * x;
   }
 
   // unique detector id for all direct lasers
-  static const int detId = PHG4HitDefs::get_volume_id("PHG4TpcDirectLaser");
+  const int detId = PHG4HitDefs::get_volume_id("PHG4TpcDirectLaser");
 
   ///@name units
   //@{
-  static constexpr double cm = 1.0;
+  constexpr double cm = 1.0;
   //@}
 
   /// speed of light, in cm per ns
-  static constexpr double speed_of_light = GSL_CONST_MKSA_SPEED_OF_LIGHT * 1e-7;
+  constexpr double speed_of_light = GSL_CONST_MKSA_SPEED_OF_LIGHT * 1e-7;
 
   /// length of generated G4Hits along laser track
-  static constexpr double maxHitLength = 1. * cm;
+  constexpr double maxHitLength = 1. * cm;
 
   /// TPC half length
-  static constexpr double halflength_tpc = 105.5 * cm;
+  constexpr double halflength_tpc = 105.5 * cm;
 
   // inner and outer radii of field cages/TPC
-  static constexpr double begin_CM = 20. * cm;
-  static constexpr double end_CM = 78. * cm;
+  constexpr double begin_CM = 20. * cm;
+  constexpr double end_CM = 78. * cm;
 
   // half the thickness of the CM;
-  static constexpr double halfwidth_CM = 0.5 * cm;
+  constexpr double halfwidth_CM = 0.5 * cm;
 
   //_____________________________________________________________
   std::optional<TVector3> central_membrane_intersection(const TVector3& start, const TVector3& direction)
@@ -175,7 +176,7 @@ namespace
     {
       return (ofc_dist > 0) ? ofc_strike : std::nullopt;
     }
-    else if (ofc_dist < 0)
+    if (ofc_dist < 0)
     {
       return ifc_strike;
     }
@@ -212,7 +213,7 @@ int PHG4TpcDirectLaser::InitRun(PHCompositeNode* topNode)
     std::cout << "Fun4AllDstPileupMerger::load_nodes - creating node G4TruthInfo" << std::endl;
 
     PHNodeIterator iter(topNode);
-    auto dstNode = dynamic_cast<PHCompositeNode*>(iter.findFirst("PHCompositeNode", "DST"));
+    auto* dstNode = dynamic_cast<PHCompositeNode*>(iter.findFirst("PHCompositeNode", "DST"));
     if (!dstNode)
     {
       std::cout << PHWHERE << "DST Node missing, aborting." << std::endl;
@@ -225,7 +226,7 @@ int PHG4TpcDirectLaser::InitRun(PHCompositeNode* topNode)
 
   // load and check G4Hit node
   hitnodename = "G4HIT_" + detector;
-  auto* g4hit = findNode::getClass<PHG4HitContainer>(topNode, hitnodename.c_str());
+  auto* g4hit = findNode::getClass<PHG4HitContainer>(topNode, hitnodename);
   if (!g4hit)
   {
     std::cout << Name() << " Could not locate G4HIT node " << hitnodename << std::endl;
@@ -239,7 +240,7 @@ int PHG4TpcDirectLaser::InitRun(PHCompositeNode* topNode)
   {
     // find DST node and check
     PHNodeIterator iter(topNode);
-    auto dstNode = static_cast<PHCompositeNode*>(iter.findFirst("PHCompositeNode", "DST"));
+    auto* dstNode = static_cast<PHCompositeNode*>(iter.findFirst("PHCompositeNode", "DST"));
     if (!dstNode)
     {
       std::cout << PHWHERE << "DST Node missing, aborting." << std::endl;
@@ -248,7 +249,7 @@ int PHG4TpcDirectLaser::InitRun(PHCompositeNode* topNode)
 
     // find or create SVTX node
     iter = PHNodeIterator(dstNode);
-    auto node = dynamic_cast<PHCompositeNode*>(iter.findFirst("PHCompositeNode", "SVTX"));
+    auto* node = dynamic_cast<PHCompositeNode*>(iter.findFirst("PHCompositeNode", "SVTX"));
     if (!node)
     {
       dstNode->addNode(node = new PHCompositeNode("SVTX"));
@@ -283,14 +284,40 @@ int PHG4TpcDirectLaser::InitRun(PHCompositeNode* topNode)
   std::cout << "PHG4TpcDirectLaser::InitRun - electrons_per_cm: " << electrons_per_cm << std::endl;
   std::cout << "PHG4TpcDirectLaser::InitRun - electrons_per_gev " << electrons_per_gev << std::endl;
 
-  // TFile * infile1 = TFile::Open("theta_phi_laser.root");
-
-  std::string LASER_ANGLES_ROOTFILE = std::string(getenv("CALIBRATIONROOT")) + "/TPC/DirectLaser/theta_phi_laser.root";
-  TFile* infile1 = TFile::Open(LASER_ANGLES_ROOTFILE.c_str());
-
-  pattern = (TNtuple*) infile1->Get("angles");
-  pattern->SetBranchAddress("#theta", &theta_p);
-  pattern->SetBranchAddress("#phi", &phi_p);
+  // If using pattern stepping from file, load angles from CALIBRATIONROOT only then
+  if (m_steppingpattern)
+  {
+    const char* calibroot_env = std::getenv("CALIBRATIONROOT");
+    if (!calibroot_env)
+    {
+      std::cout << Name() << ": CALIBRATIONROOT is not set; disabling file-based pattern stepping" << std::endl;
+      m_steppingpattern = false;
+    }
+    else
+    {
+      const std::string LASER_ANGLES_ROOTFILE = std::string(calibroot_env) + "/TPC/DirectLaser/theta_phi_laser.root";
+      TFile* infile1 = TFile::Open(LASER_ANGLES_ROOTFILE.c_str());
+      if (!infile1 || infile1->IsZombie())
+      {
+        std::cout << Name() << ": cannot open " << LASER_ANGLES_ROOTFILE << "; disabling file-based pattern stepping" << std::endl;
+        m_steppingpattern = false;
+      }
+      else
+      {
+        pattern = dynamic_cast<TNtuple*>(infile1->Get("angles"));
+        if (!pattern)
+        {
+          std::cout << Name() << ": TNtuple 'angles' not found in " << LASER_ANGLES_ROOTFILE << "; disabling file-based pattern stepping" << std::endl;
+          m_steppingpattern = false;
+        }
+        else
+        {
+          pattern->SetBranchAddress("#theta", &theta_p);
+          pattern->SetBranchAddress("#phi", &phi_p);
+        }
+      }
+    }
+  }
 
   return Fun4AllReturnCodes::EVENT_OK;
 }
@@ -303,7 +330,7 @@ int PHG4TpcDirectLaser::process_event(PHCompositeNode* topNode)
   assert(m_g4truthinfo);
 
   // load g4hit container
-  m_g4hitcontainer = findNode::getClass<PHG4HitContainer>(topNode, hitnodename.c_str());
+  m_g4hitcontainer = findNode::getClass<PHG4HitContainer>(topNode, hitnodename);
   assert(m_g4hitcontainer);
 
   // load track map
@@ -428,8 +455,11 @@ void PHG4TpcDirectLaser::SetupLasers()
     // rotate around z
     laser.m_position.RotateZ(laser.m_phi);
 
-    // append
-    m_lasers.push_back(laser);  // All lasers
+    // append: either all lasers or a selected single index
+    if (m_selected_laser_index < 0 || i == m_selected_laser_index)
+    {
+      m_lasers.push_back(laser);
+    }
     //  if(i==0) m_lasers.push_back(laser);//Only laser 1
     //  if(i==3) m_lasers.push_back(laser);// Laser 4
     // if(i<4) m_lasers.push_back(laser);//Lasers 1, 2, 3, 4
@@ -512,6 +542,15 @@ void PHG4TpcDirectLaser::AimToPatternStep_File(int n)
   // store as current pattern
   currentPatternStep = n;
 
+  if (!pattern)
+  {
+    if (Verbosity())
+    {
+      std::cout << Name() << ": pattern TNtuple not available; skipping file-based pattern step" << std::endl;
+    }
+    return;
+  }
+
   pattern->GetEntry(n);
 
   // calculate theta
@@ -577,14 +616,14 @@ void PHG4TpcDirectLaser::AppendLaserTrack(double theta, double phi, const PHG4Tp
   {
     // add vertex
     const auto vtxid = m_g4truthinfo->maxvtxindex() + 1;
-    const auto vertex = new PHG4VtxPoint_t(pos.x(), pos.y(), pos.z(), 0, vtxid);
+    auto* const vertex = new PHG4VtxPoint_t(pos.x(), pos.y(), pos.z(), 0, vtxid);
     m_g4truthinfo->AddVertex(vtxid, vertex);
 
     // increment track id
     trackid = m_g4truthinfo->maxtrkindex() + 1;
 
     // create new g4particle
-    auto particle = new PHG4Particle_t();
+    auto* particle = new PHG4Particle_t();
     particle->set_track_id(trackid);
     particle->set_vtx_id(vtxid);
     particle->set_parent_id(0);
@@ -675,7 +714,7 @@ void PHG4TpcDirectLaser::AppendLaserTrack(double theta, double phi, const PHG4Tp
     }
 
     // from phg4tpcsteppingaction.cc
-    auto hit = new PHG4Hit_t;
+    auto* hit = new PHG4Hit_t;
     hit->set_trkid(trackid);
     hit->set_layer(99);
 

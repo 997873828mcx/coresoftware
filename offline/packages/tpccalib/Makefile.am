@@ -39,6 +39,7 @@ libtpccalib_la_LIBADD = \
 
 pkginclude_HEADERS = \
   TpcDirectLaserReconstruction.h \
+  TpcLaserDNL.h \
   TpcSpaceChargeMatrixContainer.h \
   TpcSpaceChargeMatrixContainerv1.h \
   TpcSpaceChargeMatrixContainerv2.h \
@@ -68,6 +69,7 @@ libtpccalib_io_la_SOURCES = \
 
 libtpccalib_la_SOURCES = \
   TpcDirectLaserReconstruction.cc \
+  TpcLaserDNL.cc \
   TpcSpaceChargeMatrixInversion.cc \
   TpcSpaceChargeReconstruction.cc \
   TpcSpaceChargeReconstructionHelper.cc \
