@@ -41,6 +41,7 @@
 #include <iostream>
 #include <map>      // for _Rb_tree_cons...
 #include <utility>  // for pair
+#include <fstream>  // for std::ifstream
 
 class PHCompositeNode;
 class TrkrHitTruthAssoc;
@@ -227,8 +228,75 @@ int PHG4TpcPadPlaneReadout::InitRun(PHCompositeNode *topNode)
 	    }
 	}
     } 
-    std::cout<<"!!!!!Before Load Maps"<<std::endl;
   loadPadPlanes();
+
+  // Summarize SERF polygon availability and optionally enforce requirement
+  {
+    std::size_t poly_layers = 0;
+    std::vector<unsigned int> missing_layers;
+
+    // We consider readout layers to start at 7 (Pads is sized as 7 + 16*3)
+    constexpr unsigned int kFirstPolygonLayer = 7;
+
+    // Check if any layer has polygons at all
+    for (const auto &layerPads : Pads)
+    {
+      for (const auto &pad : layerPads)
+      {
+        if (pad.vertices.size() >= 3) { poly_layers++; break; }
+      }
+    }
+    m_serf_polygons_present = (poly_layers > 0);
+
+    // If SERF is desired, verify full coverage of all readout layers present in geometry
+    if (m_use_serf_padsharing)
+    {
+      if (!GeomContainer)
+      {
+        std::cerr << "PHG4TpcPadPlaneReadout: Geometry container missing in InitRun." << std::endl;
+        return Fun4AllReturnCodes::ABORTRUN;
+      }
+
+      PHG4TpcCylinderGeomContainer::ConstRange layerrange = GeomContainer->get_begin_end();
+      for (auto it = layerrange.first; it != layerrange.second; ++it)
+      {
+        unsigned int layer = static_cast<unsigned int>(it->second->get_layer());
+        if (layer < kFirstPolygonLayer) continue; // allow early layers to miss polygons
+        bool has_poly = false;
+        if (layer < Pads.size())
+        {
+          const auto &layerPads = Pads[layer];
+          for (const auto &pad : layerPads)
+          {
+            if (pad.vertices.size() >= 3) { has_poly = true; break; }
+          }
+        }
+        if (!has_poly) missing_layers.push_back(layer);
+      }
+
+      if (!m_serf_polygons_present)
+      {
+        std::cout << "PHG4TpcPadPlaneReadout: SERF requested but pad polygons not available; using analytic sharing."
+                  << " Call RequireSerfPadSharing(true) to abort instead." << std::endl;
+        if (m_require_serf)
+        {
+          std::cerr << "PHG4TpcPadPlaneReadout: SERF pad polygons required but missing. Aborting run." << std::endl;
+          return Fun4AllReturnCodes::ABORTRUN;
+        }
+      }
+
+      if (!missing_layers.empty())
+      {
+        std::cout << "PHG4TpcPadPlaneReadout: SERF polygons missing for "
+                  << missing_layers.size() << " readout layer(s) starting at layer 7." << std::endl;
+        if (m_require_serf_full)
+        {
+          std::cerr << "PHG4TpcPadPlaneReadout: RequireSerfFullCoverage enabled; aborting due to missing polygons in readout layers." << std::endl;
+          return Fun4AllReturnCodes::ABORTRUN;
+        }
+      }
+    }
+  }
 
   // 3) (optional) print a summary
     
@@ -545,23 +613,33 @@ void PHG4TpcPadPlaneReadout::rotatePointToSector(
     sectorFound = bestS;
   }
 
-  // ---- 2) rotate sector center to 12 o'clock -------------------------------
-  const double centerPhi = mid(sector_min_Phi[side][sectorFound],
-                               sector_max_Phi[side][sectorFound]);
-  const double dphi = wrap(PI/2.0 - centerPhi);
-  const double phiRot = wrap(phi + dphi);
+  // ---- 2) rotate to the reference sector (sector 2) ------------------------
+  // The SERF reference polygons are defined in the frame of sector 2.
+  // Rotate points from the found sector into the sector-2 frame by the
+  // boundary difference:
+  //   side 0 (South): dphi = sec_min[found] - sec_min[2]
+  //   side 1 (North): dphi = sec_max[found] - sec_max[2]
+  // We then rotate the point by -dphi so that boundaries align.
+  const int refSector = 2;
+  const double currentBoundary = (side == 0)
+      ? sector_min_Phi[side][sectorFound]
+      : sector_max_Phi[side][sectorFound];
+  const double refBoundary = (side == 0)
+      ? sector_min_Phi[side][refSector]
+      : sector_max_Phi[side][refSector];
+  const double dphi = wrap(currentBoundary - refBoundary);
+  const double phiRot = wrap(phi - dphi);
 
   xNew = R * std::cos(phiRot);
   yNew = R * std::sin(phiRot);
 
-  // ---- 3) mirror for North side to reuse South polygons --------------------
-  
-  constexpr unsigned NORTH_SIDE = 1;   // 
-  if (side == NORTH_SIDE)
+  // ---- 3) mirror for South side to match reference polygon handedness ------
+  // Looking from the South side outward (toward +z), the x-axis is to the left
+  // while the reference sector has x to the right, so flip x for side 0.
+  constexpr unsigned SOUTH_SIDE = 0;
+  if (side == SOUTH_SIDE)
   {
-    // reflect left/right in the canonical frame
     xNew = -xNew;
-    // yNew unchanged
   }
 }
 
@@ -610,8 +688,6 @@ bool PHG4TpcPadPlaneReadout::pointInPolygon(
         // does edge (j→i) straddle the horizontal ray at y?
         bool cond = ((yi > y) != (yj > y));
         if (cond) {
-                std::cout<<"Checking point ("<<x<<", "<<y<<") against polygon edge from ("
-               <<poly[i].x<<", "<<poly[i].y<<") to ("<<poly[j].x<<", "<<poly[j].y<<")"<<std::endl;
             // compute intersection's X coordinate on the edge at height y
             double x_intersect = xj + (xi - xj) * (y - yj) / (yi - yj);
             if (x < x_intersect) {
@@ -910,7 +986,18 @@ norm1 = 0.0;
   double t_integral = 0.0;
   double weight = 0.0;
 
-  if (m_use_serf_padsharing)
+  // Determine if SERF pad sharing is possible (pad polygons loaded)
+  bool have_polygons = true;
+  for (unsigned int layer_cand : cand_layers)
+  {
+    if (layer_cand >= Pads.size() || Pads[layer_cand].empty())
+    {
+      have_polygons = false;
+      break;
+    }
+  }
+
+  if (m_use_serf_padsharing && have_polygons)
   {
     // Pass 1: compute total Gaussian mass across all candidate layers
     double total_mass = 0.0;
@@ -994,6 +1081,11 @@ norm1 = 0.0;
   }
   else
   {
+    if (m_use_serf_padsharing && !have_polygons && !m_warned_serf_fallback)
+    {
+      std::cout << "PHG4TpcPadPlaneReadout: SERF polygons incomplete for some layers; per-hit fallback to analytic sharing is active." << std::endl;
+      m_warned_serf_fallback = true;
+    }
     // Analytic triangular response across all layers within 5σ
     // Pass 1: compute total radial weight across candidate layers
     const double inv_sqrt2_sigma = 1.0 / (M_SQRT2 * sigmaT);
@@ -1128,17 +1220,17 @@ double PHG4TpcPadPlaneReadout::check_phi(const unsigned int side, const double p
       double daPhi = 0;
       if (s == 0)
       {
-        daPhi = fabs(sector_min_Phi[side][11] + 2 * M_PI - sector_max_Phi[side][s]);
+        daPhi = std::fabs(sector_min_Phi[side][11] + 2 * M_PI - sector_max_Phi[side][s]);
       }
       else
       {
-        daPhi = fabs(sector_min_Phi[side][s - 1] - sector_max_Phi[side][s]);
+        daPhi = std::fabs(sector_min_Phi[side][s - 1] - sector_max_Phi[side][s]);
       }
       double min_phi = sector_max_Phi[side][s];
       double max_phi = sector_max_Phi[side][s] + daPhi;
       if (new_phi <= max_phi && new_phi >= min_phi)
       {
-        if (fabs(max_phi - new_phi) > fabs(new_phi - min_phi))
+        if (std::fabs(max_phi - new_phi) > std::fabs(new_phi - min_phi))
         {
           new_phi = min_phi - phi_bin_width / 5; 
         }
@@ -1199,8 +1291,9 @@ double PHG4TpcPadPlaneReadout::integratedDensityOfCircleAndPad(
     }
 
     // 1) Compute pad bounding box
-    double minx = pad[0].x, maxx = pad.back().x;
-    double miny = pad[0].y, maxy = pad.back().y;
+    // Initialize min/max from the same first vertex to ensure both extremas consider index 0
+    double minx = pad[0].x, maxx = pad[0].x;
+    double miny = pad[0].y, maxy = pad[0].y;
     for (size_t i = 1; i < pad.size(); ++i) {
         minx = std::min(minx, pad[i].x);
         maxx = std::max(maxx, pad[i].x);
@@ -1209,7 +1302,7 @@ double PHG4TpcPadPlaneReadout::integratedDensityOfCircleAndPad(
      //  std::cout<<"Pad point "<<i<<" x = "<<pad[i].x<<", y = "<<pad[i].y<<std::endl;
     }
 //std::cout<<"Pad 0: ( "<<pad[0].x<<" ; "<<pad[0].y<<" ) - ( "<<pad.back().x<<" ; "<<pad.back().y<<" );  Pad box "<<" minx = "<<minx<<", maxx = "<<maxx<<", miny = "<<miny<<", maxy = "<<maxy<<std::endl;
-    // 2) Intersect that box with the 3σ circle’s box
+    // 2) Intersect that box with the nσ circle’s box (n = _nsigmas)
     double x0 = std::max(minx, hitX - R);
     double x1 = std::min(maxx, hitX + R);
     double y0 = std::max(miny, hitY - R);
@@ -1237,7 +1330,7 @@ double PHG4TpcPadPlaneReadout::integratedDensityOfCircleAndPad(
             
             if (dx*dx + dy*dy > R*R) continue;
             // skip outside the pad polygon
-            //if (!pointInPolygon(x, y, pad)) continue;
+            if (!pointInPolygon(x, y, pad)) continue;
             // accumulate Gaussian density
             total += gaussConst * std::exp(-(dx*dx + dy*dy) / expDenominator);
            // std::cout<<" dx = "<<dx<<" dy = "<<dy<<" exp = "<<std::exp(-(dx*dx + dy*dy))<<std::endl;
@@ -1266,7 +1359,7 @@ void PHG4TpcPadPlaneReadout::SERF_zigzag_phibins(const unsigned int side, const 
   //  double phiNew = std::atan2(yNew,xNew);
   //double rad_gem_new = std::sqrt(xNew*xNew+ yNew*yNew);
  // std::cout<<"PHG4TpcPadPlaneReadout::SERF_zigzag_phibins: x = "<<x<<", y = "<<y<<", xNew = "<<xNew<<", yNew = "<<yNew<<" phiNew = "<<phiNew<<" rad_gem_new = "<<rad_gem_new<<std::endl;
- int tpc_module = (int)(layernum - 7)/16;
+  int tpc_module = (int)(layernum - 7)/16;
 /* int phi_bin = LayerGeom->get_phibin(phi, side);
  int sector = 0;
  for (int i=0;i<12;i++)
@@ -1301,7 +1394,7 @@ void PHG4TpcPadPlaneReadout::SERF_zigzag_phibins(const unsigned int side, const 
   
 //std::cout<<"   SERF    zigzags: phi " << phi << " philim_low_calc " << philim_low_calc << " philim_low " << philim_low
               //  << " philim_high_calc " << philim_high_calc << " philim_high " << philim_high << " phiNew = "<<phiNew<<" rad_gem_new = "<<rad_gem_new<< std::endl;
-    int phibin_low = LayerGeom->get_phibin(philim_high, side);
+  int phibin_low = LayerGeom->get_phibin(philim_high, side);
   int phibin_high = LayerGeom->get_phibin(philim_low, side);
   int npads = phibin_high - phibin_low;
 /*
@@ -1346,6 +1439,12 @@ void PHG4TpcPadPlaneReadout::SERF_zigzag_phibins(const unsigned int side, const 
 
     //std::cout<<"   SERF    zigzags: ipad " << ipad << " pad_now " << pad_now << " phibin_low " << phibin_low
          //     << " phibin_high " << phibin_high << " npads " << npads << "ntpc_phibins_sector[tpc_module] = "<<ntpc_phibins_sector[tpc_module]<<" pad look "<<ntpc_phibins_sector[tpc_module] - (pad_now - ntpc_phibins_sector[tpc_module]*sector) << std::endl;
+    // Guard against missing pad polygons
+    if (layernum >= Pads.size() || look_pad < 0 || static_cast<size_t>(look_pad) >= Pads[layernum].size())
+    {
+      // No polygon data for this pad/layer; skip contribution
+      continue;
+    }
     auto  padinfo = Pads[layernum][look_pad];
   // std::cout<<"Calculate charge for pad with cx = "<<padinfo.cx<<", cy = "<<padinfo.cy<<" phi from Pads = "<<padinfo.phi<<", phi center(get pad now) = "
  //  <<LayerGeom->get_phicenter(pad_now, side)<<", phi center(get look_pad) = "<<LayerGeom->get_phicenter(look_pad, side)<< "sigma = "<<cloud_sig_rp<< "sigma/r = "<<cloud_sig_rp/rad_gem <<" pad look "<<look_pad<<" number of vert = "<<padinfo.vertices.size()<<std::endl;
@@ -1438,7 +1537,7 @@ void PHG4TpcPadPlaneReadout::populate_zigzag_phibins(const unsigned int side, co
     }
     pads_phi[ipad] = LayerGeom->get_phicenter(pad_now, side);
     sum_of_pads_phi += pads_phi[ipad];
-    sum_of_pads_absphi += fabs(pads_phi[ipad]);
+    sum_of_pads_absphi += std::fabs(pads_phi[ipad]);
   }
 
   for (int ipad = 0; ipad <= npads; ipad++)
@@ -1478,7 +1577,7 @@ void PHG4TpcPadPlaneReadout::populate_zigzag_phibins(const unsigned int side, co
     const double sigma = cloud_sig_rp;       // eshulga
 
     // Checking if the pads are on the same side of the TPC in phi
-    if (fabs(sum_of_pads_phi) != sum_of_pads_absphi)
+    if (std::fabs(sum_of_pads_phi) != sum_of_pads_absphi)
     {
       if (phi < -M_PI / 2 && phi_now > 0)
       {
@@ -1490,7 +1589,7 @@ void PHG4TpcPadPlaneReadout::populate_zigzag_phibins(const unsigned int side, co
       }
       if (phi < 0 && phi_now > 0)
       {
-        x_loc_tmp = (phi_now + fabs(phi)) * radius;
+        x_loc_tmp = (phi_now + std::fabs(phi)) * radius;
       }
       if (phi > 0 && phi_now < 0)
       {
@@ -1596,7 +1695,7 @@ void PHG4TpcPadPlaneReadout::populate_tbins(const double t, const std::array<dou
       double tLim1 = 0.0;
       double tLim2 = 0.5 * M_SQRT2 * (-0.5 * tstepsize - tdisp) * cloud_sig_tt_inv[index1];
       // 1/2 * the erf is the integral probability from the argument Z value to zero, so this is the integral probability between the Z limits
-      double t_integral1 = 0.5 * (erf(tLim1) - erf(tLim2));
+      double t_integral1 = 0.5 * (std::erf(tLim1) - std::erf(tLim2));
 
       if (Verbosity() > 1000)
       {
@@ -1609,7 +1708,7 @@ void PHG4TpcPadPlaneReadout::populate_tbins(const double t, const std::array<dou
 
       tLim2 = 0.0;
       tLim1 = 0.5 * M_SQRT2 * (0.5 * tstepsize - tdisp) * cloud_sig_tt_inv[index2];
-      double t_integral2 = 0.5 * (erf(tLim1) - erf(tLim2));
+      double t_integral2 = 0.5 * (std::erf(tLim1) - std::erf(tLim2));
 
       if (Verbosity() > 1000)
       {
@@ -1651,7 +1750,7 @@ void PHG4TpcPadPlaneReadout::populate_tbins(const double t, const std::array<dou
       }
       double tLim1 = 0.5 * M_SQRT2 * ((it + 0.5) * tstepsize - tdisp) * cloud_sig_tt_inv[index];
       double tLim2 = 0.5 * M_SQRT2 * ((it - 0.5) * tstepsize - tdisp) * cloud_sig_tt_inv[index];
-      t_integral = 0.5 * (erf(tLim1) - erf(tLim2));
+      t_integral = 0.5 * (std::erf(tLim1) - std::erf(tLim2));
 
       if (Verbosity() > 1000)
       {
@@ -1707,7 +1806,9 @@ void PHG4TpcPadPlaneReadout::SetDefaultParameters()
   set_default_double_param("tpc_maxradius_mid", 57.475);    // 60.0);
   set_default_double_param("tpc_maxradius_outer", 75.911);  // 77.0);  // from Tom
 
-  set_default_double_param("neffelectrons_threshold", 1.0);
+  // Minimum effective electrons per (pad,tbin) to create a hit
+  // Set to 0.0 by default to include all contributions
+  set_default_double_param("neffelectrons_threshold", 0.0);
   set_default_double_param("maxdriftlength", 105.5);     // cm
   set_default_double_param("tpc_adc_clock", 53.326184);  // ns, for 18.8 MHz clock
   set_default_double_param("gem_cloud_sigma", 0.04);     // cm = 400 microns

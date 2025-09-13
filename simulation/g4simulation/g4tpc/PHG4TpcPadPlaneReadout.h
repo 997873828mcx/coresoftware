@@ -41,6 +41,10 @@ class PHG4TpcPadPlaneReadout : public PHG4TpcPadPlane
   void SetLangauParsFileName(const std::string &name) {m_tpc_langau_pars_file = name;}
   // Pad-sharing method selection: true → SERF polygon overlap; false → analytic triangle
   void UseSerfPadSharing(bool use_serf) { m_use_serf_padsharing = use_serf; }
+  // If true and SERF polygons are unavailable, abort InitRun with an error
+  void RequireSerfPadSharing(bool require) { m_require_serf = require; }
+  // If true, also require polygons for all readout layers (partial coverage aborts)
+  void RequireSerfFullCoverage(bool require) { m_require_serf_full = require; }
 
   void SetDriftVelocity(double vd) override { drift_velocity = vd; }
   void SetReadoutTime(float t) override { extended_readout_time = t; }
@@ -75,7 +79,9 @@ class PHG4TpcPadPlaneReadout : public PHG4TpcPadPlane
   PHG4TpcCylinderGeomContainer *GeomContainer = nullptr;
   PHG4TpcCylinderGeom *LayerGeom = nullptr;
 
-  double neffelectrons_threshold = std::numeric_limits<double>::signaling_NaN();
+  // Minimum effective electrons per (pad,tbin) to create a hit.
+  // Default to 0.0 so all contributions are kept unless configured otherwise.
+  double neffelectrons_threshold = 0.0;
 
   std::array<double, 3> MinRadius{};
   std::array<double, 3> MaxRadius{};
@@ -174,6 +180,10 @@ double max_radii_module[3]={399.85222874031024, 569.695373910603, 753.6667758418
 
   // choose between SERF polygon overlap (default) and triangle response
   bool m_use_serf_padsharing = true;
+  bool m_require_serf = false;
+  bool m_require_serf_full = false;
+  bool m_serf_polygons_present = false; // summarized availability after InitRun
+  bool m_warned_serf_fallback = false;  // printed once if per-hit fallback occurs
 
 
 
