@@ -27,6 +27,9 @@
 #include <TFile.h>
 #include <TNtuple.h>
 #include <TVector3.h>  // for TVector3, operator*
+#include <phool/PHRandomSeed.h>
+#include <gsl/gsl_rng.h>
+#include <gsl/gsl_randist.h>
 
 #include <gsl/gsl_const_mksa.h>  // for the speed of light
 
@@ -268,6 +271,13 @@ int PHG4TpcDirectLaser::InitRun(PHCompositeNode* topNode)
   // setup lasers
   SetupLasers();
 
+  // allocate and seed private GSL RNG for random-phi sampling
+  m_rng.reset(gsl_rng_alloc(gsl_rng_mt19937));
+  if (m_rng)
+  {
+    gsl_rng_set(m_rng.get(), PHRandomSeed());
+  }
+
   // print configuration
   if (m_steppingpattern == true)
   {
@@ -337,7 +347,22 @@ int PHG4TpcDirectLaser::process_event(PHCompositeNode* topNode)
   m_track_map = findNode::getClass<SvtxTrackMap>(topNode, m_track_map_name);
   assert(m_track_map);
 
-  if (m_autoAdvanceDirectLaser || m_steppingpattern)
+  // if random phi mode is enabled, override stepping and pick a uniform phi in [minPhi,maxPhi]
+  if (m_use_random_phi)
+  {
+    // use configured theta; if a range was set, pick the lower edge (common usage is a fixed theta)
+    const double theta = (nThetaSteps > 0) ? minTheta : 0.0;
+    // draw phi parameter uniformly in [minPhi, maxPhi]
+    double phi = minPhi;
+    if (maxPhi > minPhi)
+    {
+      // uniform draw from [minPhi,maxPhi) using module-private GSL RNG
+      const double width = (maxPhi - minPhi);
+      phi = minPhi + gsl_ran_flat(m_rng.get(), 0.0, width);
+    }
+    AimToThetaPhi(theta, phi);
+  }
+  else if (m_autoAdvanceDirectLaser || m_steppingpattern)
   {
     AimToNextPatternStep();
   }
@@ -577,8 +602,9 @@ void PHG4TpcDirectLaser::AppendLaserTrack(double theta, double phi, const PHG4Tp
     return;
   }
 
-  // store laser position
-  const auto& pos = laser.m_position;
+  // store laser position; optionally rotate origin with phi so that
+  // the origin azimuth matches the direction azimuth (radial emission)
+  TVector3 pos = laser.m_position;
 
   // define track direction
   const auto& direction = laser.m_direction;
@@ -590,10 +616,12 @@ void PHG4TpcDirectLaser::AppendLaserTrack(double theta, double phi, const PHG4Tp
   if (laser.m_direction == -1)
   {
     dir.RotateZ(phi);  // if +z facing -z
+    if (m_lock_origin_to_phi) pos.RotateZ(phi);
   }
   else
   {
     dir.RotateZ(-phi);  // if -z facting +z
+    if (m_lock_origin_to_phi) pos.RotateZ(-phi);
   }
 
   // also rotate by laser azimuth
@@ -638,18 +666,19 @@ void PHG4TpcDirectLaser::AppendLaserTrack(double theta, double phi, const PHG4Tp
   // store in SvtxTrack map
   if (m_track_map)
   {
-    SvtxTrack_v2 track;
-    track.set_x(pos.x());
-    track.set_y(pos.y());
-    track.set_z(pos.z());
+    // allocate on heap; SvtxTrackMap takes ownership
+    auto* track = new SvtxTrack_v2();
+    track->set_x(pos.x());
+    track->set_y(pos.y());
+    track->set_z(pos.z());
 
     // total momentum is irrelevant. What matters is the direction
-    track.set_px(total_momentum * dir.x());
-    track.set_py(total_momentum * dir.y());
-    track.set_pz(total_momentum * dir.z());
+    track->set_px(total_momentum * dir.x());
+    track->set_py(total_momentum * dir.y());
+    track->set_pz(total_momentum * dir.z());
 
     // insert in map
-    m_track_map->insert(&track);
+    m_track_map->insert(track);
 
     if (Verbosity())
     {

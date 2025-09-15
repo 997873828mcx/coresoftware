@@ -24,6 +24,9 @@
 #include <cmath>
 #include <iostream>
 
+// For EventHeader event sequence tagging
+#include <ffaobjects/EventHeader.h>
+
 TpcLaserDNL::TpcLaserDNL(const std::string& name)
 : SubsysReco(name)
 {}
@@ -42,6 +45,7 @@ m_tt->Branch("phi_reco",&m_phi_reco,"phi_reco/D");
 m_tt->Branch("dphi",&m_dphi,"dphi/D");
 m_tt->Branch("dRphi",&m_dRphi,"dRphi/D");
 m_tt->Branch("nused",&m_nused,"nused/I");
+m_tt->Branch("nhit_scanned",&m_nhit_scanned,"nhit_scanned/I");
 m_tt->Branch("adcsum",&m_adcsum,"adcsum/D");
 m_tt->Branch("xtrue",&m_xtrue,"xtrue/D");
 m_tt->Branch("ytrue",&m_ytrue,"ytrue/D");
@@ -49,6 +53,11 @@ m_tt->Branch("ztrue",&m_ztrue,"ztrue/D");
 m_tt->Branch("xreco",&m_xreco,"xreco/D");
 m_tt->Branch("yreco",&m_yreco,"yreco/D");
 m_tt->Branch("zreco",&m_zreco,"zreco/D");
+// debug vectors (only filled with hits that pass selection)
+m_tt->Branch("hitkey",&m_hitkeys);
+m_tt->Branch("hitsetkey",&m_hitsetkeys);
+m_tt->Branch("iphi",&m_iphi);
+m_tt->Branch("tbin",&m_tbin);
 return 0;
 }
 
@@ -71,6 +80,9 @@ int TpcLaserDNL::InitRun(PHCompositeNode* topNode)
               << " Geom=" << (m_geom!=nullptr) << " Acts=" << (m_acts!=nullptr) << std::endl;
     return -1;
   }
+  std::cout << Name() << ": InitRun OK. mode="
+            << (m_use_clusters? "clusters" : "hits")
+            << ", vdrift=" << m_acts->get_drift_velocity() << " cm/ns" << std::endl;
   return 0;
 }
 
@@ -108,21 +120,57 @@ double TpcLaserDNL::wrap_dphi(double d)
   return d;
 }
 
-int TpcLaserDNL::process_event(PHCompositeNode*)
+int TpcLaserDNL::process_event(PHCompositeNode* topNode)
 {
 // optional EventHeader if desired; not required for tree
 // m_event can be incremented locally if no EventHeader present
 static int ievt=0;
-m_event = ievt++;
 
-if(!m_track_map || !m_geom || !m_acts) return 0;
-if(!m_use_clusters && !m_hitsets) return 0;
-if(m_use_clusters && !m_clusters) return 0;
+// Prefer the EventHeader sequence if available; else fall back to local counter
+if (auto* eh = findNode::getClass<EventHeader>(topNode, "EventHeader"))
+{
+  m_event = eh->get_EvtSequence();
+}
+else
+{
+  m_event = ievt++;
+}
+
+if(!m_track_map || !m_geom || !m_acts) 
+{
+  std::cout << "wrong" << std::endl;
+  return 0;
+}
+if(!m_use_clusters && !m_hitsets) 
+{
+  std::cout << "wrong" << std::endl;
+  return 0;
+}
+if(m_use_clusters && !m_clusters) 
+{
+  std::cout << "wrong" << std::endl;
+  return 0;
+}
+
+// quick visibility of container content each event
+std::size_t tpc_hitset_count = 0;
+{
+  auto hr = m_hitsets->getHitSets(TrkrDefs::TrkrId::tpcId);
+  for(auto it = hr.first; it != hr.second; ++it) ++tpc_hitset_count;
+}
+std::cout << Name() << ": process_event evt=" << m_event
+          << " tpc_hitsets=" << tpc_hitset_count
+          << " use_clusters=" << (m_use_clusters?1:0)
+          << std::endl;
+
+int ntracks = 0;
 
 for(const auto& it : *m_track_map)
 {
-const auto* trk = it.second;
-if(!trk) continue;
+  const auto* trk = it.second;
+  if(!trk) continue;
+  m_trkid = trk->get_id();
+  ++ntracks;
 m_trkid = trk->get_id();
 const double x0 = trk->get_x();
 const double y0 = trk->get_y();
@@ -135,31 +183,36 @@ if(v2==0) continue;
 
 // loop TPC layers
 auto lr = m_geom->get_begin_end();
-for(auto lit = lr.first; lit != lr.second; ++lit)
-{
-  PHG4TpcCylinderGeom* layergeom = lit->second;
-  if(!layergeom) continue;
+  for(auto lit = lr.first; lit != lr.second; ++lit)
+  {
+    PHG4TpcCylinderGeom* layergeom = lit->second;
+    if(!layergeom) continue;
 
-  const double R = layergeom->get_radius();   // layer center radius
-  double tR{}, xi{}, yi{}, zi{};
-  if(!cylinder_intersection(x0,y0,z0,vx,vy,vz,R,tR,xi,yi,zi)) continue;
+    const double R = layergeom->get_radius();   // layer center radius
+    double tR{}, xi{}, yi{}, zi{};
+    if(!cylinder_intersection(x0,y0,z0,vx,vy,vz,R,tR,xi,yi,zi)) continue;
 
-  // truth ref at intersection
-  m_layer = layergeom->get_layer();
-  m_r = R;
-  m_xtrue = xi; m_ytrue = yi; m_ztrue = zi;
-  m_phi_true = std::atan2(yi, xi);
-  m_side = (zi > 0) ? 1 : 0;
+    // truth ref at intersection
+    m_layer = layergeom->get_layer();
+    m_r = R;
+    m_xtrue = xi; m_ytrue = yi; m_ztrue = zi;
+    m_phi_true = std::atan2(yi, xi);
+    m_side = (zi > 0) ? 1 : 0;
 
-  // convert hits to global and select those near the line
-  const double AdcClockPeriod = layergeom->get_zstep();
-  const unsigned short NTBins = (unsigned short)layergeom->get_zbins();
-  const double tdriftmax = AdcClockPeriod * NTBins / 2.0;
-  const double vdrift = m_acts->get_drift_velocity();
+    // convert hits to global and select those near the line
+    const double AdcClockPeriod = layergeom->get_zstep();
+    const unsigned short NTBins = (unsigned short)layergeom->get_zbins();
+    const double tdriftmax = AdcClockPeriod * NTBins / 2.0;
+    const double vdrift = m_acts->get_drift_velocity();
 
-  double wx=0, wy=0, wz=0, wsum=0;
-  m_nused = 0;
-  m_adcsum = 0;
+    double wx=0, wy=0, wz=0, wsum=0;
+    m_nused = 0;
+    m_nhit_scanned = 0;
+    m_adcsum = 0;
+    m_hitkeys.clear();
+    m_hitsetkeys.clear();
+    m_iphi.clear();
+    m_tbin.clear();
 
   if(!m_use_clusters)
   {
@@ -180,6 +233,7 @@ for(auto lit = lr.first; lit != lr.second; ++lit)
         const auto hitkey = hitit->first;
         TrkrHit* hit = hitit->second;
         if(!hit) continue;
+        ++m_nhit_scanned;
 
         // choose weight: ADC (default) or charge (hit energy)
         double weight = m_weight_by_adc ? static_cast<double>(hit->getAdc())
@@ -190,19 +244,8 @@ for(auto lit = lr.first; lit != lr.second; ++lit)
         const unsigned short iphi = TpcDefs::getPad(hitkey);
         const unsigned short tbin = TpcDefs::getTBin(hitkey);
 
-        // side-aware phi center: convert global pad index to local-in-sector index
-        const unsigned int phibins = static_cast<unsigned int>(layergeom->get_phibins());
-        const unsigned int pads_per_sector = phibins / 12u;
-        const unsigned int sector = static_cast<unsigned int>(TpcDefs::getSectorId(hsk));
-        const unsigned int local_pad = (pads_per_sector > 0) ? (static_cast<unsigned int>(iphi) - sector * pads_per_sector) : 0u;
-
-        // use per-side sector max phi to compute center, mirroring matches readout definition
-        const auto& sec_max_phi_all = layergeom->get_sector_max_phi();
-        const double sec_max_phi = (sector < sec_max_phi_all[m_side].size()) ? sec_max_phi_all[m_side][sector] : 0.0;
-        const double phistep = layergeom->get_phistep();
-        double phi_c = sec_max_phi - ( (static_cast<double>(local_pad) + 0.5) * phistep );
-        if (phi_c <= -M_PI) phi_c += 2.0*M_PI;
-
+        // Use geometry-provided pad-center calculation to avoid sector/orientation mismatches
+        const double phi_c = layergeom->get_phicenter(static_cast<int>(iphi), m_side);
         const double xh = R*std::cos(phi_c);
         const double yh = R*std::sin(phi_c);
 
@@ -232,6 +275,11 @@ for(auto lit = lr.first; lit != lr.second; ++lit)
         wsum += weight;
         m_adcsum += weight;
         m_nused++;
+        // record used-hit debug info
+        m_hitkeys.push_back(static_cast<ULong64_t>(hitkey));
+        m_hitsetkeys.push_back(static_cast<ULong64_t>(hsk));
+        m_iphi.push_back(static_cast<unsigned int>(iphi));
+        m_tbin.push_back(static_cast<unsigned int>(tbin));
       }
     }
   }
@@ -283,18 +331,52 @@ for(auto lit = lr.first; lit != lr.second; ++lit)
     }
   }
 
-  if(wsum > 0)
-  {
-    m_xreco = wx/wsum;
-    m_yreco = wy/wsum;
-    m_zreco = wz/wsum;
-    m_phi_reco = std::atan2(m_yreco, m_xreco);
-    m_dphi = wrap_dphi(m_phi_reco - m_phi_true);
-    m_dRphi = m_r * m_dphi;
-    m_tt->Fill();
-  }
+  // Always write one row per layer if any hits were scanned.
+  // If no hits passed selection (wsum==0), keep reco equal to truth and adcsum=0 for diagnostics.
+  //if (m_nhit_scanned > 0)
+  //{
+    if(wsum > 0)
+    {
+      m_xreco = wx/wsum;
+      m_yreco = wy/wsum;
+      m_zreco = wz/wsum;
+      m_phi_reco = std::atan2(m_yreco, m_xreco);
+      m_dphi = wrap_dphi(m_phi_reco - m_phi_true);
+      m_dRphi = m_r * m_dphi;
+      m_tt->Fill();
+    }
+    
+   
+    /* std::cout << Name() << ": evt " << m_event
+              << " trk " << m_trkid
+              << " layer " << m_layer
+              << " side " << m_side
+              << " scanned " << m_nhit_scanned
+              << " used " << m_nused
+              << " adcsum " << m_adcsum
+              << " wsum " << wsum
+              << std::endl; */
+  //}
+  //else
+  //{
+    // no hits seen for this layer for this track; print a minimal hint when containers had content
+  //  if (tpc_hitset_count > 0)
+   // {
+   //   std::cout << Name() << ": evt " << m_event
+    //            << " trk " << m_trkid
+    //            << " layer " << m_layer
+    //            << " side " << m_side
+    //            << " scanned=0 (no matching hitsets/hits)"
+    //            << std::endl;
+   // }
+  //}
 } // layers
 } // tracks
+
+if (ntracks==0)
+{
+  std::cout << Name() << ": evt " << m_event << " has no tracks in SvtxTrackMap" << std::endl;
+}
 
 return 0;
 }

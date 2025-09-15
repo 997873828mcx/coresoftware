@@ -12,6 +12,9 @@
 #include <limits>
 #include <string>  // for string, allocator
 #include <vector>  // for vector
+#include <memory>
+
+#include <gsl/gsl_rng.h>
 
 class PHG4HitContainer;
 class SvtxTrackMap;
@@ -85,6 +88,29 @@ class PHG4TpcDirectLaser : public SubsysReco, public PHParameterInterface
   void SetSingleLaserIndex(int idx)
   {
     m_selected_laser_index = idx;
+  }
+
+  /// when true, rotate the laser origin around z by the same phi step
+  /// used for the direction, so that the global azimuth of the origin
+  /// matches the direction (radial emission).
+  void SetLockOriginToPhi(bool value)
+  {
+    m_lock_origin_to_phi = value;
+  }
+
+  /// enable random phi per event within [minPhi,maxPhi]
+  /// when enabled, process_event ignores stepping and draws a uniform phi each event
+  void EnableRandomPhi(bool value)
+  {
+    m_use_random_phi = value;
+  }
+
+  /// convenience: set random phi range and enable
+  void SetRandomPhiRange(double min, double max)
+  {
+    minPhi = min;
+    maxPhi = max;
+    m_use_random_phi = true;
   }
 
  private:
@@ -180,6 +206,16 @@ class PHG4TpcDirectLaser : public SubsysReco, public PHParameterInterface
 
   /// single-laser selection; -1 means all lasers
   int m_selected_laser_index{-1};
+
+  /// if true, rotate origin with phi so direction is radial wrt layers
+  bool m_lock_origin_to_phi{false};
+
+  /// if true, choose a random phi each event between [minPhi,maxPhi]
+  bool m_use_random_phi{false};
+
+  // GSL RNG for random-phi sampling (private to this module)
+  struct GslDeleter { void operator()(gsl_rng* p) const { if(p) gsl_rng_free(p); } };
+  std::unique_ptr<gsl_rng, GslDeleter> m_rng;
 };
 
 #endif

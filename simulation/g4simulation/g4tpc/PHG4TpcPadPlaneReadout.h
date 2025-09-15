@@ -56,8 +56,12 @@ class PHG4TpcPadPlaneReadout : public PHG4TpcPadPlane
 
   void SetDefaultParameters() override;
   void UpdateInternalParameters() override;
-   
 
+  // Debug printing helpers
+  // If set >= 0, limit PadHit prints to a single layer number; otherwise prints for all layers.
+  void SetDebugPadHitLayer(int layer) { m_dbg_pad_hit_layer = layer; }
+
+ 
  private:
 
   //  void populate_rectangular_phibins(const unsigned int layernum, const double phi, const double cloud_sig_rp, std::vector<int> &pad_phibin, std::vector<double> &pad_phibin_share);
@@ -185,6 +189,8 @@ double max_radii_module[3]={399.85222874031024, 569.695373910603, 753.6667758418
   bool m_serf_polygons_present = false; // summarized availability after InitRun
   bool m_warned_serf_fallback = false;  // printed once if per-hit fallback occurs
 
+  // Debug: restrict PadHit prints to a single layer (or all if < 0)
+  int m_dbg_pad_hit_layer = 49;
 
 
 };

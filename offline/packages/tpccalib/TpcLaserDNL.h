@@ -5,6 +5,8 @@
 
 #include <string>
 #include <memory>
+#include <vector>
+#include <Rtypes.h>
 
 class SvtxTrackMap;
 class TrkrHitSetContainer;
@@ -72,9 +74,16 @@ double m_phi_reco{0};
 double m_dphi{0};
 double m_dRphi{0};
 int m_nused{0};
+int m_nhit_scanned{0};
 double m_adcsum{0};
 double m_xtrue{0}, m_ytrue{0}, m_ztrue{0};
 double m_xreco{0}, m_yreco{0}, m_zreco{0};
+
+// debug vectors: store per-hit info for used hits
+std::vector<ULong64_t> m_hitkeys;
+std::vector<ULong64_t> m_hitsetkeys;
+std::vector<unsigned int> m_iphi;
+std::vector<unsigned int> m_tbin;
 
 // helpers
 static bool cylinder_intersection(double x0,double y0,double z0,

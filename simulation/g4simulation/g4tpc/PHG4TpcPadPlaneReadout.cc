@@ -1068,6 +1068,20 @@ norm1 = 0.0;
           if (!single_hit) { single_hit = new TrkrHitv2(); single_hitsetit->second->addHitSpecificKey(hitkey, single_hit); }
           single_hit->addEnergy(neffelectrons_bin);
 
+          if (Verbosity() > 50)
+          {
+            const int layer_print = static_cast<int>(layer_cand);
+            if (m_dbg_pad_hit_layer < 0 || layer_print == m_dbg_pad_hit_layer)
+            {
+              std::cout << "PadHit: layer=" << layer_cand
+                        << " side=" << side
+                        << " pad=" << pad_num
+                        << " tbin=" << tbin_num
+                        << " energy=" << neffelectrons_bin
+                        << std::endl;
+            }
+          }
+
           tpc_truth_clusterer.addhitset(hitsetkey, hitkey, neffelectrons_bin);
 
           const double tcenter  = LayerGeom->get_zcenter(tbin_num);
@@ -1166,6 +1180,20 @@ norm1 = 0.0;
           TrkrHit* single_hit = single_hitsetit->second->getHit(hitkey);
           if (!single_hit) { single_hit = new TrkrHitv2(); single_hitsetit->second->addHitSpecificKey(hitkey, single_hit); }
           single_hit->addEnergy(neffelectrons_bin);
+
+          if (Verbosity() > 50)
+          {
+            const int layer_print = static_cast<int>(layer_cand);
+            if (m_dbg_pad_hit_layer < 0 || layer_print == m_dbg_pad_hit_layer)
+            {
+              std::cout << "PadHit: layer=" << layer_cand
+                        << " side=" << side
+                        << " pad=" << pad_num
+                        << " tbin=" << tbin_num
+                        << " energy=" << neffelectrons_bin
+                        << std::endl;
+            }
+          }
 
           tpc_truth_clusterer.addhitset(hitsetkey, hitkey, neffelectrons_bin);
 
