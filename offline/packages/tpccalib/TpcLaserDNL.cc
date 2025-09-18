@@ -58,6 +58,7 @@ m_tt->Branch("zreco",&m_zreco,"zreco/D");
 m_tt->Branch("npad_used",&m_npad_used,"npad_used/I");
 m_tt->Branch("phi_pad_max",&m_phi_pad_max,"phi_pad_max/D");
 m_tt->Branch("phase",&m_phase,"phase/D");
+m_tt->Branch("phase_reco",&m_phase_reco,"phase_reco/D");
 m_tt->Branch("pad_phi_center",&m_pad_phi_centers);
 // debug vectors (only filled with hits that pass selection)
 m_tt->Branch("hitkey",&m_hitkeys);
@@ -223,6 +224,7 @@ auto lr = m_geom->get_begin_end();
     m_npad_used = 0;
     m_phi_pad_max = std::numeric_limits<double>::quiet_NaN();
     m_phase = std::numeric_limits<double>::quiet_NaN();
+    m_phase_reco = std::numeric_limits<double>::quiet_NaN();
 
     std::map<unsigned short, double> padWeights;
 
@@ -377,12 +379,15 @@ auto lr = m_geom->get_begin_end();
         const double phi_width = std::abs(layergeom->get_phistep());
         if(phi_width > 1e-12 && std::isfinite(m_phi_pad_max))
         {
-          const double dphi_phase = wrap_dphi(m_phi_true - m_phi_pad_max);
-          m_phase = dphi_phase / phi_width;
+          const double dphi_phase_true = wrap_dphi(m_phi_true - m_phi_pad_max);
+          const double dphi_phase_reco = wrap_dphi(m_phi_reco - m_phi_pad_max);
+          m_phase = dphi_phase_true / phi_width;
+          m_phase_reco = dphi_phase_reco / phi_width;
         }
         else
         {
           m_phase = std::numeric_limits<double>::quiet_NaN();
+          m_phase_reco = std::numeric_limits<double>::quiet_NaN();
         }
       }
 
