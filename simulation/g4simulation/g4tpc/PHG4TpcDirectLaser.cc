@@ -27,6 +27,8 @@
 #include <TFile.h>
 #include <TNtuple.h>
 #include <TVector3.h>  // for TVector3, operator*
+#include <g4detectors/PHG4TpcCylinderGeom.h>
+#include <g4detectors/PHG4TpcCylinderGeomContainer.h>
 #include <phool/PHRandomSeed.h>
 #include <gsl/gsl_rng.h>
 #include <gsl/gsl_randist.h>
@@ -34,6 +36,9 @@
 #include <gsl/gsl_const_mksa.h>  // for the speed of light
 
 #include <cassert>
+#include <cmath>
+#include <limits>
+#include <algorithm>
 #include <iostream>  // for operator<<, basic_os...
 #include <optional>
 #include <cstdlib>  // for std::getenv
@@ -268,6 +273,44 @@ int PHG4TpcDirectLaser::InitRun(PHCompositeNode* topNode)
   electrons_per_cm = get_int_param("electrons_per_cm");
   electrons_per_gev = get_double_param("electrons_per_gev");
 
+  m_tilt_layer = get_int_param("tilt_layer");
+  m_tilt_steps = std::max(1, get_int_param("tilt_steps"));
+  m_tilt_min_deg = get_double_param("tilt_min_deg");
+  m_tilt_max_deg = get_double_param("tilt_max_deg");
+  const double tilt_angle_deg = get_double_param("tilt_angle_deg");
+  m_tilt_angle_rad = tilt_angle_deg * M_PI / 180.;
+  m_active_tilt_angle_rad = m_tilt_angle_rad;
+  m_current_tilt_step = 0;
+  const bool use_tilt_range = (m_tilt_steps > 1) && (std::abs(m_tilt_max_deg - m_tilt_min_deg) > 1e-6);
+  if (use_tilt_range)
+  {
+    m_active_tilt_angle_rad = m_tilt_min_deg * M_PI / 180.;
+  }
+  m_enable_tilt = (m_tilt_layer >= 0) && (use_tilt_range || std::abs(m_active_tilt_angle_rad) > 0.0);
+  m_tilt_reference_radius = std::numeric_limits<double>::quiet_NaN();
+
+  if (m_enable_tilt)
+  {
+    m_tpc_geom = findNode::getClass<PHG4TpcCylinderGeomContainer>(topNode, "CYLINDERCELLGEOM_SVTX");
+    if (!m_tpc_geom)
+    {
+      std::cout << Name() << ": CYLINDERCELLGEOM_SVTX node not found; disabling transverse tilt" << std::endl;
+      m_enable_tilt = false;
+    }
+    else
+    {
+      if (auto* geom = m_tpc_geom->GetLayerCellGeom(m_tilt_layer))
+      {
+        m_tilt_reference_radius = geom->get_radius();
+      }
+      else
+      {
+        std::cout << Name() << ": geometry for tilt layer " << m_tilt_layer << " not found; disabling transverse tilt" << std::endl;
+        m_enable_tilt = false;
+      }
+    }
+  }
+
   // setup lasers
   SetupLasers();
 
@@ -293,6 +336,20 @@ int PHG4TpcDirectLaser::InitRun(PHCompositeNode* topNode)
   }
   std::cout << "PHG4TpcDirectLaser::InitRun - electrons_per_cm: " << electrons_per_cm << std::endl;
   std::cout << "PHG4TpcDirectLaser::InitRun - electrons_per_gev " << electrons_per_gev << std::endl;
+  if (m_enable_tilt)
+  {
+    std::cout << "PHG4TpcDirectLaser::InitRun - transverse tilt layer: " << m_tilt_layer
+              << " angle(deg): ";
+    if (use_tilt_range)
+    {
+      std::cout << m_tilt_min_deg << " -> " << m_tilt_max_deg
+                << " in " << m_tilt_steps << " steps" << std::endl;
+    }
+    else
+    {
+      std::cout << tilt_angle_deg << std::endl;
+    }
+  }
 
   // If using pattern stepping from file, load angles from CALIBRATIONROOT only then
   if (m_steppingpattern)
@@ -398,6 +455,13 @@ void PHG4TpcDirectLaser::SetDefaultParameters()
 
   // number of electrons deposited by laser per cm
   set_default_int_param("electrons_per_cm", 72);
+
+  // optional transverse tilt (disabled by default)
+  set_default_int_param("tilt_layer", -1);
+  set_default_double_param("tilt_angle_deg", 0.0);
+  set_default_double_param("tilt_min_deg", 0.0);
+  set_default_double_param("tilt_max_deg", 0.0);
+  set_default_int_param("tilt_steps", 1);
 }
 
 //_____________________________________________________________
@@ -517,11 +581,42 @@ void PHG4TpcDirectLaser::AimToThetaPhi(double theta, double phi)
     std::cout << "PHG4TpcDirectLaser::AimToThetaPhi - theta: " << theta << " phi: " << phi << std::endl;
   }
 
+  if (m_enable_tilt)
+  {
+    UpdateActiveTiltAngle();
+    if (Verbosity())
+    {
+      std::cout << "PHG4TpcDirectLaser::AimToThetaPhi - active tilt angle (deg): "
+                << m_active_tilt_angle_rad * 180. / M_PI << std::endl;
+    }
+  }
+
   // all lasers
   for (const auto& laser : m_lasers)
   {
     AppendLaserTrack(theta, phi, laser);
   }
+}
+
+//_____________________________________________________________
+void PHG4TpcDirectLaser::UpdateActiveTiltAngle()
+{
+  if (!m_enable_tilt)
+  {
+    m_active_tilt_angle_rad = m_tilt_angle_rad;
+    return;
+  }
+
+  if (m_tilt_steps <= 1 || std::abs(m_tilt_max_deg - m_tilt_min_deg) < 1e-6)
+  {
+    m_active_tilt_angle_rad = m_tilt_angle_rad;
+    return;
+  }
+
+  const double fraction = (m_tilt_steps > 1) ? static_cast<double>(m_current_tilt_step) / (m_tilt_steps - 1) : 0.0;
+  const double angle_deg = m_tilt_min_deg + fraction * (m_tilt_max_deg - m_tilt_min_deg);
+  m_active_tilt_angle_rad = angle_deg * M_PI / 180.;
+  m_current_tilt_step = (m_current_tilt_step + 1) % m_tilt_steps;
 }
 
 //_____________________________________________________________
@@ -593,6 +688,78 @@ void PHG4TpcDirectLaser::AimToPatternStep_File(int n)
 }
 
 //_____________________________________________________________
+void PHG4TpcDirectLaser::ApplyTilt(TVector3& pos, TVector3& dir) const
+{
+  if (!m_enable_tilt)
+  {
+    return;
+  }
+
+  const double original_dir_mag = dir.Mag();
+  if (original_dir_mag <= 0)
+  {
+    return;
+  }
+
+  const TVector3 original_pos = pos;
+  const TVector3 original_dir = dir;
+
+  const double dir_xy_mag = std::hypot(original_dir.x(), original_dir.y());
+  if (dir_xy_mag <= 0)
+  {
+    return;
+  }
+
+  std::optional<TVector3> pivot;
+  if (std::isfinite(m_tilt_reference_radius))
+  {
+    pivot = cylinder_line_intersection(original_pos, original_dir, m_tilt_reference_radius);
+  }
+
+  if (!pivot)
+  {
+    return;
+  }
+
+  TVector3 radial = *pivot;
+  radial.SetZ(0.0);
+
+  const double radial_mag = radial.Perp();
+  if (radial_mag <= 0)
+  {
+    return;
+  }
+  radial *= 1.0 / radial_mag;
+
+  TVector3 phi_hat = TVector3(0.0, 0.0, 1.0).Cross(radial);
+  const double phi_mag = phi_hat.Mag();
+  if (phi_mag <= 0)
+  {
+    return;
+  }
+  phi_hat *= 1.0 / phi_mag;
+
+  const double cos_tilt = std::cos(m_active_tilt_angle_rad);
+  const double sin_tilt = std::sin(m_active_tilt_angle_rad);
+
+  const double dir_z = original_dir.z();
+  TVector3 desired_dir = dir_xy_mag * (cos_tilt * radial + sin_tilt * phi_hat) + TVector3(0.0, 0.0, dir_z);
+  const double desired_mag = desired_dir.Mag();
+  if (desired_mag <= 0)
+  {
+    return;
+  }
+  TVector3 dir_unit = desired_dir * (1.0 / desired_mag);
+  TVector3 new_dir = dir_unit * original_dir_mag;
+
+  const double original_distance = (*pivot - original_pos).Mag();
+  TVector3 new_pos = *pivot - dir_unit * original_distance;
+
+  pos = new_pos;
+  dir = new_dir;
+}
+
+//_____________________________________________________________
 
 void PHG4TpcDirectLaser::AppendLaserTrack(double theta, double phi, const PHG4TpcDirectLaser::Laser& laser)
 {
@@ -626,6 +793,9 @@ void PHG4TpcDirectLaser::AppendLaserTrack(double theta, double phi, const PHG4Tp
 
   // also rotate by laser azimuth
   dir.RotateZ(laser.m_phi);
+
+  // apply optional transverse tilt relative to reference layer
+  ApplyTilt(pos, dir);
 
   // print
   if (Verbosity())

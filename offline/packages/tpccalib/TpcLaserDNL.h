@@ -6,6 +6,7 @@
 #include <string>
 #include <memory>
 #include <vector>
+#include <limits>
 #include <Rtypes.h>
 
 class SvtxTrackMap;
@@ -78,6 +79,10 @@ int m_nhit_scanned{0};
 double m_adcsum{0};
 double m_xtrue{0}, m_ytrue{0}, m_ztrue{0};
 double m_xreco{0}, m_yreco{0}, m_zreco{0};
+int m_npad_used{0};
+double m_phi_pad_max{std::numeric_limits<double>::quiet_NaN()};
+double m_phase{std::numeric_limits<double>::quiet_NaN()};
+std::vector<double> m_pad_phi_centers;
 
 // debug vectors: store per-hit info for used hits
 std::vector<ULong64_t> m_hitkeys;

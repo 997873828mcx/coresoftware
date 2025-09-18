@@ -23,6 +23,8 @@
 
 #include <cmath>
 #include <iostream>
+#include <map>
+#include <limits>
 
 // For EventHeader event sequence tagging
 #include <ffaobjects/EventHeader.h>
@@ -53,6 +55,10 @@ m_tt->Branch("ztrue",&m_ztrue,"ztrue/D");
 m_tt->Branch("xreco",&m_xreco,"xreco/D");
 m_tt->Branch("yreco",&m_yreco,"yreco/D");
 m_tt->Branch("zreco",&m_zreco,"zreco/D");
+m_tt->Branch("npad_used",&m_npad_used,"npad_used/I");
+m_tt->Branch("phi_pad_max",&m_phi_pad_max,"phi_pad_max/D");
+m_tt->Branch("phase",&m_phase,"phase/D");
+m_tt->Branch("pad_phi_center",&m_pad_phi_centers);
 // debug vectors (only filled with hits that pass selection)
 m_tt->Branch("hitkey",&m_hitkeys);
 m_tt->Branch("hitsetkey",&m_hitsetkeys);
@@ -213,6 +219,12 @@ auto lr = m_geom->get_begin_end();
     m_hitsetkeys.clear();
     m_iphi.clear();
     m_tbin.clear();
+    m_pad_phi_centers.clear();
+    m_npad_used = 0;
+    m_phi_pad_max = std::numeric_limits<double>::quiet_NaN();
+    m_phase = std::numeric_limits<double>::quiet_NaN();
+
+    std::map<unsigned short, double> padWeights;
 
   if(!m_use_clusters)
   {
@@ -280,6 +292,7 @@ auto lr = m_geom->get_begin_end();
         m_hitsetkeys.push_back(static_cast<ULong64_t>(hsk));
         m_iphi.push_back(static_cast<unsigned int>(iphi));
         m_tbin.push_back(static_cast<unsigned int>(tbin));
+        padWeights[iphi] += weight;
       }
     }
   }
@@ -343,6 +356,36 @@ auto lr = m_geom->get_begin_end();
       m_phi_reco = std::atan2(m_yreco, m_xreco);
       m_dphi = wrap_dphi(m_phi_reco - m_phi_true);
       m_dRphi = m_r * m_dphi;
+
+      if(!m_use_clusters && !padWeights.empty())
+      {
+        double maxWeight = -std::numeric_limits<double>::infinity();
+        for(const auto& entry : padWeights)
+        {
+          const auto pad = entry.first;
+          const auto weight = entry.second;
+          const double phi_c = layergeom->get_phicenter(static_cast<int>(pad), m_side);
+          m_pad_phi_centers.push_back(phi_c);
+          if(weight > maxWeight)
+          {
+            maxWeight = weight;
+            m_phi_pad_max = phi_c;
+          }
+        }
+        m_npad_used = static_cast<int>(padWeights.size());
+
+        const double phi_width = std::abs(layergeom->get_phistep());
+        if(phi_width > 1e-12 && std::isfinite(m_phi_pad_max))
+        {
+          const double dphi_phase = wrap_dphi(m_phi_true - m_phi_pad_max);
+          m_phase = dphi_phase / phi_width;
+        }
+        else
+        {
+          m_phase = std::numeric_limits<double>::quiet_NaN();
+        }
+      }
+
       m_tt->Fill();
     }
     

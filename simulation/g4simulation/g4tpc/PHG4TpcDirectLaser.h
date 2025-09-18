@@ -20,6 +20,7 @@ class PHG4HitContainer;
 class SvtxTrackMap;
 class PHG4TruthInfoContainer;
 class PHCompositeNode;
+class PHG4TpcCylinderGeomContainer;
 
 class PHG4TpcDirectLaser : public SubsysReco, public PHParameterInterface
 {
@@ -151,6 +152,10 @@ class PHG4TpcDirectLaser : public SubsysReco, public PHParameterInterface
   /// append track in given angular direction and for a given laser
   void AppendLaserTrack(double theta, double phi, const Laser &);
 
+  /// apply transverse tilt around the radial direction for the configured layer
+  void ApplyTilt(TVector3 &pos, TVector3 &dir) const;
+  void UpdateActiveTiltAngle();
+
   /// detector name
   std::string detector{"TPC"};
 
@@ -216,6 +221,22 @@ class PHG4TpcDirectLaser : public SubsysReco, public PHParameterInterface
   // GSL RNG for random-phi sampling (private to this module)
   struct GslDeleter { void operator()(gsl_rng* p) const { if(p) gsl_rng_free(p); } };
   std::unique_ptr<gsl_rng, GslDeleter> m_rng;
+
+  /// geometry container (needed for per-layer tilt reference)
+  PHG4TpcCylinderGeomContainer *m_tpc_geom{nullptr};
+
+  ///@name transverse tilt configuration
+  //@{
+  bool m_enable_tilt{false};
+  int m_tilt_layer{-1};
+  double m_tilt_angle_rad{0};
+  double m_active_tilt_angle_rad{0};
+  double m_tilt_min_deg{0};
+  double m_tilt_max_deg{0};
+  int m_tilt_steps{1};
+  int m_current_tilt_step{0};
+  double m_tilt_reference_radius{std::numeric_limits<double>::quiet_NaN()};
+  //@}
 };
 
 #endif
