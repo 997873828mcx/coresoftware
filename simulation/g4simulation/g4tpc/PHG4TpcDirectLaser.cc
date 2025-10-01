@@ -752,6 +752,16 @@ void PHG4TpcDirectLaser::ApplyTilt(TVector3& pos, TVector3& dir) const
   TVector3 dir_unit = desired_dir * (1.0 / desired_mag);
   TVector3 new_dir = dir_unit * original_dir_mag;
 
+  if (Verbosity())
+  {
+    const double cos_alpha = radial.Dot(dir_unit);
+    const double clamped = std::max(-1.0, std::min(1.0, cos_alpha));
+    const double alpha_deg = std::acos(clamped) * 180. / M_PI;
+    std::cout << Name() << " tilt layer " << m_tilt_layer
+              << " cos(alpha)=" << cos_alpha
+              << " alpha(deg)=" << alpha_deg << std::endl;
+  }
+
   const double original_distance = (*pivot - original_pos).Mag();
   TVector3 new_pos = *pivot - dir_unit * original_distance;
 

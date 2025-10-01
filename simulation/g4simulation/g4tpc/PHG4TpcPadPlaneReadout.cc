@@ -1480,9 +1480,9 @@ void PHG4TpcPadPlaneReadout::SERF_zigzag_phibins(const unsigned int side, const 
 
     double charge = integratedDensityOfCircleAndPad( xNew, yNew, cloud_sig_rp , padinfo.vertices);
 
-    std::cout<<"   SERF    zigzags: ipad " << ipad << " pad_now " << pad_now << " charge " << charge<<" look_pad "<<look_pad<<" ntpc_phibins_sector[tpc_module] "<<ntpc_phibins_sector[tpc_module]
+    /* std::cout<<"   SERF    zigzags: ipad " << ipad << " pad_now " << pad_now << " charge " << charge<<" look_pad "<<look_pad<<" ntpc_phibins_sector[tpc_module] "<<ntpc_phibins_sector[tpc_module]
               << " pad cx " << padinfo.cx << " cy " << padinfo.cy
-              << " phi center " << LayerGeom->get_phicenter(pad_now, side) <<" pad phi center  "<<padinfo.phi<< std::endl;
+              << " phi center " << LayerGeom->get_phicenter(pad_now, side) <<" pad phi center  "<<padinfo.phi<< std::endl; */
     phibin_pad.push_back(pad_now);
     phibin_pad_share.push_back(charge);
  /*   std::cout<<"   SERF    zigzags: ipad " << ipad << " pad_now " << pad_now << " charge " << charge<<" look_pad "<<look_pad<<" ntpc_phibins_sector[tpc_module] "<<ntpc_phibins_sector[tpc_module]
