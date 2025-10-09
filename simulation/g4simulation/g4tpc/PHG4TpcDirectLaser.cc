@@ -153,10 +153,27 @@ namespace
     const double t2 = (-b - sqrtterm) / (2 * a);
 
     /*
-     * if either of the t's are nonzero, we have a collision
-     * the collision closest to the start (hence with the smallest t that is greater than zero) is the one that happens.
+     * keep only intersections in front of the start point. For lasers that
+     * originate outside the reference cylinder and point outward, both roots
+     * are negative and we should report "no intersection" so that callers can
+     * skip the tilt instead of tilting around a point behind the origin.
      */
-    const double& min_t = (t2 < t1 && t2 > 0) ? t2 : t1;
+    double min_t = 0.0;
+    bool have_solution = false;
+    if (t1 >= 0.0)
+    {
+      min_t = t1;
+      have_solution = true;
+    }
+    if (t2 >= 0.0 && (!have_solution || t2 < min_t))
+    {
+      min_t = t2;
+      have_solution = true;
+    }
+    if (!have_solution)
+    {
+      return std::nullopt;
+    }
     return s + v * min_t;
   }
 
