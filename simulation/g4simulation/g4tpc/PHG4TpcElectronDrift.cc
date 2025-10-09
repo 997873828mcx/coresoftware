@@ -317,6 +317,15 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
 
   if (Verbosity() > 0)
   {
+    std::cout << Name() << " gas mixture fractions (Ne/Ar/CF4/N2/iC4H10): "
+              << Ne_frac << "/" << Ar_frac << "/" << CF4_frac << "/" << N2_frac << "/" << isobutane_frac << std::endl;
+    std::cout << Name() << " primary ionization summary: electrons per cm " << Tpc_NTot
+              << ", dE/dx (keV/cm) " << Tpc_dEdx
+              << ", electrons per GeV " << electrons_per_gev << std::endl;
+    std::cout << Name() << " diffusion sigmas (long/trans) [cm^0.5]: " << diffusion_long << "/" << diffusion_trans
+              << " with additional smearing (long/trans): " << added_smear_sigma_long << "/" << added_smear_sigma_trans << std::endl;
+    std::cout << Name() << " drift window [min,max] (ns): " << min_time << ", " << max_time << std::endl;
+    std::cout << Name() << " acceptance radii [min,max] (cm): " << min_active_radius << ", " << max_active_radius << std::endl;
     std::cout << PHWHERE << " drift velocity " << drift_velocity << " extended_readout_time " << get_double_param("extended_readout_time") << " max time cutoff " << max_time << std::endl;
   }
 
@@ -326,7 +335,7 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
   dtrans = new TH1F("difftrans", "transversal diffusion", 100, diffusion_trans - diffusion_trans / 2., diffusion_trans + diffusion_trans / 2.);
   se->registerHisto(dtrans);
 
-  do_ElectronDriftQAHistos = false;  // Whether or not to produce an ElectronDriftQA.root file with useful info
+  do_ElectronDriftQAHistos = true;  // Whether or not to produce an ElectronDriftQA.root file with useful info
   if (do_ElectronDriftQAHistos)
   {
     hitmapstart = new TH2F("hitmapstart", "g4hit starting X-Y locations", 1560, -78, 78, 1560, -78, 78);
@@ -344,6 +353,7 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
     deltarnodiff = new TH2F("deltarnodiff", "Delta r (no diffusion, only SC distortion); r (cm);#Delta r (cm)", 580, 20, 78, 1000, -2, 5);
     deltarnodist = new TH2F("deltarnodist", "Delta r (no SC distortion, only diffusion); r (cm);#Delta r (cm)", 580, 20, 78, 1000, -2, 5);
     ratioElectronsRR = new TH1F("ratioElectronsRR", "Ratio of electrons reach readout vs all in acceptance", 1561, -0.0325, 1.0465);
+    driftXY = new TNtuple("driftXY", "Electron start/end positions", "xs:ys:xf:yf");
   }
 
   if (Verbosity())
@@ -522,16 +532,30 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
     // drifted electrons, then copy to the node tree later
 
     double eion = hiter->second->get_eion();
-    unsigned int n_electrons = gsl_ran_poisson(RandomGenerator.get(), eion * electrons_per_gev);
+    const double poisson_mean = eion * electrons_per_gev;
+    unsigned int n_electrons = gsl_ran_poisson(RandomGenerator.get(), poisson_mean);
     //    count_electrons += n_electrons;
 
     if (Verbosity() > 100)
     {
       std::cout << "  new hit with t0, " << t0 << " g4hitid " << hiter->first
-                << " eion " << eion << " n_electrons " << n_electrons
+                << " eion " << eion << " poisson mean " << poisson_mean
+                << " n_electrons " << n_electrons
                 << " entry z " << hiter->second->get_z(0) << " exit z "
                 << hiter->second->get_z(1) << " avg z"
                 << (hiter->second->get_z(0) + hiter->second->get_z(1)) / 2.0
+                << std::endl;
+    }
+
+    if (Verbosity() > 0 && count_g4hits <= 5)
+    {
+      std::cout << Name() << " hit " << count_g4hits
+                << " eion " << eion
+                << " poisson mean " << poisson_mean
+                << " sampled electrons " << n_electrons
+                << " track dz " << hiter->second->get_z(1) - hiter->second->get_z(0)
+                << " entry radius " << std::sqrt(square(hiter->second->get_x(0)) + square(hiter->second->get_y(0)))
+                << " exit radius " << std::sqrt(square(hiter->second->get_x(1)) + square(hiter->second->get_y(1)))
                 << std::endl;
     }
 
@@ -668,6 +692,11 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
           deltaphi->Fill(phistart, phi_final - phistart);  // total delta phi
           deltaz->Fill(z_start, z_distortion);             // map of distortion in Z (time)
         }
+      }
+
+      if (do_ElectronDriftQAHistos && driftXY)
+      {
+        driftXY->Fill(x_start, y_start, x_final, y_final);
       }
 
       // remove electrons outside of our acceptance. Careful though, electrons from just inside 30 cm can contribute in the 1st active layer readout, so leave a little margin
@@ -1005,6 +1034,10 @@ int PHG4TpcElectronDrift::End(PHCompositeNode * /*topNode*/)
     hitmapend_z->Write();
     z_startmap->Write();
     ratioElectronsRR->Write();
+    if (driftXY)
+    {
+      driftXY->Write();
+    }
     EDrift_outf->Close();
   }
   return Fun4AllReturnCodes::EVENT_OK;

@@ -118,6 +118,7 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   TH2 *deltarnodiff{nullptr};
   TH2 *deltarnodist{nullptr};
   TH2 *deltaz{nullptr};
+  TNtuple *driftXY{nullptr};
   //@}
 
   int event_num{0};
@@ -139,7 +140,7 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   double zero_bfield_diffusion_factor{3.5};  // at drift voltage of 400 V
 
   bool record_ClusHitsVerbose{false};
-  bool do_ElectronDriftQAHistos{false};
+  bool do_ElectronDriftQAHistos{true};
   bool do_getReachReadout{false};
   bool zero_bfield{false};
   bool m_use_PDG_gas_params{false};
