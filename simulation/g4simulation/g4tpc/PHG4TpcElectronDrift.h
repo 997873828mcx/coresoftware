@@ -83,6 +83,11 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   void set_zero_bfield_flag(bool flag) { zero_bfield = flag; };
   void set_zero_bfield_diffusion_factor(double f) { zero_bfield_diffusion_factor = f; };
   void use_PDG_gas_params() { m_use_PDG_gas_params = true; }
+  void set_force_min_trans_drift_length(double length)
+  {
+    force_min_trans_drift_length = (length > 0.) ? length : 0.;
+    set_double_param("force_min_trans_drift_length", force_min_trans_drift_length);
+  }
   ClusHitsVerbosev1 *mClusHitsVerbose{nullptr};
 
  private:
@@ -138,6 +143,7 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   double min_time = std::numeric_limits<double>::signaling_NaN();
   double max_time = std::numeric_limits<double>::signaling_NaN();
   double zero_bfield_diffusion_factor{3.5};  // at drift voltage of 400 V
+  double force_min_trans_drift_length{0.0};
 
   bool record_ClusHitsVerbose{false};
   bool do_ElectronDriftQAHistos{true};

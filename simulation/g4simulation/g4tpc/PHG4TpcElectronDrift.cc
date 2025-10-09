@@ -257,6 +257,11 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
   }
   added_smear_sigma_trans = get_double_param("added_smear_trans");
   drift_velocity = get_double_param("drift_velocity");
+  force_min_trans_drift_length = get_double_param("force_min_trans_drift_length");
+  if (force_min_trans_drift_length < 0.)
+  {
+    force_min_trans_drift_length = 0.;
+  }
 
   // Data on gasses @20 C and 760 Torr from the following source:
   // http://www.slac.stanford.edu/pubs/icfa/summer98/paper3/paper3.pdf
@@ -326,6 +331,10 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
               << " with additional smearing (long/trans): " << added_smear_sigma_long << "/" << added_smear_sigma_trans << std::endl;
     std::cout << Name() << " drift window [min,max] (ns): " << min_time << ", " << max_time << std::endl;
     std::cout << Name() << " acceptance radii [min,max] (cm): " << min_active_radius << ", " << max_active_radius << std::endl;
+    if (force_min_trans_drift_length > 0.)
+    {
+      std::cout << Name() << " forcing minimum transverse drift length (cm): " << force_min_trans_drift_length << std::endl;
+    }
     std::cout << PHWHERE << " drift velocity " << drift_velocity << " extended_readout_time " << get_double_param("extended_readout_time") << " max time cutoff " << max_time << std::endl;
   }
 
@@ -598,13 +607,18 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
         side = 1;
       }
 
-      const double r_sigma = diffusion_trans * sqrt(tpc_length / 2. - std::abs(z_start));
-      const double rantrans =
+      double drift_distance = tpc_length / 2. - std::abs(z_start);
+      if (drift_distance < 0.)
+      {
+        drift_distance = 0.;
+      }
+      const double r_sigma = diffusion_trans * sqrt(drift_distance);
+      double rantrans =
           gsl_ran_gaussian(RandomGenerator.get(), r_sigma) +
           gsl_ran_gaussian(RandomGenerator.get(), added_smear_sigma_trans);
 
-      const double t_path = (tpc_length / 2. - std::abs(z_start)) / drift_velocity;
-      const double t_sigma = diffusion_long * sqrt(tpc_length / 2. - std::abs(z_start)) / drift_velocity;
+      const double t_path = drift_distance / drift_velocity;
+      const double t_sigma = diffusion_long * std::sqrt(drift_distance) / drift_velocity;
       const double rantime =
           gsl_ran_gaussian(RandomGenerator.get(), t_sigma) +
           gsl_ran_gaussian(RandomGenerator.get(), added_smear_sigma_long) / drift_velocity;
@@ -631,6 +645,23 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
 
       double x_final = x_start + rantrans * std::cos(ranphi);  // Initialize these to be only diffused first, will be overwritten if doing SC distortion
       double y_final = y_start + rantrans * std::sin(ranphi);
+
+      if (force_min_trans_drift_length > drift_distance)
+      {
+        const double additional_length = force_min_trans_drift_length - drift_distance;
+        if (additional_length > 0.)
+        {
+          const double extra_sigma = diffusion_trans * std::sqrt(additional_length);
+          const double extra_r = gsl_ran_gaussian(RandomGenerator.get(), extra_sigma);
+          const double extra_phi = gsl_ran_flat(RandomGenerator.get(), -M_PI, M_PI);
+          x_final += extra_r * std::cos(extra_phi);
+          y_final += extra_r * std::sin(extra_phi);
+        }
+      }
+
+      const double delta_x = x_final - x_start;
+      const double delta_y = y_final - y_start;
+      rantrans = std::sqrt(square(delta_x) + square(delta_y));
 
       double rad_final = sqrt(square(x_final) + square(y_final));
       double phi_final = atan2(y_final, x_final);
@@ -1072,6 +1103,7 @@ void PHG4TpcElectronDrift::SetDefaultParameters()
   // override them from the macro to get a different resolution
   set_default_double_param("added_smear_trans", 0.0);  // cm (used to be 0.085 before sims got better)
   set_default_double_param("added_smear_long", 0.0);   // cm (used to be 0.105 before sims got better)
+  set_default_double_param("force_min_trans_drift_length", 0.0);  // cm
 
   return;
 }
