@@ -642,7 +642,6 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
       const double radstart = std::sqrt(square(x_start) + square(y_start));
       const double phistart = std::atan2(y_start, x_start);
       const double ranphi = gsl_ran_flat(RandomGenerator.get(), -M_PI, M_PI);
-
       double x_final = x_start + rantrans * std::cos(ranphi);  // Initialize these to be only diffused first, will be overwritten if doing SC distortion
       double y_final = y_start + rantrans * std::sin(ranphi);
 
