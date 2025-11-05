@@ -29,6 +29,11 @@
 #include <TFile.h>
 #include <TH2.h>
 #include <TF1.h>
+#include <TCanvas.h>
+#include <TGraph.h>
+#include <TMarker.h>
+#include <TPad.h>
+#include <TEllipse.h>
 #include <TSystem.h>
 
 #include <gsl/gsl_randist.h>
@@ -36,6 +41,7 @@
 
 #include <boost/format.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>  // for getenv
 #include <iostream>
@@ -1276,6 +1282,20 @@ double PHG4TpcPadPlaneReadout::check_phi(const unsigned int side, const double p
 
   return new_phi;
 }
+
+void PHG4TpcPadPlaneReadout::EnableSingleCloudVisualization(bool enable,
+                                                             const std::string &output_file,
+                                                             int target_side,
+                                                             int target_layer,
+                                                             double grid_step)
+{
+  m_visualize_single_cloud = enable;
+  m_visualization_output = output_file;
+  m_visualization_target_side = target_side;
+  m_visualization_target_layer = target_layer;
+  m_visualization_grid_step = grid_step;
+  m_visualization_done = false;
+}
 /*
 void PHG4TpcPadPlaneReadout::build_serf_zigzag_phibins(const unsigned int side, const unsigned int layernum, const double phi, const double cloud_sig_rp, std::vector<int> &phibin_pad, std::vector<double> &phibin_pad_share)
 {
@@ -1371,6 +1391,164 @@ double PHG4TpcPadPlaneReadout::integratedDensityOfCircleAndPad(
     return total * (gridStep * gridStep);
 }
 
+void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
+    unsigned int side,
+    unsigned int layernum,
+    double phi,
+    double rad_gem,
+    double cloud_sig_rp,
+    double x_center,
+    double y_center,
+    const std::vector<DebugPadContribution> &contribs)
+{
+  if (!m_visualize_single_cloud || m_visualization_done) return;
+  if (contribs.empty()) return;
+  if (cloud_sig_rp <= 0.0) return;
+  if (m_visualization_target_layer >= 0 &&
+      static_cast<int>(layernum) != m_visualization_target_layer) return;
+  if (m_visualization_target_side >= 0 &&
+      static_cast<int>(side) != m_visualization_target_side) return;
+
+  const double circle_radius = _nsigmas * cloud_sig_rp;
+
+  double xmin = x_center - circle_radius;
+  double xmax = x_center + circle_radius;
+  double ymin = y_center - circle_radius;
+  double ymax = y_center + circle_radius;
+
+  for (const auto &pad : contribs)
+  {
+    for (const auto &v : pad.polygon)
+    {
+      xmin = std::min(xmin, v.x);
+      xmax = std::max(xmax, v.x);
+      ymin = std::min(ymin, v.y);
+      ymax = std::max(ymax, v.y);
+    }
+  }
+
+  const double margin = std::max(circle_radius * 0.1, 0.1);
+  xmin -= margin;
+  xmax += margin;
+  ymin -= margin;
+  ymax += margin;
+
+  double grid_step = m_visualization_grid_step;
+  if (grid_step <= 0.0)
+  {
+    grid_step = cloud_sig_rp / 30.0;
+  }
+  grid_step = std::max(grid_step, cloud_sig_rp / 200.0);
+
+  const int raw_nx = std::max(20, static_cast<int>(std::ceil((xmax - xmin) / grid_step)));
+  const int raw_ny = std::max(20, static_cast<int>(std::ceil((ymax - ymin) / grid_step)));
+  const int max_bins = 600;
+  const int nx = std::min(max_bins, raw_nx);
+  const int ny = std::min(max_bins, raw_ny);
+
+  const std::string hname = "h_cloud_side" + std::to_string(side) + "_layer" + std::to_string(layernum);
+  TH2F *hist = new TH2F(hname.c_str(), "", nx, xmin, xmax, ny, ymin, ymax);
+  hist->GetXaxis()->SetTitle("sector frame x [cm]");
+  hist->GetYaxis()->SetTitle("sector frame y [cm]");
+  hist->SetStats(false);
+
+  const double gauss_const = 1.0 / (2.0 * M_PI * square(cloud_sig_rp));
+  const double denom = 2.0 * square(cloud_sig_rp);
+
+  for (int ix = 1; ix <= nx; ++ix)
+  {
+    const double x = hist->GetXaxis()->GetBinCenter(ix);
+    for (int iy = 1; iy <= ny; ++iy)
+    {
+      const double y = hist->GetYaxis()->GetBinCenter(iy);
+      const double dx = x - x_center;
+      const double dy = y - y_center;
+      if (dx * dx + dy * dy > circle_radius * circle_radius)
+      {
+        continue;
+      }
+
+      for (const auto &pad : contribs)
+      {
+        if (!pointInPolygon(x, y, pad.polygon))
+        {
+          continue;
+        }
+        const double density = gauss_const * std::exp(-(dx * dx + dy * dy) / denom);
+        hist->AddBinContent(hist->GetBin(ix, iy), density);
+        break;
+      }
+    }
+  }
+
+  const std::string cname = "c_cloud_side" + std::to_string(side) + "_layer" + std::to_string(layernum);
+  TCanvas *canvas = new TCanvas(cname.c_str(), "Avalanche cloud vs zigzag pads", 900, 800);
+  canvas->cd();
+  gPad->SetRightMargin(0.15);
+  hist->SetTitle(("Avalanche overlap (side " + std::to_string(side) +
+                  ", layer " + std::to_string(layernum) + ")").c_str());
+  hist->Draw("COLZ");
+
+  std::vector<TGraph *> pad_graphs;
+  pad_graphs.reserve(contribs.size());
+  int color = 2;
+  for (const auto &pad : contribs)
+  {
+    if (pad.polygon.empty())
+    {
+      continue;
+    }
+    const size_t npts = pad.polygon.size();
+    std::vector<double> xs(npts + 1);
+    std::vector<double> ys(npts + 1);
+    for (size_t i = 0; i < npts; ++i)
+    {
+      xs[i] = pad.polygon[i].x;
+      ys[i] = pad.polygon[i].y;
+    }
+    xs[npts] = pad.polygon.front().x;
+    ys[npts] = pad.polygon.front().y;
+
+    TGraph *outline = new TGraph(static_cast<int>(xs.size()), xs.data(), ys.data());
+    outline->SetLineColor(color);
+    outline->SetLineWidth(2);
+    outline->SetFillStyle(0);
+    outline->Draw("L SAME");
+    pad_graphs.push_back(outline);
+    color = 1 + (color % 8);
+  }
+
+  double center_x[1] = {x_center};
+  double center_y[1] = {y_center};
+  TGraph *center = new TGraph(1, center_x, center_y);
+  center->SetMarkerStyle(29);
+  center->SetMarkerSize(1.6);
+  center->SetMarkerColor(1);
+  center->Draw("P SAME");
+
+  TEllipse *ellipse = new TEllipse(x_center, y_center, circle_radius, circle_radius);
+  ellipse->SetLineStyle(2);
+  ellipse->SetLineWidth(2);
+  ellipse->SetFillStyle(0);
+  ellipse->SetLineColor(1);
+  ellipse->Draw("SAME");
+
+  canvas->Update();
+  canvas->SaveAs(m_visualization_output.c_str());
+  std::cout << "PHG4TpcPadPlaneReadout: saved single cloud visualization to "
+            << m_visualization_output
+            << " (side " << side << ", layer " << layernum
+            << ", phi " << phi << ", radius " << rad_gem << ")" << std::endl;
+
+  m_visualization_done = true;
+
+  delete ellipse;
+  delete center;
+  for (TGraph *g : pad_graphs) delete g;
+  delete canvas;
+  delete hist;
+}
+
 void PHG4TpcPadPlaneReadout::SERF_zigzag_phibins(const unsigned int side, const unsigned int layernum,  const double phi, const double rad_gem,const double cloud_sig_rp, std::vector<int> &phibin_pad, std::vector<double> &phibin_pad_share)
 {
   const double radius = LayerGeom->get_radius();
@@ -1388,6 +1566,12 @@ void PHG4TpcPadPlaneReadout::SERF_zigzag_phibins(const unsigned int side, const 
   //double rad_gem_new = std::sqrt(xNew*xNew+ yNew*yNew);
  // std::cout<<"PHG4TpcPadPlaneReadout::SERF_zigzag_phibins: x = "<<x<<", y = "<<y<<", xNew = "<<xNew<<", yNew = "<<yNew<<" phiNew = "<<phiNew<<" rad_gem_new = "<<rad_gem_new<<std::endl;
   int tpc_module = (int)(layernum - 7)/16;
+
+  const bool capture_debug = m_visualize_single_cloud &&
+                             !m_visualization_done &&
+                             (m_visualization_target_layer < 0 || static_cast<int>(layernum) == m_visualization_target_layer) &&
+                             (m_visualization_target_side < 0 || static_cast<int>(side) == m_visualization_target_side);
+  std::vector<DebugPadContribution> debug_contribs;
 /* int phi_bin = LayerGeom->get_phibin(phi, side);
  int sector = 0;
  for (int i=0;i<12;i++)
@@ -1439,9 +1623,14 @@ void PHG4TpcPadPlaneReadout::SERF_zigzag_phibins(const unsigned int side, const 
   if (radlim_high > (LayerGeom->get_radius() + LayerGeom->get_thickness() / 2.0))
   {
     std::cout << " radlim_high " << radlim_high << " is in the next layer " <<layernum<<" with lower radius "<< LayerGeom->get_radius() + LayerGeom->get_thickness() / 2.0 << std::endl;
-  }
+}
 */
     //  std::cout << "   SERF    zigzags: phi " << phi << " philim_low " << philim_low << " phibin_low " << phibin_low << " philim_high " << philim_high << " phibin_high " << phibin_high << " npads " << npads << std::endl;
+  if (capture_debug)
+  {
+    const int reserve_count = (npads >= 0) ? (npads + 2) : 2;
+    debug_contribs.reserve(static_cast<size_t>(reserve_count));
+  }
 
   for (int ipad = 0; ipad <= npads; ipad++)
   {
@@ -1479,6 +1668,15 @@ void PHG4TpcPadPlaneReadout::SERF_zigzag_phibins(const unsigned int side, const 
   //std::cout<<"n = ntpc_phibins_sector[tpc_module]-1 = "<<n<<"  look up pad = "<<look_pad<<" Pads[layernum] "<<Pads[layernum].size()<<" xNew = "<<xNew<<" yNew = "<<yNew<<std::endl;
 
     double charge = integratedDensityOfCircleAndPad( xNew, yNew, cloud_sig_rp , padinfo.vertices);
+    if (capture_debug && charge > 0.0)
+    {
+      DebugPadContribution dbg;
+      dbg.pad_bin = pad_now;
+      dbg.charge = charge;
+      dbg.pad_phi = LayerGeom->get_phicenter(pad_now, side);
+      dbg.polygon = padinfo.vertices;
+      debug_contribs.push_back(std::move(dbg));
+    }
 
     /* std::cout<<"   SERF    zigzags: ipad " << ipad << " pad_now " << pad_now << " charge " << charge<<" look_pad "<<look_pad<<" ntpc_phibins_sector[tpc_module] "<<ntpc_phibins_sector[tpc_module]
               << " pad cx " << padinfo.cx << " cy " << padinfo.cy
@@ -1489,6 +1687,11 @@ void PHG4TpcPadPlaneReadout::SERF_zigzag_phibins(const unsigned int side, const 
               << " pad cx " << padinfo.cx << " cy " << padinfo.cy
               << " phi center " << LayerGeom->get_phicenter(pad_now, side) <<" pad phi center  "<<padinfo.phi<< std::endl;
 */
+  }
+
+  if (capture_debug && !debug_contribs.empty())
+  {
+    maybeVisualizeAvalanche(side, layernum, phi, rad_gem, cloud_sig_rp, xNew, yNew, debug_contribs);
   }
 
   return;

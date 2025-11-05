@@ -314,6 +314,8 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
 
   electrons_per_gev = (Tpc_NTot / Tpc_dEdx) * 1e6; 
 
+  std::cout << "PHG4TpcElectronDrift::InitRun - electrons per GeV = " << electrons_per_gev << std::endl;
+
   // min_time to max_time is the time window for accepting drifted electrons after the trigger
   min_time = 0.0;
   max_time = get_double_param("max_time") + get_double_param("extended_readout_time");
@@ -347,6 +349,21 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
   do_ElectronDriftQAHistos = true;  // Whether or not to produce an ElectronDriftQA.root file with useful info
   if (do_ElectronDriftQAHistos)
   {
+    diffDistance = new TH1F("diffDistance", "Transverse diffusion displacement;#Delta r (cm);Counts", 300, 0.0, 3.0);
+    diffDX = new TH1F("diffDX", "Transverse diffusion #Delta x;#Delta x (cm);Counts", 400, -3.0, 3.0);
+    diffDY = new TH1F("diffDY", "Transverse diffusion #Delta y;#Delta y (cm);Counts", 400, -3.0, 3.0);
+    nElectrons = new TH1F("nElectrons", "Sampled electrons per step;N_{e};Counts", 400, -0.5, 399.5);
+    poissonMean = new TH1F("electronMean", "Poisson mean per step;#bar{N}_{e};Counts", 400, 0.0, 200.0);
+    nElectronsVsMean = new TH2F("nElectronsVsMean", "Sampled electrons vs. mean;#bar{N}_{e};N_{e}", 200, 0.0, 200.0, 200, -0.5, 199.5);
+    diffPerSqrtL = new TH1F("diffPerSqrtL", "Transverse diffusion normalized by #sqrt{L};#Delta r/#sqrt{L} (cm^{0.5});Counts", 400, 0.0, 0.2);
+    diffDXPerSqrtL = new TH1F("diffDXPerSqrtL", "#Delta x normalized by #sqrt{L};#Delta x/#sqrt{L} (cm^{0.5});Counts", 400, -0.2, 0.2);
+    diffDYPerSqrtL = new TH1F("diffDYPerSqrtL", "#Delta y normalized by #sqrt{L};#Delta y/#sqrt{L} (cm^{0.5});Counts", 400, -0.2, 0.2);
+    diffVsDrift = new TH2F("diffVsDrift", "Transverse diffusion vs. drift length;Drift length L (cm);#Delta r (cm)", 200, 0.0, tpc_length / 2., 300, 0.0, 3.0);
+    diffDXVsDrift = new TH2F("diffDXVsDrift", "#Delta x vs. drift length;Drift length L (cm);#Delta x (cm)", 200, 0.0, tpc_length / 2., 400, -3.0, 3.0);
+    diffDYVsDrift = new TH2F("diffDYVsDrift", "#Delta y vs. drift length;Drift length L (cm);#Delta y (cm)", 200, 0.0, tpc_length / 2., 400, -3.0, 3.0);
+    diffPerSqrtLVsDrift = new TH2F("diffPerSqrtLVsDrift", "#Delta r/#sqrt{L} vs. drift length;Drift length L (cm);#Delta r/#sqrt{L} (cm^{0.5})", 200, 0.0, tpc_length / 2., 300, 0.0, 0.2);
+    diffDXPerSqrtLVsDrift = new TH2F("diffDXPerSqrtLVsDrift", "#Delta x/#sqrt{L} vs. drift length;Drift length L (cm);#Delta x/#sqrt{L} (cm^{0.5})", 200, 0.0, tpc_length / 2., 400, -0.2, 0.2);
+    diffDYPerSqrtLVsDrift = new TH2F("diffDYPerSqrtLVsDrift", "#Delta y/#sqrt{L} vs. drift length;Drift length L (cm);#Delta y/#sqrt{L} (cm^{0.5})", 200, 0.0, tpc_length / 2., 400, -0.2, 0.2);
     hitmapstart = new TH2F("hitmapstart", "g4hit starting X-Y locations", 1560, -78, 78, 1560, -78, 78);
     hitmapend = new TH2F("hitmapend", "g4hit final X-Y locations", 1560, -78, 78, 1560, -78, 78);
     hitmapstart_z = new TH2F("hitmapstart_z", "g4hit starting Z-R locations", 2000, -100, 100, 780, 0, 78);
@@ -545,6 +562,22 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
     unsigned int n_electrons = gsl_ran_poisson(RandomGenerator.get(), poisson_mean);
     //    count_electrons += n_electrons;
 
+    if (do_ElectronDriftQAHistos)
+    {
+      if (poissonMean)
+      {
+        poissonMean->Fill(poisson_mean);
+      }
+      if (nElectrons)
+      {
+        nElectrons->Fill(static_cast<double>(n_electrons));
+      }
+      if (nElectronsVsMean)
+      {
+        nElectronsVsMean->Fill(poisson_mean, static_cast<double>(n_electrons));
+      }
+    }
+
     if (Verbosity() > 100)
     {
       std::cout << "  new hit with t0, " << t0 << " g4hitid " << hiter->first
@@ -667,6 +700,61 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
 
       if (do_ElectronDriftQAHistos)
       {
+        if (diffDistance)
+        {
+          diffDistance->Fill(rantrans);
+        }
+        if (diffDX)
+        {
+          diffDX->Fill(delta_x);
+        }
+        if (diffDY)
+        {
+          diffDY->Fill(delta_y);
+        }
+        if (diffVsDrift)
+        {
+          diffVsDrift->Fill(drift_distance, rantrans);
+        }
+        if (diffDXVsDrift)
+        {
+          diffDXVsDrift->Fill(drift_distance, delta_x);
+        }
+        if (diffDYVsDrift)
+        {
+          diffDYVsDrift->Fill(drift_distance, delta_y);
+        }
+        if (drift_distance > 0.)
+        {
+          const double sqrtL = std::sqrt(drift_distance);
+          const double norm = rantrans / sqrtL;
+          if (diffPerSqrtL)
+          {
+            diffPerSqrtL->Fill(norm);
+          }
+          if (diffPerSqrtLVsDrift)
+          {
+            diffPerSqrtLVsDrift->Fill(drift_distance, norm);
+          }
+          const double dxnorm = delta_x / sqrtL;
+          const double dynorm = delta_y / sqrtL;
+          if (diffDXPerSqrtL)
+          {
+            diffDXPerSqrtL->Fill(dxnorm);
+          }
+          if (diffDYPerSqrtL)
+          {
+            diffDYPerSqrtL->Fill(dynorm);
+          }
+          if (diffDXPerSqrtLVsDrift)
+          {
+            diffDXPerSqrtLVsDrift->Fill(drift_distance, dxnorm);
+          }
+          if (diffDYPerSqrtLVsDrift)
+          {
+            diffDYPerSqrtLVsDrift->Fill(drift_distance, dynorm);
+          }
+        }
         z_startmap->Fill(z_start, radstart);                   // map of starting location in Z vs. R
         deltaphinodist->Fill(phistart, rantrans / rad_final);  // delta phi no distortion, just diffusion+smear
         deltarnodist->Fill(radstart, rantrans);                // delta r no distortion, just diffusion+smear
@@ -1064,6 +1152,66 @@ int PHG4TpcElectronDrift::End(PHCompositeNode * /*topNode*/)
     hitmapend_z->Write();
     z_startmap->Write();
     ratioElectronsRR->Write();
+    if (diffDistance)
+    {
+      diffDistance->Write();
+    }
+    if (diffDX)
+    {
+      diffDX->Write();
+    }
+    if (diffDY)
+    {
+      diffDY->Write();
+    }
+    if (diffPerSqrtL)
+    {
+      diffPerSqrtL->Write();
+    }
+    if (diffDXPerSqrtL)
+    {
+      diffDXPerSqrtL->Write();
+    }
+    if (diffDYPerSqrtL)
+    {
+      diffDYPerSqrtL->Write();
+    }
+    if (nElectrons)
+    {
+      nElectrons->Write();
+    }
+    if (poissonMean)
+    {
+      poissonMean->Write();
+    }
+    if (nElectronsVsMean)
+    {
+      nElectronsVsMean->Write();
+    }
+    if (diffVsDrift)
+    {
+      diffVsDrift->Write();
+    }
+    if (diffPerSqrtLVsDrift)
+    {
+      diffPerSqrtLVsDrift->Write();
+    }
+    if (diffDXVsDrift)
+    {
+      diffDXVsDrift->Write();
+    }
+    if (diffDYVsDrift)
+    {
+      diffDYVsDrift->Write();
+    }
+    if (diffDXPerSqrtLVsDrift)
+    {
+      diffDXPerSqrtLVsDrift->Write();
+    }
+    if (diffDYPerSqrtLVsDrift)
+    {
+      diffDYPerSqrtLVsDrift->Write();
+    }
     if (driftXY)
     {
       driftXY->Write();

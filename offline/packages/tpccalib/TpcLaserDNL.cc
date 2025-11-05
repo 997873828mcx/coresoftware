@@ -13,18 +13,29 @@
 #include <g4detectors/PHG4TpcCylinderGeom.h>
 #include <g4detectors/PHG4TpcCylinderGeomContainer.h>
 
+#include <g4tracking/TrkrTruthTrackContainer.h>
+#include <g4tracking/TrkrTruthTrack.h>
+
+#include <g4main/PHG4HitContainer.h>
+#include <g4main/PHG4Hit.h>
+
 #include <phool/getClass.h>
 #include <phool/PHIODataNode.h>
 #include <phool/PHObject.h>
+#include <fun4all/Fun4AllReturnCodes.h>
 
 #include <TFile.h>
 #include <TTree.h>
 #include <TMath.h>
 
+#include <algorithm>
 #include <cmath>
 #include <iostream>
-#include <map>
 #include <limits>
+#include <map>
+#include <unordered_map>
+#include <unordered_set>
+#include <iterator>
 
 // For EventHeader event sequence tagging
 #include <ffaobjects/EventHeader.h>
@@ -65,30 +76,92 @@ m_tt->Branch("hitkey",&m_hitkeys);
 m_tt->Branch("hitsetkey",&m_hitsetkeys);
 m_tt->Branch("iphi",&m_iphi);
 m_tt->Branch("tbin",&m_tbin);
+
+  if(m_write_display_ntuple)
+  {
+    m_tt_display_intersections = new TTree("truth_intersections","truth track-cylinder intersections");
+    m_tt_display_intersections->Branch("event",&m_display_intersection.event,"event/I");
+    m_tt_display_intersections->Branch("trackid",&m_display_intersection.trackid,"trackid/I");
+    m_tt_display_intersections->Branch("layer",&m_display_intersection.layer,"layer/I");
+    m_tt_display_intersections->Branch("side",&m_display_intersection.side,"side/I");
+    m_tt_display_intersections->Branch("gx",&m_display_intersection.gx,"gx/D");
+    m_tt_display_intersections->Branch("gy",&m_display_intersection.gy,"gy/D");
+    m_tt_display_intersections->Branch("gz",&m_display_intersection.gz,"gz/D");
+    m_tt_display_intersections->Branch("r",&m_display_intersection.r,"r/D");
+    m_tt_display_intersections->Branch("phi",&m_display_intersection.phi,"phi/D");
+    m_tt_display_intersections->Branch("path",&m_display_intersection.path,"path/D");
+    m_tt_display_intersections->Branch("used_in_seed",&m_display_intersection.used_in_seed,"used_in_seed/I");
+
+    m_tt_display_g4hits = new TTree("truth_g4hits","sampled G4 hits for truth tracks");
+    m_tt_display_g4hits->Branch("event",&m_display_g4hit.event,"event/I");
+    m_tt_display_g4hits->Branch("trackid",&m_display_g4hit.trackid,"trackid/I");
+    m_tt_display_g4hits->Branch("layer",&m_display_g4hit.layer,"layer/I");
+    m_tt_display_g4hits->Branch("side",&m_display_g4hit.side,"side/I");
+    m_tt_display_g4hits->Branch("gx",&m_display_g4hit.gx,"gx/D");
+    m_tt_display_g4hits->Branch("gy",&m_display_g4hit.gy,"gy/D");
+    m_tt_display_g4hits->Branch("gz",&m_display_g4hit.gz,"gz/D");
+    m_tt_display_g4hits->Branch("r",&m_display_g4hit.r,"r/D");
+    m_tt_display_g4hits->Branch("phi",&m_display_g4hit.phi,"phi/D");
+    m_tt_display_g4hits->Branch("sample",&m_display_g4hit.sample,"sample/I");
+    m_tt_display_g4hits->Branch("sample_frac",&m_display_g4hit.sample_frac,"sample_frac/D");
+    m_tt_display_g4hits->Branch("step_path",&m_display_g4hit.step_path,"step_path/D");
+    m_tt_display_g4hits->Branch("edep",&m_display_g4hit.edep,"edep/D");
+    m_tt_display_g4hits->Branch("eion",&m_display_g4hit.eion,"eion/D");
+    m_tt_display_g4hits->Branch("t0",&m_display_g4hit.t0,"t0/D");
+    m_tt_display_g4hits->Branch("t1",&m_display_g4hit.t1,"t1/D");
+    m_tt_display_g4hits->Branch("used_in_track",&m_display_g4hit.used_in_track,"used_in_track/I");
+    m_tt_display_g4hits->Branch("hitid",&m_display_g4hit.hitid,"hitid/l");
+  }
 return 0;
 }
 
 int TpcLaserDNL::InitRun(PHCompositeNode* topNode)
 {
-  m_track_map = findNode::getClass<SvtxTrackMap>(topNode,"SvtxTrackMap");
+  if(m_use_reco_seeds)
+  {
+    m_track_map = findNode::getClass<SvtxTrackMap>(topNode,"SvtxTrackMap");
+  }
   m_hitsets = findNode::getClass<TrkrHitSetContainer>(topNode,"TRKR_HITSET");
   m_geom = findNode::getClass<PHG4TpcCylinderGeomContainer>(topNode,"CYLINDERCELLGEOM_SVTX");
   m_acts = findNode::getClass<ActsGeometry>(topNode,"ActsGeometry");
+  m_truth_tracks = findNode::getClass<TrkrTruthTrackContainer>(topNode, "TRKR_TRUTHTRACKCONTAINER");
+  m_g4hits = findNode::getClass<PHG4HitContainer>(topNode, "G4HIT_TPC");
   if(m_use_clusters)
   {
     m_clusters = findNode::getClass<TrkrClusterContainer>(topNode, "TRKR_CLUSTER");
   }
-  if(!(m_track_map && m_geom && m_acts && (m_use_clusters ? (m_clusters!=nullptr) : (m_hitsets!=nullptr))))
+  const bool have_reco_tracks = (m_use_reco_seeds && m_track_map && !m_track_map->empty());
+  const bool have_truth_tracks = (m_truth_tracks != nullptr && m_g4hits != nullptr);
+  if(!have_reco_tracks && !have_truth_tracks)
   {
-    std::cout << Name() << ": missing nodes. SvtxTrackMap="
+    std::cout << Name() << ": missing track sources. SvtxTrackMap="
               << (m_track_map!=nullptr)
-              << (m_use_clusters ? " TRKR_CLUSTER=" : " TRKR_HITSET=")
-              << (m_use_clusters ? (m_clusters!=nullptr) : (m_hitsets!=nullptr))
-              << " Geom=" << (m_geom!=nullptr) << " Acts=" << (m_acts!=nullptr) << std::endl;
+              << " TRKR_TRUTHTRACKCONTAINER=" << (m_truth_tracks!=nullptr)
+              << " G4HIT_TPC=" << (m_g4hits!=nullptr)
+              << std::endl;
+    return -1;
+  }
+  if(!m_geom || !m_acts)
+  {
+    std::cout << Name() << ": missing geometry/Acts nodes. Geom="
+              << (m_geom!=nullptr)
+              << " Acts=" << (m_acts!=nullptr) << std::endl;
+    return -1;
+  }
+  if(!m_use_clusters && !m_hitsets)
+  {
+    std::cout << Name() << ": missing TRKR_HITSET node." << std::endl;
+    return -1;
+  }
+  if(m_use_clusters && !m_clusters)
+  {
+    std::cout << Name() << ": missing TRKR_CLUSTER node." << std::endl;
     return -1;
   }
   std::cout << Name() << ": InitRun OK. mode="
             << (m_use_clusters? "clusters" : "hits")
+            << ", has_reco=" << have_reco_tracks
+            << ", has_truth=" << have_truth_tracks
             << ", vdrift=" << m_acts->get_drift_velocity() << " cm/ns" << std::endl;
   return 0;
 }
@@ -129,304 +202,703 @@ double TpcLaserDNL::wrap_dphi(double d)
 
 int TpcLaserDNL::process_event(PHCompositeNode* topNode)
 {
-// optional EventHeader if desired; not required for tree
-// m_event can be incremented locally if no EventHeader present
-static int ievt=0;
+  static int ievt = 0;
 
-// Prefer the EventHeader sequence if available; else fall back to local counter
-if (auto* eh = findNode::getClass<EventHeader>(topNode, "EventHeader"))
-{
-  m_event = eh->get_EvtSequence();
-}
-else
-{
-  m_event = ievt++;
-}
-
-if(!m_track_map || !m_geom || !m_acts) 
-{
-  std::cout << "wrong" << std::endl;
-  return 0;
-}
-if(!m_use_clusters && !m_hitsets) 
-{
-  std::cout << "wrong" << std::endl;
-  return 0;
-}
-if(m_use_clusters && !m_clusters) 
-{
-  std::cout << "wrong" << std::endl;
-  return 0;
-}
-
-// quick visibility of container content each event
-std::size_t tpc_hitset_count = 0;
-{
-  auto hr = m_hitsets->getHitSets(TrkrDefs::TrkrId::tpcId);
-  for(auto it = hr.first; it != hr.second; ++it) ++tpc_hitset_count;
-}
-std::cout << Name() << ": process_event evt=" << m_event
-          << " tpc_hitsets=" << tpc_hitset_count
-          << " use_clusters=" << (m_use_clusters?1:0)
-          << std::endl;
-
-int ntracks = 0;
-
-for(const auto& it : *m_track_map)
-{
-  const auto* trk = it.second;
-  if(!trk) continue;
-  m_trkid = trk->get_id();
-  ++ntracks;
-m_trkid = trk->get_id();
-const double x0 = trk->get_x();
-const double y0 = trk->get_y();
-const double z0 = trk->get_z();
-const double vx = trk->get_px();
-const double vy = trk->get_py();
-const double vz = trk->get_pz();
-const double v2 = vx*vx+vy*vy+vz*vz;
-if(v2==0) continue;
-
-// loop TPC layers
-auto lr = m_geom->get_begin_end();
-  for(auto lit = lr.first; lit != lr.second; ++lit)
+  if (auto* eh = findNode::getClass<EventHeader>(topNode, "EventHeader"))
   {
-    PHG4TpcCylinderGeom* layergeom = lit->second;
-    if(!layergeom) continue;
-
-    const double R = layergeom->get_radius();   // layer center radius
-    double tR{}, xi{}, yi{}, zi{};
-    if(!cylinder_intersection(x0,y0,z0,vx,vy,vz,R,tR,xi,yi,zi)) continue;
-
-    // truth ref at intersection
-    m_layer = layergeom->get_layer();
-    m_r = R;
-    m_xtrue = xi; m_ytrue = yi; m_ztrue = zi;
-    m_phi_true = std::atan2(yi, xi);
-    m_side = (zi > 0) ? 1 : 0;
-
-    // convert hits to global and select those near the line
-    const double AdcClockPeriod = layergeom->get_zstep();
-    const unsigned short NTBins = (unsigned short)layergeom->get_zbins();
-    const double tdriftmax = AdcClockPeriod * NTBins / 2.0;
-    const double vdrift = m_acts->get_drift_velocity();
-
-    double wx=0, wy=0, wz=0, wsum=0;
-    m_nused = 0;
-    m_nhit_scanned = 0;
-    m_adcsum = 0;
-    m_hitkeys.clear();
-    m_hitsetkeys.clear();
-    m_iphi.clear();
-    m_tbin.clear();
-    m_pad_phi_centers.clear();
-    m_npad_used = 0;
-    m_phi_pad_max = std::numeric_limits<double>::quiet_NaN();
-    m_phase = std::numeric_limits<double>::quiet_NaN();
-    m_phase_reco = std::numeric_limits<double>::quiet_NaN();
-
-    std::map<unsigned short, double> padWeights;
-
-  if(!m_use_clusters)
-  {
-    // iterate TPC hitsets
-    TrkrHitSetContainer::ConstRange hr = m_hitsets->getHitSets(TrkrDefs::TrkrId::tpcId);
-    for(auto hsit = hr.first; hsit != hr.second; ++hsit)
-    {
-      const TrkrDefs::hitsetkey& hsk = hsit->first;
-      if(TrkrDefs::getLayer(hsk) != m_layer) continue;
-      if(TpcDefs::getSide(hsk) != (unsigned)m_side) continue;
-
-      TrkrHitSet* hitset = hsit->second;
-      if(!hitset) continue;
-
-      TrkrHitSet::ConstRange hits = hitset->getHits();
-      for(auto hitit = hits.first; hitit != hits.second; ++hitit)
-      {
-        const auto hitkey = hitit->first;
-        TrkrHit* hit = hitit->second;
-        if(!hit) continue;
-        ++m_nhit_scanned;
-
-        // choose weight: ADC (default) or charge (hit energy)
-        double weight = m_weight_by_adc ? static_cast<double>(hit->getAdc())
-                                        : static_cast<double>(hit->getEnergy());
-        if(m_weight_by_adc && m_use_pedestal) weight -= m_pedestal;
-        if(weight < m_min_adc) continue;
-
-        const unsigned short iphi = TpcDefs::getPad(hitkey);
-        const unsigned short tbin = TpcDefs::getTBin(hitkey);
-
-        // Use geometry-provided pad-center calculation to avoid sector/orientation mismatches
-        const double phi_c = layergeom->get_phicenter(static_cast<int>(iphi), m_side);
-        const double xh = R*std::cos(phi_c);
-        const double yh = R*std::sin(phi_c);
-
-        const double zcenter = layergeom->get_zcenter(tbin);
-        double zdriftlen = zcenter * vdrift;
-        double zh = tdriftmax * vdrift - zdriftlen;
-        if(m_side == 0) zh = -zh;
-
-        // distance to laser line
-        const double ox = xh - x0;
-        const double oy = yh - y0;
-        const double oz = zh - z0;
-        const double tproj = (vx*ox + vy*oy + vz*oz) / v2;
-        const double px = x0 + tproj*vx;
-        const double py = y0 + tproj*vy;
-        const double pz = z0 + tproj*vz;
-        const double dca = std::sqrt(sqr(xh-px)+sqr(yh-py)+sqr(zh-pz));
-
-        const double dzline = zh - zi; // compare to intersection z at this layer
-
-        if(dca > m_max_dca) continue;
-        if(std::abs(dzline) > m_max_dz) continue;
-
-        wx += weight * xh;
-        wy += weight * yh;
-        wz += weight * zh;
-        wsum += weight;
-        m_adcsum += weight;
-        m_nused++;
-        // record used-hit debug info
-        m_hitkeys.push_back(static_cast<ULong64_t>(hitkey));
-        m_hitsetkeys.push_back(static_cast<ULong64_t>(hsk));
-        m_iphi.push_back(static_cast<unsigned int>(iphi));
-        m_tbin.push_back(static_cast<unsigned int>(tbin));
-        padWeights[iphi] += weight;
-      }
-    }
+    m_event = eh->get_EvtSequence();
   }
   else
   {
-    // iterate TPC clusters grouped by hitset
-    auto hitsetkeys = m_clusters->getHitSetKeys(TrkrDefs::TrkrId::tpcId);
-    for(const auto& hsk : hitsetkeys)
+    m_event = ievt++;
+  }
+
+  // quick visibility of container content each event (only meaningful when using hits)
+  std::size_t tpc_hitset_count = 0;
+  if(!m_use_clusters && m_hitsets)
+  {
+    auto hr = m_hitsets->getHitSets(TrkrDefs::TrkrId::tpcId);
+    for(auto it = hr.first; it != hr.second; ++it) ++tpc_hitset_count;
+  }
+  std::cout << Name() << ": process_event evt=" << m_event
+            << " tpc_hitsets=" << tpc_hitset_count
+            << " use_clusters=" << (m_use_clusters?1:0)
+            << std::endl;
+
+  std::vector<TrackSeed> seeds;
+  if(m_use_reco_seeds && m_track_map && !m_track_map->empty())
+  {
+    build_reco_seeds(seeds);
+  }
+  if(seeds.empty())
+  {
+    build_truth_seeds(seeds);
+  }
+
+  if(seeds.empty())
+  {
+    std::cout << Name() << ": evt " << m_event << " has no truth track seeds (truth container present="
+              << (m_truth_tracks!=nullptr)
+              << ", g4hits present=" << (m_g4hits!=nullptr)
+              << ")" << std::endl;
+    return Fun4AllReturnCodes::EVENT_OK;
+  }
+
+  for(const auto& seed : seeds)
+  {
+    m_trkid = seed.id;
+
+    for(const auto& layerPoint : seed.layers)
     {
-      if(TrkrDefs::getLayer(hsk) != m_layer) continue;
-      if(TpcDefs::getSide(hsk) != (unsigned)m_side) continue;
+      auto* layergeom = m_geom->GetLayerCellGeom(static_cast<int>(layerPoint.layer));
+      if(!layergeom) continue;
 
-      auto crange = m_clusters->getClusters(hsk);
-      for(auto cit = crange.first; cit != crange.second; ++cit)
+      const double x0 = layerPoint.x;
+      const double y0 = layerPoint.y;
+      const double z0 = layerPoint.z;
+      const double vx = layerPoint.dirx;
+      const double vy = layerPoint.diry;
+      const double vz = layerPoint.dirz;
+      const double v2 = vx*vx + vy*vy + vz*vz;
+      if(v2 == 0) continue;
+
+      m_layer = layerPoint.layer;
+      if (layerPoint.radius <= 0)
       {
-        const auto ckey = cit->first;
-        TrkrCluster* clus = cit->second;
-        if(!clus) continue;
+        std::cout << Name() << ": layer " << m_layer
+                  << " track " << seed.id
+                  << " has non-positive radius " << layerPoint.radius
+                  << ", falling back to geometry radius." << std::endl;
+      }
+      m_r = layerPoint.radius > 0 ? layerPoint.radius : layergeom->get_radius();
+      m_xtrue = x0;
+      m_ytrue = y0;
+      m_ztrue = z0;
+      m_phi_true = std::atan2(y0, x0);
+      m_side = layerPoint.side;
 
-        // Use cluster ADC as weight
-        double weight = static_cast<double>(clus->getAdc());
-        if(weight < m_min_adc) continue;
+      if(!std::isfinite(x0) || !std::isfinite(y0) || !std::isfinite(z0))
+      {
+        continue;
+      }
 
-        // global cluster position
-        Acts::Vector3 g = m_acts->getGlobalPosition(ckey, clus);
+      if(
+        m_write_display_ntuple &&
+        m_tt_display_intersections &&
+        (layerPoint.from_g4hit || m_include_fallback_intersections)
+      )
+      {
+        m_display_intersection.event = m_event;
+        m_display_intersection.trackid = seed.id;
+        m_display_intersection.layer = static_cast<int>(m_layer);
+        m_display_intersection.side = m_side;
+        m_display_intersection.gx = x0;
+        m_display_intersection.gy = y0;
+        m_display_intersection.gz = z0;
+        m_display_intersection.r = m_r;
+        m_display_intersection.phi = m_phi_true;
+        m_display_intersection.path = layerPoint.path;
+        m_display_intersection.used_in_seed = 1;
+        m_tt_display_intersections->Fill();
+      }
 
-        // distance to laser line (3D)
-        const double ox = g.x() - x0;
-        const double oy = g.y() - y0;
-        const double oz = g.z() - z0;
-        const double tproj = (vx*ox + vy*oy + vz*oz) / v2;
-        const double px = x0 + tproj*vx;
-        const double py = y0 + tproj*vy;
-        const double pz = z0 + tproj*vz;
-        const double dca = std::sqrt(sqr(g.x()-px)+sqr(g.y()-py)+sqr(g.z()-pz));
+      const double AdcClockPeriod = layergeom->get_zstep();
+      const unsigned short NTBins = static_cast<unsigned short>(layergeom->get_zbins());
+      const double tdriftmax = AdcClockPeriod * NTBins / 2.0;
+      const double vdrift = m_acts->get_drift_velocity();
 
-        const double dzline = g.z() - zi; // compare to intersection z at this layer
+      double wx = 0;
+      double wy = 0;
+      double wz = 0;
+      double wsum = 0;
+      m_nused = 0;
+      m_nhit_scanned = 0;
+      m_adcsum = 0;
+      m_hitkeys.clear();
+      m_hitsetkeys.clear();
+      m_iphi.clear();
+      m_tbin.clear();
+      m_pad_phi_centers.clear();
+      m_npad_used = 0;
+      m_phi_pad_max = std::numeric_limits<double>::quiet_NaN();
+      m_phase = std::numeric_limits<double>::quiet_NaN();
+      m_phase_reco = std::numeric_limits<double>::quiet_NaN();
 
-        if(dca > m_max_dca) continue;
-        if(std::abs(dzline) > m_max_dz) continue;
+      std::map<unsigned short, double> padWeights;
 
-        wx += weight * g.x();
-        wy += weight * g.y();
-        wz += weight * g.z();
-        wsum += weight;
-        m_adcsum += weight;
-        m_nused++;
+      if(!m_use_clusters)
+      {
+        if(!m_hitsets) continue;
+        TrkrHitSetContainer::ConstRange hr = m_hitsets->getHitSets(TrkrDefs::TrkrId::tpcId);
+        for(auto hsit = hr.first; hsit != hr.second; ++hsit)
+        {
+          const TrkrDefs::hitsetkey& hsk = hsit->first;
+          if(TrkrDefs::getLayer(hsk) != m_layer) continue;
+          if(TpcDefs::getSide(hsk) != static_cast<unsigned int>(m_side)) continue;
+
+          TrkrHitSet* hitset = hsit->second;
+          if(!hitset) continue;
+
+          TrkrHitSet::ConstRange hits = hitset->getHits();
+          for(auto hitit = hits.first; hitit != hits.second; ++hitit)
+          {
+            const auto hitkey = hitit->first;
+            TrkrHit* hit = hitit->second;
+            if(!hit) continue;
+            ++m_nhit_scanned;
+
+            double weight = m_weight_by_adc ? static_cast<double>(hit->getAdc())
+                                            : static_cast<double>(hit->getEnergy());
+            if(m_weight_by_adc && m_use_pedestal) weight -= m_pedestal;
+            if(weight < m_min_adc) continue;
+
+            const unsigned short iphi = TpcDefs::getPad(hitkey);
+            const unsigned short tbin = TpcDefs::getTBin(hitkey);
+
+            const double phi_c = layergeom->get_phicenter(static_cast<int>(iphi), m_side);
+            const double xh = m_r*std::cos(phi_c);
+            const double yh = m_r*std::sin(phi_c);
+
+            const double zcenter = layergeom->get_zcenter(tbin);
+            double zdriftlen = zcenter * vdrift;
+            double zh = tdriftmax * vdrift - zdriftlen;
+            if(m_side == 0) zh = -zh;
+
+            const double ox = xh - x0;
+            const double oy = yh - y0;
+            const double oz = zh - z0;
+            const double tproj = (vx*ox + vy*oy + vz*oz) / v2;
+            const double px = x0 + tproj*vx;
+            const double py = y0 + tproj*vy;
+            const double pz = z0 + tproj*vz;
+            const double dca = std::sqrt(sqr(xh-px)+sqr(yh-py)+sqr(zh-pz));
+
+            const double dzline = zh - z0;
+
+            if(dca > m_max_dca) continue;
+            if(std::abs(dzline) > m_max_dz) continue;
+
+            wx += weight * xh;
+            wy += weight * yh;
+            wz += weight * zh;
+            wsum += weight;
+            m_adcsum += weight;
+            m_nused++;
+
+            m_hitkeys.push_back(static_cast<ULong64_t>(hitkey));
+            m_hitsetkeys.push_back(static_cast<ULong64_t>(hsk));
+            m_iphi.push_back(static_cast<unsigned int>(iphi));
+            m_tbin.push_back(static_cast<unsigned int>(tbin));
+            padWeights[iphi] += weight;
+          }
+        }
+      }
+      else
+      {
+        if(!m_clusters) continue;
+        auto hitsetkeys = m_clusters->getHitSetKeys(TrkrDefs::TrkrId::tpcId);
+        for(const auto& hsk : hitsetkeys)
+        {
+          if(TrkrDefs::getLayer(hsk) != m_layer) continue;
+          if(TpcDefs::getSide(hsk) != static_cast<unsigned int>(m_side)) continue;
+
+          auto crange = m_clusters->getClusters(hsk);
+          for(auto cit = crange.first; cit != crange.second; ++cit)
+          {
+            const auto ckey = cit->first;
+            TrkrCluster* clus = cit->second;
+            if(!clus) continue;
+
+            double weight = static_cast<double>(clus->getAdc());
+            if(weight < m_min_adc) continue;
+
+            Acts::Vector3 g = m_acts->getGlobalPosition(ckey, clus);
+
+            const double ox = g.x() - x0;
+            const double oy = g.y() - y0;
+            const double oz = g.z() - z0;
+            const double tproj = (vx*ox + vy*oy + vz*oz) / v2;
+            const double px = x0 + tproj*vx;
+            const double py = y0 + tproj*vy;
+            const double pz = z0 + tproj*vz;
+            const double dca = std::sqrt(sqr(g.x()-px)+sqr(g.y()-py)+sqr(g.z()-pz));
+
+            const double dzline = g.z() - z0;
+
+            if(dca > m_max_dca) continue;
+            if(std::abs(dzline) > m_max_dz) continue;
+
+            wx += weight * g.x();
+            wy += weight * g.y();
+            wz += weight * g.z();
+            wsum += weight;
+            m_adcsum += weight;
+            m_nused++;
+          }
+        }
+      }
+
+      if(wsum > 0)
+      {
+        m_xreco = wx/wsum;
+        m_yreco = wy/wsum;
+        m_zreco = wz/wsum;
+        m_phi_reco = std::atan2(m_yreco, m_xreco);
+        m_dphi = wrap_dphi(m_phi_reco - m_phi_true);
+        m_dRphi = m_r * m_dphi;
+
+        if(!m_use_clusters && !padWeights.empty())
+        {
+          double maxWeight = -std::numeric_limits<double>::infinity();
+          for(const auto& entry : padWeights)
+          {
+            const auto pad = entry.first;
+            const auto weight = entry.second;
+            const double phi_c = layergeom->get_phicenter(static_cast<int>(pad), m_side);
+            m_pad_phi_centers.push_back(phi_c);
+            if(weight > maxWeight)
+            {
+              maxWeight = weight;
+              m_phi_pad_max = phi_c;
+            }
+          }
+          m_npad_used = static_cast<int>(padWeights.size());
+
+          const double phi_width = std::abs(layergeom->get_phistep());
+          if(phi_width > 1e-12 && std::isfinite(m_phi_pad_max))
+          {
+            const double dphi_phase_true = wrap_dphi(m_phi_true - m_phi_pad_max);
+            const double dphi_phase_reco = wrap_dphi(m_phi_reco - m_phi_pad_max);
+            m_phase = dphi_phase_true / phi_width;
+            m_phase_reco = dphi_phase_reco / phi_width;
+          }
+          else
+          {
+            m_phase = std::numeric_limits<double>::quiet_NaN();
+            m_phase_reco = std::numeric_limits<double>::quiet_NaN();
+          }
+        }
+
+        m_tt->Fill();
+      }
+    } // layer loop
+  } // track loop
+
+  if(m_write_display_ntuple && m_tt_display_g4hits && m_g4hits)
+  {
+    std::unordered_set<int> truth_ids;
+    truth_ids.reserve(seeds.size());
+    for(const auto& seed : seeds)
+    {
+      truth_ids.insert(seed.id);
+    }
+
+    if(!truth_ids.empty())
+    {
+      const unsigned int subsamples = std::max(1u, m_display_hit_subsamples);
+      const double denom = static_cast<double>(subsamples);
+      PHG4HitContainer::ConstRange hitrange = m_g4hits->getHits();
+      for(auto hitit = hitrange.first; hitit != hitrange.second; ++hitit)
+      {
+        PHG4Hit* hit = hitit->second;
+        if(!hit) continue;
+
+        const int trkid = hit->get_trkid();
+        if(trkid < 0) continue;
+        if(truth_ids.find(trkid) == truth_ids.end()) continue;
+
+        const unsigned int layer = hit->get_layer();
+        if(layer == std::numeric_limits<unsigned int>::max()) continue;
+
+        const double x0 = hit->get_x(0);
+        const double y0 = hit->get_y(0);
+        const double z0 = hit->get_z(0);
+        const double x1 = hit->get_x(1);
+        const double y1 = hit->get_y(1);
+        const double z1 = hit->get_z(1);
+
+        const double dx = x1 - x0;
+        const double dy = y1 - y0;
+        const double dz = z1 - z0;
+        const double path = std::sqrt(dx*dx + dy*dy + dz*dz);
+
+        const double edep = hit->get_edep();
+        const double eion = hit->get_eion();
+        const double t0 = hit->get_t(0);
+        const double t1 = hit->get_t(1);
+        const ULong64_t hitid = static_cast<ULong64_t>(hit->get_hit_id());
+
+        for(unsigned int isample = 0; isample <= subsamples; ++isample)
+        {
+          const double frac = (subsamples > 0) ? static_cast<double>(isample) / denom : 0.0;
+          const double gx = x0 + frac * dx;
+          const double gy = y0 + frac * dy;
+          const double gz = z0 + frac * dz;
+          if(!std::isfinite(gx) || !std::isfinite(gy) || !std::isfinite(gz)) continue;
+          const double r = std::sqrt(gx*gx + gy*gy);
+
+          m_display_g4hit.event = m_event;
+          m_display_g4hit.trackid = trkid;
+          m_display_g4hit.layer = static_cast<int>(layer);
+          m_display_g4hit.side = (gz >= 0) ? 1 : 0;
+          m_display_g4hit.gx = gx;
+          m_display_g4hit.gy = gy;
+          m_display_g4hit.gz = gz;
+          m_display_g4hit.r = r;
+          m_display_g4hit.phi = std::atan2(gy, gx);
+          m_display_g4hit.sample = static_cast<int>(isample);
+          m_display_g4hit.sample_frac = frac;
+          m_display_g4hit.step_path = path * frac;
+          m_display_g4hit.edep = edep;
+          m_display_g4hit.eion = eion;
+          m_display_g4hit.t0 = t0;
+          m_display_g4hit.t1 = t1;
+          m_display_g4hit.used_in_track = 1;
+          m_display_g4hit.hitid = hitid;
+
+          m_tt_display_g4hits->Fill();
+        }
       }
     }
   }
 
-  // Always write one row per layer if any hits were scanned.
-  // If no hits passed selection (wsum==0), keep reco equal to truth and adcsum=0 for diagnostics.
-  //if (m_nhit_scanned > 0)
-  //{
-    if(wsum > 0)
-    {
-      m_xreco = wx/wsum;
-      m_yreco = wy/wsum;
-      m_zreco = wz/wsum;
-      m_phi_reco = std::atan2(m_yreco, m_xreco);
-      m_dphi = wrap_dphi(m_phi_reco - m_phi_true);
-      m_dRphi = m_r * m_dphi;
-
-      if(!m_use_clusters && !padWeights.empty())
-      {
-        double maxWeight = -std::numeric_limits<double>::infinity();
-        for(const auto& entry : padWeights)
-        {
-          const auto pad = entry.first;
-          const auto weight = entry.second;
-          const double phi_c = layergeom->get_phicenter(static_cast<int>(pad), m_side);
-          m_pad_phi_centers.push_back(phi_c);
-          if(weight > maxWeight)
-          {
-            maxWeight = weight;
-            m_phi_pad_max = phi_c;
-          }
-        }
-        m_npad_used = static_cast<int>(padWeights.size());
-
-        const double phi_width = std::abs(layergeom->get_phistep());
-        if(phi_width > 1e-12 && std::isfinite(m_phi_pad_max))
-        {
-          const double dphi_phase_true = wrap_dphi(m_phi_true - m_phi_pad_max);
-          const double dphi_phase_reco = wrap_dphi(m_phi_reco - m_phi_pad_max);
-          m_phase = dphi_phase_true / phi_width;
-          m_phase_reco = dphi_phase_reco / phi_width;
-        }
-        else
-        {
-          m_phase = std::numeric_limits<double>::quiet_NaN();
-          m_phase_reco = std::numeric_limits<double>::quiet_NaN();
-        }
-      }
-
-      m_tt->Fill();
-    }
-    
-   
-    /* std::cout << Name() << ": evt " << m_event
-              << " trk " << m_trkid
-              << " layer " << m_layer
-              << " side " << m_side
-              << " scanned " << m_nhit_scanned
-              << " used " << m_nused
-              << " adcsum " << m_adcsum
-              << " wsum " << wsum
-              << std::endl; */
-  //}
-  //else
-  //{
-    // no hits seen for this layer for this track; print a minimal hint when containers had content
-  //  if (tpc_hitset_count > 0)
-   // {
-   //   std::cout << Name() << ": evt " << m_event
-    //            << " trk " << m_trkid
-    //            << " layer " << m_layer
-    //            << " side " << m_side
-    //            << " scanned=0 (no matching hitsets/hits)"
-    //            << std::endl;
-   // }
-  //}
-} // layers
-} // tracks
-
-if (ntracks==0)
-{
-  std::cout << Name() << ": evt " << m_event << " has no tracks in SvtxTrackMap" << std::endl;
+  return Fun4AllReturnCodes::EVENT_OK;
 }
 
-return 0;
+
+void TpcLaserDNL::build_reco_seeds(std::vector<TrackSeed>& seeds) const
+{
+  if(!m_use_reco_seeds || !m_track_map || !m_geom) return;
+
+  for(const auto& it : *m_track_map)
+  {
+    const auto* trk = it.second;
+    if(!trk) continue;
+
+    TrackSeed seed;
+    seed.id = trk->get_id();
+    seed.origin[0] = trk->get_x();
+    seed.origin[1] = trk->get_y();
+    seed.origin[2] = trk->get_z();
+
+    const double base_x = trk->get_x();
+    const double base_y = trk->get_y();
+    const double base_z = trk->get_z();
+    const double vx = trk->get_px();
+    const double vy = trk->get_py();
+    const double vz = trk->get_pz();
+    const double v2 = vx*vx + vy*vy + vz*vz;
+    if(v2 == 0) continue;
+    const double vmag = std::sqrt(v2);
+    if(vmag > 0)
+    {
+      seed.dir[0] = vx / vmag;
+      seed.dir[1] = vy / vmag;
+      seed.dir[2] = vz / vmag;
+      seed.dir_valid = true;
+    }
+
+    auto lr = m_geom->get_begin_end();
+    for(auto lit = lr.first; lit != lr.second; ++lit)
+    {
+      auto* layergeom = lit->second;
+      if(!layergeom) continue;
+
+      const double R = layergeom->get_radius();
+      double tR{}, xi{}, yi{}, zi{};
+      if(!cylinder_intersection(base_x, base_y, base_z, vx, vy, vz, R, tR, xi, yi, zi)) continue;
+
+      LayerPoint lp;
+      lp.layer = layergeom->get_layer();
+      lp.radius = R;
+      lp.x = xi;
+      lp.y = yi;
+      lp.z = zi;
+      lp.dirx = vx;
+      lp.diry = vy;
+      lp.dirz = vz;
+      lp.side = (zi > 0) ? 1 : 0;
+      lp.path = std::sqrt(v2);
+      lp.from_g4hit = true;
+      seed.layers.push_back(lp);
+    }
+
+    if(!seed.layers.empty())
+    {
+      std::sort(seed.layers.begin(), seed.layers.end(),
+                [](const LayerPoint& a, const LayerPoint& b){ return a.layer < b.layer; });
+      seeds.push_back(std::move(seed));
+    }
+  }
+}
+
+void TpcLaserDNL::build_truth_seeds(std::vector<TrackSeed>& seeds) const
+{
+  if(!m_truth_tracks || !m_geom || !m_g4hits) return;
+
+  TrkrTruthTrackContainer::ConstRange range = m_truth_tracks->getTruthTrackRange();
+  if(range.first == range.second) return;
+
+  std::unordered_map<unsigned int, std::size_t> index_by_id;
+  seeds.reserve(std::distance(range.first, range.second));
+  for(auto it = range.first; it != range.second; ++it)
+  {
+    TrkrTruthTrack* truth = it->second;
+    if(!truth) continue;
+    TrackSeed seed;
+    seed.id = static_cast<int>(truth->getTrackid());
+    seed.origin[0] = truth->getX0();
+    seed.origin[1] = truth->getY0();
+    seed.origin[2] = truth->getZ0();
+    const double pt = truth->getPt();
+    const double phi = truth->getPhi();
+    const double eta = truth->getPseudoRapidity();
+    const double px = pt * std::cos(phi);
+    const double py = pt * std::sin(phi);
+    const double pz = pt * std::sinh(eta);
+    const double pmag = std::sqrt(px*px + py*py + pz*pz);
+    if(pmag > 0)
+    {
+      seed.dir[0] = px / pmag;
+      seed.dir[1] = py / pmag;
+      seed.dir[2] = pz / pmag;
+      seed.dir_valid = true;
+    }
+    index_by_id[truth->getTrackid()] = seeds.size();
+    seeds.push_back(std::move(seed));
+  }
+
+  if(seeds.empty()) return;
+
+  std::vector<unsigned int> geometry_layers;
+  {
+    auto lr = m_geom->get_begin_end();
+    for(auto it = lr.first; it != lr.second; ++it)
+    {
+      if(it->second)
+      {
+        geometry_layers.push_back(static_cast<unsigned int>(it->second->get_layer()));
+      }
+    }
+  }
+
+  std::unordered_map<unsigned int, std::map<unsigned int, LayerPoint>> layer_cache;
+  const double axial_threshold = 1e-9;
+  const double param_tolerance = 1e-6;
+  const double radial_tolerance = 5e-3;
+  PHG4HitContainer::ConstRange hitrange = m_g4hits->getHits();
+  for(auto hitit = hitrange.first; hitit != hitrange.second; ++hitit)
+  {
+    PHG4Hit* hit = hitit->second;
+    if(!hit) continue;
+
+    const int trkid = hit->get_trkid();
+    if(trkid < 0) continue;
+
+    auto idxIt = index_by_id.find(static_cast<unsigned int>(trkid));
+    if(idxIt == index_by_id.end()) continue;
+
+    unsigned int layer = hit->get_layer();
+    if(layer == std::numeric_limits<unsigned int>::max()) continue;
+
+    auto* layergeom = m_geom->GetLayerCellGeom(static_cast<int>(layer));
+    if(!layergeom) continue;
+
+    const double x0 = hit->get_x(0);
+    const double y0 = hit->get_y(0);
+    const double z0 = hit->get_z(0);
+    const double x1 = hit->get_x(1);
+    const double y1 = hit->get_y(1);
+    const double z1 = hit->get_z(1);
+
+    const double dx = x1 - x0;
+    const double dy = y1 - y0;
+    const double dz = z1 - z0;
+    const double path = std::sqrt(dx*dx + dy*dy + dz*dz);
+    if(path < 1e-6) continue;
+
+    const double R = layergeom->get_radius();
+    const double a = dx*dx + dy*dy;
+    const double b = 2.0*(dx*x0 + dy*y0);
+    const double c = x0*x0 + y0*y0 - R*R;
+
+    LayerPoint candidate;
+    bool have_candidate = false;
+    double best_residual = std::numeric_limits<double>::max();
+
+    auto try_record = [&](double t)
+    {
+      const double xi = x0 + t*dx;
+      const double yi = y0 + t*dy;
+      const double zi = z0 + t*dz;
+      const double radial_residual = std::abs(std::sqrt(xi*xi + yi*yi) - R);
+      if(radial_residual > radial_tolerance) return;
+      if(!have_candidate || radial_residual < best_residual)
+      {
+        candidate.layer = layer;
+        candidate.radius = R;
+        candidate.x = xi;
+        candidate.y = yi;
+        candidate.z = zi;
+        candidate.dirx = dx;
+        candidate.diry = dy;
+        candidate.dirz = dz;
+        candidate.side = (zi > 0) ? 1 : 0;
+        candidate.path = path;
+        candidate.from_g4hit = true;
+        best_residual = radial_residual;
+        have_candidate = true;
+      }
+    };
+
+    if(a < axial_threshold)
+    {
+      const double r0 = std::sqrt(x0*x0 + y0*y0);
+      const double r1 = std::sqrt(x1*x1 + y1*y1);
+      const double res0 = std::abs(r0 - R);
+      const double res1 = std::abs(r1 - R);
+      if(res0 <= radial_tolerance || res1 <= radial_tolerance)
+      {
+        const double t = (res0 <= res1) ? 0.0 : 1.0;
+        try_record(t);
+      }
+    }
+    else
+    {
+      double disc = b*b - 4.0*a*c;
+      if(disc >= -1e-12)
+      {
+        disc = std::max(0.0, disc);
+        const double sqrt_disc = std::sqrt(disc);
+        const double t_candidates[2] = {
+            (-b - sqrt_disc) / (2.0*a),
+            (-b + sqrt_disc) / (2.0*a)};
+
+        for(double t_candidate : t_candidates)
+        {
+          if(t_candidate < -param_tolerance || t_candidate > 1.0 + param_tolerance) continue;
+          double t_clamped = t_candidate;
+          if(t_clamped < 0.0) t_clamped = 0.0;
+          if(t_clamped > 1.0) t_clamped = 1.0;
+          try_record(t_clamped);
+        }
+      }
+    }
+
+    if(!have_candidate) continue;
+
+    auto& layer_map = layer_cache[static_cast<unsigned int>(trkid)];
+    auto layer_it = layer_map.find(layer);
+    if(layer_it == layer_map.end() || candidate.path > layer_it->second.path)
+    {
+      layer_map[layer] = candidate;
+    }
+  }
+
+  std::vector<TrackSeed> filtered;
+  filtered.reserve(seeds.size());
+  for(auto& seed : seeds)
+  {
+    auto cache_it = layer_cache.find(static_cast<unsigned int>(seed.id));
+    if(cache_it == layer_cache.end()) continue;
+    std::map<unsigned int, LayerPoint> completed = cache_it->second;
+
+    if(seed.dir_valid)
+    {
+      const double ox = seed.origin[0];
+      const double oy = seed.origin[1];
+      const double oz = seed.origin[2];
+      const double dx = seed.dir[0];
+      const double dy = seed.dir[1];
+      const double dz = seed.dir[2];
+      const double dir_norm = std::sqrt(dx*dx + dy*dy + dz*dz);
+
+      if(dir_norm > 1e-9)
+      {
+        const double a = dx*dx + dy*dy;
+
+        for(const auto layer_id : geometry_layers)
+        {
+          if(completed.find(layer_id) != completed.end()) continue;
+          auto* layergeom = m_geom->GetLayerCellGeom(static_cast<int>(layer_id));
+          if(!layergeom) continue;
+          const double R = layergeom->get_radius();
+
+          const double b = 2.0 * (ox*dx + oy*dy);
+          const double c = ox*ox + oy*oy - R*R;
+
+          if(std::abs(a) < 1e-12)
+          {
+            continue;
+          }
+          const double disc = b*b - 4.0*a*c;
+          if(disc < 0) continue;
+          const double sqrt_disc = std::sqrt(disc);
+          const double t_candidates[2] = {
+              (-b - sqrt_disc) / (2.0*a),
+              (-b + sqrt_disc) / (2.0*a)};
+
+          double t_selected = std::numeric_limits<double>::infinity();
+          for(double tval : t_candidates)
+          {
+            if(tval > 1e-6 && tval < t_selected)
+            {
+              t_selected = tval;
+            }
+          }
+          if(!std::isfinite(t_selected)) continue;
+
+          LayerPoint fallback;
+          fallback.layer = layer_id;
+          fallback.radius = R;
+          fallback.x = ox + dx * t_selected;
+          fallback.y = oy + dy * t_selected;
+          fallback.z = oz + dz * t_selected;
+          fallback.dirx = dx;
+          fallback.diry = dy;
+          fallback.dirz = dz;
+          fallback.side = (fallback.z > 0) ? 1 : 0;
+          fallback.path = t_selected * dir_norm;
+          fallback.from_g4hit = false;
+          completed[layer_id] = fallback;
+        }
+      }
+    }
+
+    if(completed.empty())
+    {
+      std::cout << Name() << ": track " << seed.id
+                << " has no intersections recorded in layer cache" << std::endl;
+      continue;
+    }
+    if(completed.size() < geometry_layers.size())
+    {
+      std::cout << Name() << ": track " << seed.id
+                << " intersections " << completed.size()
+                << " < expected " << geometry_layers.size()
+                << ". Missing layers:";
+      for(const auto layer_id : geometry_layers)
+      {
+        if(completed.find(layer_id) == completed.end())
+        {
+          std::cout << " " << layer_id;
+        }
+      }
+      std::cout << std::endl;
+    }
+
+    seed.layers.clear();
+    seed.layers.reserve(completed.size());
+    for(const auto& kv : completed)
+    {
+      seed.layers.push_back(kv.second);
+    }
+
+    std::sort(seed.layers.begin(), seed.layers.end(),
+              [](const LayerPoint& a, const LayerPoint& b){ return a.layer < b.layer; });
+    filtered.push_back(std::move(seed));
+  }
+  seeds.swap(filtered);
 }
 
 int TpcLaserDNL::End(PHCompositeNode*)
@@ -435,6 +907,8 @@ if(m_tf)
 {
 m_tf->cd();
 if(m_tt) m_tt->Write();
+if(m_tt_display_intersections) m_tt_display_intersections->Write();
+if(m_tt_display_g4hits) m_tt_display_g4hits->Write();
 m_tf->Close();
 }
 return 0;

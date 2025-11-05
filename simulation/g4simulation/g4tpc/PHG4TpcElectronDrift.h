@@ -109,6 +109,14 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   TH1 *dlong{nullptr};
   TH1 *dtrans{nullptr};
   TH1 *ratioElectronsRR{nullptr};
+  TH1 *diffDistance{nullptr};
+  TH1 *diffDX{nullptr};
+  TH1 *diffDY{nullptr};
+  TH1 *nElectrons{nullptr};
+  TH1 *poissonMean{nullptr};
+  TH1 *diffPerSqrtL{nullptr};
+  TH1 *diffDXPerSqrtL{nullptr};
+  TH1 *diffDYPerSqrtL{nullptr};
   TH2 *hitmapstart{nullptr};
   TH2 *hitmapend{nullptr};
   TH2 *hitmapstart_z{nullptr};
@@ -123,6 +131,13 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   TH2 *deltarnodiff{nullptr};
   TH2 *deltarnodist{nullptr};
   TH2 *deltaz{nullptr};
+  TH2 *nElectronsVsMean{nullptr};
+  TH2 *diffVsDrift{nullptr};
+  TH2 *diffPerSqrtLVsDrift{nullptr};
+  TH2 *diffDXVsDrift{nullptr};
+  TH2 *diffDYVsDrift{nullptr};
+  TH2 *diffDXPerSqrtLVsDrift{nullptr};
+  TH2 *diffDYPerSqrtLVsDrift{nullptr};
   TNtuple *driftXY{nullptr};
   //@}
 

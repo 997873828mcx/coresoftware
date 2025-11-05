@@ -60,8 +60,16 @@ class PHG4TpcPadPlaneReadout : public PHG4TpcPadPlane
   // Debug printing helpers
   // If set >= 0, limit PadHit prints to a single layer number; otherwise prints for all layers.
   void SetDebugPadHitLayer(int layer) { m_dbg_pad_hit_layer = layer; }
+  // Enable a one-shot visualization of a single avalanche cloud overlap with zigzag pads.
+  // Passing target_side/target_layer < 0 matches the first cloud encountered.
+  // grid_step <= 0 defaults to sigma/30 sampling.
+  void EnableSingleCloudVisualization(bool enable,
+                                      const std::string &output_file = "AvalancheCloudOverlap.png",
+                                      int target_side = -1,
+                                      int target_layer = -1,
+                                      double grid_step = -1.0);
 
- 
+
  private:
 
   //  void populate_rectangular_phibins(const unsigned int layernum, const double phi, const double cloud_sig_rp, std::vector<int> &pad_phibin, std::vector<double> &pad_phibin_share);
@@ -159,7 +167,7 @@ class PHG4TpcPadPlaneReadout : public PHG4TpcPadPlane
       cx = cy = rad = phi = 0.0;
       vertices.clear();
       isedge = false;
-  }
+    }
   };
   
 std::array<std::vector<PadInfo>,3*16+7> Pads;
@@ -191,6 +199,30 @@ double max_radii_module[3]={399.85222874031024, 569.695373910603, 753.6667758418
 
   // Debug: restrict PadHit prints to a single layer (or all if < 0)
   int m_dbg_pad_hit_layer = 49;
+
+  struct DebugPadContribution
+  {
+    int pad_bin = -1;
+    double charge = 0.0;
+    std::vector<Point> polygon;
+    double pad_phi = 0.0;
+  };
+
+  void maybeVisualizeAvalanche(unsigned int side,
+                               unsigned int layernum,
+                               double phi,
+                               double rad_gem,
+                               double cloud_sig_rp,
+                               double x_center,
+                               double y_center,
+                               const std::vector<DebugPadContribution> &contribs);
+
+  bool m_visualize_single_cloud = false;
+  bool m_visualization_done = false;
+  int  m_visualization_target_layer = -1;
+  int  m_visualization_target_side = -1;
+  std::string m_visualization_output = "AvalancheCloudOverlap.png";
+  double m_visualization_grid_step = -1.0;
 
 
 };

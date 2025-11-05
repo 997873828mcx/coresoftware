@@ -7,6 +7,7 @@
 #include <memory>
 #include <vector>
 #include <limits>
+#include <map>
 #include <Rtypes.h>
 
 class SvtxTrackMap;
@@ -15,6 +16,8 @@ class PHG4TpcCylinderGeomContainer;
 class ActsGeometry;
 class TrkrClusterContainer;
 class TrkrCluster;
+class TrkrTruthTrackContainer;
+class PHG4HitContainer;
 class TFile;
 class TTree;
 
@@ -41,6 +44,14 @@ void set_max_dz(double v) { m_max_dz = v; }
   void set_weight_by_adc(bool v) { m_weight_by_adc = v; }
   // choose source: false = use hits (default), true = use clusters
   void set_use_clusters(bool v) { m_use_clusters = v; }
+  // allow disabling use of SvtxTrackMap seeds
+  void set_use_reco_seeds(bool v) { m_use_reco_seeds = v; }
+  // enable dumping intersection/hit info in event-display format
+  void set_write_display_ntuple(bool v) { m_write_display_ntuple = v; }
+  // control how many samples are taken along each G4 hit segment for the display
+  void set_display_hit_subsamples(unsigned int v) { m_display_hit_subsamples = v; }
+  // optionally include extrapolated intersections (no G4 support) in the display output
+  void set_include_fallback_intersections(bool v) { m_include_fallback_intersections = v; }
 
 private:
 // nodes
@@ -54,6 +65,8 @@ private:
 std::string m_outfile{"laser_dnl.root"};
 std::unique_ptr<TFile> m_tf;
 TTree* m_tt{nullptr};
+TTree* m_tt_display_intersections{nullptr};
+TTree* m_tt_display_g4hits{nullptr};
 
 // cuts
 double m_max_dca{0.3}; // cm
@@ -63,6 +76,34 @@ double m_max_dz{1.0}; // cm
   bool m_use_pedestal{true};
   bool m_weight_by_adc{true};
   bool m_use_clusters{false};
+  bool m_use_reco_seeds{true};
+  bool m_write_display_ntuple{false};
+  unsigned int m_display_hit_subsamples{0};
+  bool m_include_fallback_intersections{false};
+
+  struct LayerPoint
+  {
+    unsigned int layer{0};
+    double radius{0.};
+    double x{0.};
+    double y{0.};
+    double z{0.};
+    double dirx{0.};
+    double diry{0.};
+    double dirz{0.};
+    int side{0};
+    double path{0.};
+    bool from_g4hit{false};
+  };
+
+  struct TrackSeed
+  {
+    int id{0};
+    double origin[3]{0., 0., 0.};
+    double dir[3]{0., 0., 0.};
+    bool dir_valid{false};
+    std::vector<LayerPoint> layers;
+  };
 
 // tree vars
 int m_event{0};
@@ -88,8 +129,8 @@ std::vector<double> m_pad_phi_centers;
 // debug vectors: store per-hit info for used hits
 std::vector<ULong64_t> m_hitkeys;
 std::vector<ULong64_t> m_hitsetkeys;
-std::vector<unsigned int> m_iphi;
-std::vector<unsigned int> m_tbin;
+  std::vector<unsigned int> m_iphi;
+  std::vector<unsigned int> m_tbin;
 
 // helpers
 static bool cylinder_intersection(double x0,double y0,double z0,
@@ -97,6 +138,52 @@ double vx,double vy,double vz,
 double R, double& t_out,
 double& xi,double& yi,double& zi);
 static double wrap_dphi(double d);
+
+  void build_reco_seeds(std::vector<TrackSeed>& seeds) const;
+  void build_truth_seeds(std::vector<TrackSeed>& seeds) const;
+
+  TrkrTruthTrackContainer* m_truth_tracks{nullptr};
+  PHG4HitContainer* m_g4hits{nullptr};
+
+  struct DisplayIntersection
+  {
+    int event{0};
+    int trackid{0};
+    int layer{0};
+    int side{0};
+    double gx{0.};
+    double gy{0.};
+    double gz{0.};
+    double r{0.};
+    double phi{0.};
+    double path{0.};
+    int used_in_seed{0};
+  };
+
+  struct DisplayG4Hit
+  {
+    int event{0};
+    int trackid{0};
+    int layer{0};
+    int side{0};
+    double gx{0.};
+    double gy{0.};
+    double gz{0.};
+    double r{0.};
+    double phi{0.};
+    int sample{0};
+    double sample_frac{0.};
+    double step_path{0.};
+    double edep{0.};
+    double eion{0.};
+    double t0{0.};
+    double t1{0.};
+    int used_in_track{0};
+    ULong64_t hitid{0};
+  };
+
+  DisplayIntersection m_display_intersection;
+  DisplayG4Hit m_display_g4hit;
 };
 
 #endif
