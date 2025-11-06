@@ -34,6 +34,7 @@
 #include <TMarker.h>
 #include <TPad.h>
 #include <TEllipse.h>
+#include <TNtuple.h>
 #include <TSystem.h>
 
 #include <gsl/gsl_randist.h>
@@ -42,6 +43,7 @@
 #include <boost/format.hpp>
 
 #include <algorithm>
+#include <limits>
 #include <cmath>
 #include <cstdlib>  // for getenv
 #include <iostream>
@@ -1295,6 +1297,15 @@ void PHG4TpcPadPlaneReadout::EnableSingleCloudVisualization(bool enable,
   m_visualization_target_layer = target_layer;
   m_visualization_grid_step = grid_step;
   m_visualization_done = false;
+  if (enable)
+  {
+    m_visualization_dump_index = 0;
+  }
+}
+
+void PHG4TpcPadPlaneReadout::SetVisualizationDumpFile(const std::string &file)
+{
+  m_visualization_dump_file = file;
 }
 /*
 void PHG4TpcPadPlaneReadout::build_serf_zigzag_phibins(const unsigned int side, const unsigned int layernum, const double phi, const double cloud_sig_rp, std::vector<int> &phibin_pad, std::vector<double> &phibin_pad_share)
@@ -1436,7 +1447,7 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
   double grid_step = m_visualization_grid_step;
   if (grid_step <= 0.0)
   {
-    grid_step = cloud_sig_rp / 30.0;
+    grid_step = cloud_sig_rp / 50.0;
   }
   grid_step = std::max(grid_step, cloud_sig_rp / 200.0);
 
@@ -1481,12 +1492,72 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
     }
   }
 
+  double total_mass = 0.0;
+  double max_bin = 0.0;
+  double min_positive = std::numeric_limits<double>::max();
+  int nonzero_bins = 0;
+  for (int ix = 1; ix <= nx; ++ix)
+  {
+    for (int iy = 1; iy <= ny; ++iy)
+    {
+      const double val = hist->GetBinContent(ix, iy);
+      total_mass += val;
+      if (val > 0.0)
+      {
+        ++nonzero_bins;
+        if (val > max_bin) max_bin = val;
+        if (val < min_positive) min_positive = val;
+      }
+    }
+  }
+  double floor_fill = 0.0;
+  if (nonzero_bins > 0)
+  {
+    floor_fill = std::min(min_positive * 0.5, max_bin);
+    for (int ix = 1; ix <= nx; ++ix)
+    {
+      for (int iy = 1; iy <= ny; ++iy)
+      {
+        if (hist->GetBinContent(ix, iy) <= 0.0)
+        {
+          hist->SetBinContent(ix, iy, floor_fill);
+        }
+      }
+    }
+    if (floor_fill > 0.0) min_positive = floor_fill;
+  }
+  if (Verbosity() > 0)
+  {
+    std::cout << "test_1_PHG4TpcPadPlaneReadout: histogram summary for visualization "
+              << "(side " << side << ", layer " << layernum << "): total mass = "
+              << total_mass << ", non-zero bins = " << nonzero_bins;
+    if (nonzero_bins > 0)
+    {
+      std::cout << ", min(bin) = " << min_positive << ", max(bin) = " << max_bin;
+    }
+    std::cout << std::endl;
+  }
+
   const std::string cname = "c_cloud_side" + std::to_string(side) + "_layer" + std::to_string(layernum);
   TCanvas *canvas = new TCanvas(cname.c_str(), "Avalanche cloud vs zigzag pads", 900, 800);
   canvas->cd();
   gPad->SetRightMargin(0.15);
   hist->SetTitle(("Avalanche overlap (side " + std::to_string(side) +
                   ", layer " + std::to_string(layernum) + ")").c_str());
+  hist->SetDirectory(nullptr);
+  if (nonzero_bins > 0)
+  {
+    const double min_disp = std::max(0.8 * min_positive, 1e-9);
+    hist->SetMinimum(min_disp);
+    hist->SetMaximum(1.1 * max_bin);
+  }
+  else
+  {
+    hist->SetMinimum(1e-9);
+    hist->SetMaximum(1.0);
+  }
+  hist->SetContour(255);
+  gPad->SetLogz(true);
   hist->Draw("COLZ");
 
   std::vector<TGraph *> pad_graphs;
@@ -1532,6 +1603,56 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
   ellipse->SetFillStyle(0);
   ellipse->SetLineColor(1);
   ellipse->Draw("SAME");
+
+  if (!m_visualization_dump_file.empty())
+  {
+    TFile dumpFile(m_visualization_dump_file.c_str(), "UPDATE");
+    if (!dumpFile.IsOpen())
+    {
+      std::cout << "PHG4TpcPadPlaneReadout: unable to open "
+                << m_visualization_dump_file
+                << " for visualization dump." << std::endl;
+    }
+    else
+    {
+      const std::string hname_save =
+          "cloudHist_" + std::to_string(m_visualization_dump_index) +
+          "_side" + std::to_string(side) +
+          "_layer" + std::to_string(layernum);
+      TH2F histOut(*hist);
+      histOut.SetName(hname_save.c_str());
+      histOut.SetTitle(hist->GetTitle());
+      histOut.SetDirectory(&dumpFile);
+      histOut.Write(hname_save.c_str(), TObject::kOverwrite);
+
+      TNtuple *meta = dynamic_cast<TNtuple *>(dumpFile.Get("cloud_meta"));
+      if (!meta)
+      {
+        meta = new TNtuple("cloud_meta",
+                           "SERF cloud metadata",
+                           "index:side:layer:centerX:centerY:phi:radius:sigma:floor:minBin:maxBin:totalMass:nonZero");
+      }
+      meta->SetDirectory(&dumpFile);
+      const float minBinOut = (nonzero_bins > 0) ? static_cast<float>(min_positive) : 0.F;
+      const float floorOut = static_cast<float>(floor_fill);
+      meta->Fill(static_cast<float>(m_visualization_dump_index),
+                 static_cast<float>(side),
+                 static_cast<float>(layernum),
+                 static_cast<float>(x_center),
+                 static_cast<float>(y_center),
+                 static_cast<float>(phi),
+                 static_cast<float>(rad_gem),
+                 static_cast<float>(cloud_sig_rp),
+                 floorOut,
+                 minBinOut,
+                 static_cast<float>(max_bin),
+                 static_cast<float>(total_mass),
+                 static_cast<float>(nonzero_bins));
+      meta->Write("", TObject::kOverwrite);
+      dumpFile.Close();
+      ++m_visualization_dump_index;
+    }
+  }
 
   canvas->Update();
   canvas->SaveAs(m_visualization_output.c_str());

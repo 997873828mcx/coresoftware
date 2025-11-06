@@ -68,6 +68,7 @@ class PHG4TpcPadPlaneReadout : public PHG4TpcPadPlane
                                       int target_side = -1,
                                       int target_layer = -1,
                                       double grid_step = -1.0);
+  void SetVisualizationDumpFile(const std::string &file);
 
 
  private:
@@ -223,6 +224,8 @@ double max_radii_module[3]={399.85222874031024, 569.695373910603, 753.6667758418
   int  m_visualization_target_side = -1;
   std::string m_visualization_output = "AvalancheCloudOverlap.png";
   double m_visualization_grid_step = -1.0;
+  std::string m_visualization_dump_file;
+  unsigned long m_visualization_dump_index = 0;
 
 
 };
