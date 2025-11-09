@@ -34,6 +34,7 @@
 #include <TMarker.h>
 #include <TPad.h>
 #include <TEllipse.h>
+#include <TColor.h>
 #include <TNtuple.h>
 #include <TSystem.h>
 
@@ -831,7 +832,7 @@ void PHG4TpcPadPlaneReadout::MapToPadPlane(
   double nelec = getSingleEGEMAmplification();
   
   // consider all layers whose radial annulus intersects a 5σ window
-  const double nsig_window = 5.0;
+  const double nsig_window = _nsigmas;
 
   std::vector<unsigned int> cand_layers = layersInRadialWindow(rad_gem, sigmaT, nsig_window);
   if (cand_layers.empty()) {
@@ -1286,10 +1287,10 @@ double PHG4TpcPadPlaneReadout::check_phi(const unsigned int side, const double p
 }
 
 void PHG4TpcPadPlaneReadout::EnableSingleCloudVisualization(bool enable,
-                                                             const std::string &output_file,
-                                                             int target_side,
-                                                             int target_layer,
-                                                             double grid_step)
+                                                            const std::string &output_file,
+                                                            int target_side,
+                                                            int target_layer,
+                                                            double grid_step)
 {
   m_visualize_single_cloud = enable;
   m_visualization_output = output_file;
@@ -1303,9 +1304,11 @@ void PHG4TpcPadPlaneReadout::EnableSingleCloudVisualization(bool enable,
   }
 }
 
+
 void PHG4TpcPadPlaneReadout::SetVisualizationDumpFile(const std::string &file)
 {
   m_visualization_dump_file = file;
+  m_visualization_dump_index = 0;
 }
 /*
 void PHG4TpcPadPlaneReadout::build_serf_zigzag_phibins(const unsigned int side, const unsigned int layernum, const double phi, const double cloud_sig_rp, std::vector<int> &phibin_pad, std::vector<double> &phibin_pad_share)
@@ -1333,13 +1336,14 @@ double PHG4TpcPadPlaneReadout::integratedDensityOfCircleAndPad(
     double hitY,
     double sigma,
     const std::vector<Point>& pad,
-    double gridStep
+    double gridStep,
+    std::vector<DebugSample>* debug_samples
 ) {
     // sanity checks
     if (sigma <= 0.0 || pad.empty()) return 0.0;
 
     // constants
-    const int    nSigma       = _nsigmas;
+    const double    nSigma       = _nsigmas;
     double R                  = nSigma * sigma;
     double gaussConst         = 1.0 / (2.0 * M_PI * sigma * sigma);
     double expDenominator     = 2.0 * sigma * sigma;
@@ -1391,7 +1395,12 @@ double PHG4TpcPadPlaneReadout::integratedDensityOfCircleAndPad(
             // skip outside the pad polygon
             if (!pointInPolygon(x, y, pad)) continue;
             // accumulate Gaussian density
-            total += gaussConst * std::exp(-(dx*dx + dy*dy) / expDenominator);
+            const double density = gaussConst * std::exp(-(dx*dx + dy*dy) / expDenominator);
+            total += density;
+            if (debug_samples)
+            {
+              debug_samples->push_back({x, y, density});
+            }
            // std::cout<<" dx = "<<dx<<" dy = "<<dy<<" exp = "<<std::exp(-(dx*dx + dy*dy))<<std::endl;
             // std::cout<<"Cell center ("<<x<<", "<<y<<") contributes to integral with density = "
             //    <<gaussConst * std::exp(-(dx*dx + dy*dy) / expDenominator)<<std::endl;
@@ -1410,7 +1419,8 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
     double cloud_sig_rp,
     double x_center,
     double y_center,
-    const std::vector<DebugPadContribution> &contribs)
+    const std::vector<DebugPadContribution> &contribs,
+    const std::vector<DebugSample> &samples)
 {
   if (!m_visualize_single_cloud || m_visualization_done) return;
   if (contribs.empty()) return;
@@ -1463,33 +1473,10 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
   hist->GetYaxis()->SetTitle("sector frame y [cm]");
   hist->SetStats(false);
 
-  const double gauss_const = 1.0 / (2.0 * M_PI * square(cloud_sig_rp));
-  const double denom = 2.0 * square(cloud_sig_rp);
-
-  for (int ix = 1; ix <= nx; ++ix)
+  assert(!samples.empty());
+  for (const auto &sample : samples)
   {
-    const double x = hist->GetXaxis()->GetBinCenter(ix);
-    for (int iy = 1; iy <= ny; ++iy)
-    {
-      const double y = hist->GetYaxis()->GetBinCenter(iy);
-      const double dx = x - x_center;
-      const double dy = y - y_center;
-      if (dx * dx + dy * dy > circle_radius * circle_radius)
-      {
-        continue;
-      }
-
-      for (const auto &pad : contribs)
-      {
-        if (!pointInPolygon(x, y, pad.polygon))
-        {
-          continue;
-        }
-        const double density = gauss_const * std::exp(-(dx * dx + dy * dy) / denom);
-        hist->AddBinContent(hist->GetBin(ix, iy), density);
-        break;
-      }
-    }
+    hist->Fill(sample.x, sample.y, sample.density);
   }
 
   double total_mass = 0.0;
@@ -1563,6 +1550,8 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
   std::vector<TGraph *> pad_graphs;
   pad_graphs.reserve(contribs.size());
   int color = 2;
+  double max_pad_charge = 0.0;
+  for (const auto &pad : contribs) max_pad_charge = std::max(max_pad_charge, pad.charge);
   for (const auto &pad : contribs)
   {
     if (pad.polygon.empty())
@@ -1581,7 +1570,12 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
     ys[npts] = pad.polygon.front().y;
 
     TGraph *outline = new TGraph(static_cast<int>(xs.size()), xs.data(), ys.data());
-    outline->SetLineColor(color);
+    const bool highlight = (max_pad_charge > 0.0 && std::fabs(pad.charge - max_pad_charge) < 1e-12);
+    const double alpha = highlight ? 1.0 : 0.35;
+    outline->SetLineColorAlpha(color, alpha);
+    //outline->SetLineWidth(highlight ? 3 : 1);
+    outline->SetLineWidth(1);
+        //outline->SetLineColor(color);
     outline->SetLineWidth(2);
     outline->SetFillStyle(0);
     outline->Draw("L SAME");
@@ -1594,14 +1588,16 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
   TGraph *center = new TGraph(1, center_x, center_y);
   center->SetMarkerStyle(29);
   center->SetMarkerSize(1.6);
-  center->SetMarkerColor(1);
+  center->SetMarkerColor(kBlack);
+  //center->SetMarkerColor(1);
   center->Draw("P SAME");
 
   TEllipse *ellipse = new TEllipse(x_center, y_center, circle_radius, circle_radius);
   ellipse->SetLineStyle(2);
   ellipse->SetLineWidth(2);
   ellipse->SetFillStyle(0);
-  ellipse->SetLineColor(1);
+  ellipse->SetLineColorAlpha(1, 0.4);
+  //ellipse->SetLineColor(1);
   ellipse->Draw("SAME");
 
   if (!m_visualization_dump_file.empty())
@@ -1693,6 +1689,14 @@ void PHG4TpcPadPlaneReadout::SERF_zigzag_phibins(const unsigned int side, const 
                              (m_visualization_target_layer < 0 || static_cast<int>(layernum) == m_visualization_target_layer) &&
                              (m_visualization_target_side < 0 || static_cast<int>(side) == m_visualization_target_side);
   std::vector<DebugPadContribution> debug_contribs;
+  std::vector<DebugSample> debug_samples_storage;
+  std::vector<DebugSample>* debug_samples = nullptr;
+  const bool need_samples = capture_debug && m_visualize_single_cloud;
+  if (need_samples)
+  {
+    debug_samples_storage.reserve(7000);
+    debug_samples = &debug_samples_storage;
+  }
 /* int phi_bin = LayerGeom->get_phibin(phi, side);
  int sector = 0;
  for (int i=0;i<12;i++)
@@ -1788,7 +1792,7 @@ void PHG4TpcPadPlaneReadout::SERF_zigzag_phibins(const unsigned int side, const 
  //  <<LayerGeom->get_phicenter(pad_now, side)<<", phi center(get look_pad) = "<<LayerGeom->get_phicenter(look_pad, side)<< "sigma = "<<cloud_sig_rp<< "sigma/r = "<<cloud_sig_rp/rad_gem <<" pad look "<<look_pad<<" number of vert = "<<padinfo.vertices.size()<<std::endl;
   //std::cout<<"n = ntpc_phibins_sector[tpc_module]-1 = "<<n<<"  look up pad = "<<look_pad<<" Pads[layernum] "<<Pads[layernum].size()<<" xNew = "<<xNew<<" yNew = "<<yNew<<std::endl;
 
-    double charge = integratedDensityOfCircleAndPad( xNew, yNew, cloud_sig_rp , padinfo.vertices);
+    double charge = integratedDensityOfCircleAndPad( xNew, yNew, cloud_sig_rp , padinfo.vertices, 0.0, debug_samples);
     if (capture_debug && charge > 0.0)
     {
       DebugPadContribution dbg;
@@ -1810,9 +1814,10 @@ void PHG4TpcPadPlaneReadout::SERF_zigzag_phibins(const unsigned int side, const 
 */
   }
 
-  if (capture_debug && !debug_contribs.empty())
+  if (capture_debug && debug_samples && !debug_contribs.empty())
   {
-    maybeVisualizeAvalanche(side, layernum, phi, rad_gem, cloud_sig_rp, xNew, yNew, debug_contribs);
+    maybeVisualizeAvalanche(side, layernum, phi, rad_gem, cloud_sig_rp, xNew, yNew, debug_contribs,
+                             *debug_samples);
   }
 
   return;

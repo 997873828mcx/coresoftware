@@ -119,7 +119,7 @@ class PHG4TpcPadPlaneReadout : public PHG4TpcPadPlane
   std::string m_tpc_module_gain_weights_file = "";
 
   // gaussian sampling
-  static constexpr double _nsigmas = 5;
+  static constexpr double _nsigmas = 2.5;
 
   double averageGEMGain = std::numeric_limits<double>::signaling_NaN();
   double polyaTheta = std::numeric_limits<double>::signaling_NaN();
@@ -171,9 +171,16 @@ class PHG4TpcPadPlaneReadout : public PHG4TpcPadPlane
     }
   };
   
+  struct DebugSample
+  {
+    double x = 0.0;
+    double y = 0.0;
+    double density = 0.0;
+  };
+
 std::array<std::vector<PadInfo>,3*16+7> Pads;
 bool pointInPolygon( double x, double y,const std::vector<Point>& poly); 
-  double integratedDensityOfCircleAndPad(double hitX,double hitY, double sigma, const std::vector<Point>& pad,double gridStep = 0.0);
+  double integratedDensityOfCircleAndPad(double hitX,double hitY, double sigma, const std::vector<Point>& pad,double gridStep = 0.0, std::vector<DebugSample>* debug_samples = nullptr);
   // hard‑coded list of input .brd files
   static const std::vector<std::string> brdMaps_;
 void loadPadPlanes();
@@ -216,7 +223,8 @@ double max_radii_module[3]={399.85222874031024, 569.695373910603, 753.6667758418
                                double cloud_sig_rp,
                                double x_center,
                                double y_center,
-                               const std::vector<DebugPadContribution> &contribs);
+                               const std::vector<DebugPadContribution> &contribs,
+                               const std::vector<DebugSample> &samples);
 
   bool m_visualize_single_cloud = false;
   bool m_visualization_done = false;
