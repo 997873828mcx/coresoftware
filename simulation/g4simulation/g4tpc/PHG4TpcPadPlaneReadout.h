@@ -69,6 +69,7 @@ class PHG4TpcPadPlaneReadout : public PHG4TpcPadPlane
                                       int target_layer = -1,
                                       double grid_step = -1.0);
   void SetVisualizationDumpFile(const std::string &file);
+  void SetVisualizeAllClouds(bool enable);
 
 
  private:
@@ -215,6 +216,12 @@ double max_radii_module[3]={399.85222874031024, 569.695373910603, 753.6667758418
     std::vector<Point> polygon;
     double pad_phi = 0.0;
   };
+  struct VisualizationCircle
+  {
+    double x = 0.0;
+    double y = 0.0;
+    double radius = 0.0;
+  };
 
   void maybeVisualizeAvalanche(unsigned int side,
                                unsigned int layernum,
@@ -224,7 +231,8 @@ double max_radii_module[3]={399.85222874031024, 569.695373910603, 753.6667758418
                                double x_center,
                                double y_center,
                                const std::vector<DebugPadContribution> &contribs,
-                               const std::vector<DebugSample> &samples);
+                               const std::vector<DebugSample> &samples,
+                               const std::vector<VisualizationCircle> &circles);
 
   bool m_visualize_single_cloud = false;
   bool m_visualization_done = false;
@@ -232,8 +240,13 @@ double max_radii_module[3]={399.85222874031024, 569.695373910603, 753.6667758418
   int  m_visualization_target_side = -1;
   std::string m_visualization_output = "AvalancheCloudOverlap.png";
   double m_visualization_grid_step = -1.0;
+  bool m_visualize_all_matches = false;
   std::string m_visualization_dump_file;
   unsigned long m_visualization_dump_index = 0;
+  unsigned long m_visualization_cloud_counter = 0;
+  std::vector<DebugSample> m_visualization_aggregate_samples;
+  std::vector<VisualizationCircle> m_visualization_circles;
+  std::map<int, DebugPadContribution> m_visualization_pad_union;
 
 
 };

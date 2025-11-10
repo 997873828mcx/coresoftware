@@ -1301,6 +1301,10 @@ void PHG4TpcPadPlaneReadout::EnableSingleCloudVisualization(bool enable,
   if (enable)
   {
     m_visualization_dump_index = 0;
+    m_visualization_cloud_counter = 0;
+    m_visualization_aggregate_samples.clear();
+    m_visualization_circles.clear();
+    m_visualization_pad_union.clear();
   }
 }
 
@@ -1309,6 +1313,15 @@ void PHG4TpcPadPlaneReadout::SetVisualizationDumpFile(const std::string &file)
 {
   m_visualization_dump_file = file;
   m_visualization_dump_index = 0;
+}
+
+void PHG4TpcPadPlaneReadout::SetVisualizeAllClouds(bool enable)
+{
+  m_visualize_all_matches = enable;
+  m_visualization_cloud_counter = 0;
+  m_visualization_aggregate_samples.clear();
+  m_visualization_circles.clear();
+  m_visualization_pad_union.clear();
 }
 /*
 void PHG4TpcPadPlaneReadout::build_serf_zigzag_phibins(const unsigned int side, const unsigned int layernum, const double phi, const double cloud_sig_rp, std::vector<int> &phibin_pad, std::vector<double> &phibin_pad_share)
@@ -1420,9 +1433,11 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
     double x_center,
     double y_center,
     const std::vector<DebugPadContribution> &contribs,
-    const std::vector<DebugSample> &samples)
+    const std::vector<DebugSample> &samples,
+    const std::vector<VisualizationCircle> &circles)
 {
-  if (!m_visualize_single_cloud || m_visualization_done) return;
+  if (!m_visualize_single_cloud) return;
+  if (m_visualization_done && !m_visualize_all_matches) return;
   if (contribs.empty()) return;
   if (cloud_sig_rp <= 0.0) return;
   if (m_visualization_target_layer >= 0 &&
@@ -1430,13 +1445,22 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
   if (m_visualization_target_side >= 0 &&
       static_cast<int>(side) != m_visualization_target_side) return;
 
-  const double circle_radius = _nsigmas * cloud_sig_rp;
+  if (samples.empty()) return;
 
-  double xmin = x_center - circle_radius;
-  double xmax = x_center + circle_radius;
-  double ymin = y_center - circle_radius;
-  double ymax = y_center + circle_radius;
+  double xmin = std::numeric_limits<double>::max();
+  double xmax = std::numeric_limits<double>::lowest();
+  double ymin = std::numeric_limits<double>::max();
+  double ymax = std::numeric_limits<double>::lowest();
+  for (const auto &sample : samples)
+  {
+    xmin = std::min(xmin, sample.x);
+    xmax = std::max(xmax, sample.x);
+    ymin = std::min(ymin, sample.y);
+    ymax = std::max(ymax, sample.y);
+  }
 
+  double max_circle_radius = 0.0;
+  for (const auto &circle : circles) max_circle_radius = std::max(max_circle_radius, circle.radius);
   for (const auto &pad : contribs)
   {
     for (const auto &v : pad.polygon)
@@ -1447,8 +1471,15 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
       ymax = std::max(ymax, v.y);
     }
   }
+  for (const auto &circle : circles)
+  {
+    xmin = std::min(xmin, circle.x - circle.radius);
+    xmax = std::max(xmax, circle.x + circle.radius);
+    ymin = std::min(ymin, circle.y - circle.radius);
+    ymax = std::max(ymax, circle.y + circle.radius);
+  }
 
-  const double margin = std::max(circle_radius * 0.1, 0.1);
+  const double margin = std::max(max_circle_radius * 0.1, 0.1);
   xmin -= margin;
   xmax += margin;
   ymin -= margin;
@@ -1547,12 +1578,22 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
   gPad->SetLogz(true);
   hist->Draw("COLZ");
 
+  const std::vector<DebugPadContribution>* pads_to_draw = &contribs;
+  std::vector<DebugPadContribution> pad_aggregated;
+  if (m_visualize_all_matches)
+  {
+    pad_aggregated.reserve(m_visualization_pad_union.size());
+    for (const auto &kv : m_visualization_pad_union) pad_aggregated.push_back(kv.second);
+    pads_to_draw = &pad_aggregated;
+  }
+
   std::vector<TGraph *> pad_graphs;
-  pad_graphs.reserve(contribs.size());
-  int color = 2;
+  pad_graphs.reserve(pads_to_draw->size());
+  const int center_color = kBlack;
+  const auto faint_color = TColor::GetColor(180, 180, 190);
   double max_pad_charge = 0.0;
-  for (const auto &pad : contribs) max_pad_charge = std::max(max_pad_charge, pad.charge);
-  for (const auto &pad : contribs)
+  for (const auto &pad : *pads_to_draw) max_pad_charge = std::max(max_pad_charge, pad.charge);
+  for (const auto &pad : *pads_to_draw)
   {
     if (pad.polygon.empty())
     {
@@ -1571,34 +1612,36 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
 
     TGraph *outline = new TGraph(static_cast<int>(xs.size()), xs.data(), ys.data());
     const bool highlight = (max_pad_charge > 0.0 && std::fabs(pad.charge - max_pad_charge) < 1e-12);
-    const double alpha = highlight ? 1.0 : 0.35;
-    outline->SetLineColorAlpha(color, alpha);
-    //outline->SetLineWidth(highlight ? 3 : 1);
-    outline->SetLineWidth(1);
-        //outline->SetLineColor(color);
-    outline->SetLineWidth(2);
+    if (highlight)
+    {
+      outline->SetLineColor(center_color);
+      outline->SetLineWidth(1);
+    }
+    else
+    {
+      outline->SetLineColorAlpha(faint_color, 0.35);
+      outline->SetLineWidth(1);
+    }
     outline->SetFillStyle(0);
     outline->Draw("L SAME");
     pad_graphs.push_back(outline);
-    color = 1 + (color % 8);
   }
 
-  double center_x[1] = {x_center};
-  double center_y[1] = {y_center};
-  TGraph *center = new TGraph(1, center_x, center_y);
-  center->SetMarkerStyle(29);
-  center->SetMarkerSize(1.6);
-  center->SetMarkerColor(kBlack);
-  //center->SetMarkerColor(1);
-  center->Draw("P SAME");
-
-  TEllipse *ellipse = new TEllipse(x_center, y_center, circle_radius, circle_radius);
-  ellipse->SetLineStyle(2);
-  ellipse->SetLineWidth(2);
-  ellipse->SetFillStyle(0);
-  ellipse->SetLineColorAlpha(1, 0.4);
-  //ellipse->SetLineColor(1);
-  ellipse->Draw("SAME");
+  std::vector<TGraph *> center_markers;
+  center_markers.reserve(circles.size());
+  for (size_t ic = 0; ic < circles.size(); ++ic)
+  {
+    const auto &circle = circles[ic];
+    double center_x[1] = {circle.x};
+    double center_y[1] = {circle.y};
+    TGraph *center = new TGraph(1, center_x, center_y);
+    center->SetMarkerStyle(29);
+    //center->SetMarkerSize(ic + 1 == circles.size() ? 1.8 : 1.2);
+    center->SetMarkerSize(1.6);
+    center->SetMarkerColor(kBlack);
+    center->Draw("P SAME");
+    center_markers.push_back(center);
+  }
 
   if (!m_visualization_dump_file.empty())
   {
@@ -1657,10 +1700,9 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
             << " (side " << side << ", layer " << layernum
             << ", phi " << phi << ", radius " << rad_gem << ")" << std::endl;
 
-  m_visualization_done = true;
+  m_visualization_done = !m_visualize_all_matches;
 
-  delete ellipse;
-  delete center;
+  for (TGraph *c : center_markers) delete c;
   for (TGraph *g : pad_graphs) delete g;
   delete canvas;
   delete hist;
@@ -1684,14 +1726,16 @@ void PHG4TpcPadPlaneReadout::SERF_zigzag_phibins(const unsigned int side, const 
  // std::cout<<"PHG4TpcPadPlaneReadout::SERF_zigzag_phibins: x = "<<x<<", y = "<<y<<", xNew = "<<xNew<<", yNew = "<<yNew<<" phiNew = "<<phiNew<<" rad_gem_new = "<<rad_gem_new<<std::endl;
   int tpc_module = (int)(layernum - 7)/16;
 
+  const bool matches_target =
+      (m_visualization_target_layer < 0 || static_cast<int>(layernum) == m_visualization_target_layer) &&
+      (m_visualization_target_side < 0 || static_cast<int>(side) == m_visualization_target_side);
   const bool capture_debug = m_visualize_single_cloud &&
-                             !m_visualization_done &&
-                             (m_visualization_target_layer < 0 || static_cast<int>(layernum) == m_visualization_target_layer) &&
-                             (m_visualization_target_side < 0 || static_cast<int>(side) == m_visualization_target_side);
+                             matches_target &&
+                             (!m_visualization_done || m_visualize_all_matches);
   std::vector<DebugPadContribution> debug_contribs;
   std::vector<DebugSample> debug_samples_storage;
   std::vector<DebugSample>* debug_samples = nullptr;
-  const bool need_samples = capture_debug && m_visualize_single_cloud;
+  const bool need_samples = capture_debug;
   if (need_samples)
   {
     debug_samples_storage.reserve(7000);
@@ -1816,8 +1860,25 @@ void PHG4TpcPadPlaneReadout::SERF_zigzag_phibins(const unsigned int side, const 
 
   if (capture_debug && debug_samples && !debug_contribs.empty())
   {
-    maybeVisualizeAvalanche(side, layernum, phi, rad_gem, cloud_sig_rp, xNew, yNew, debug_contribs,
-                             *debug_samples);
+    VisualizationCircle this_circle{xNew, yNew, _nsigmas * cloud_sig_rp};
+    if (m_visualize_all_matches)
+    {
+      m_visualization_aggregate_samples.insert(m_visualization_aggregate_samples.end(),
+                                               debug_samples->begin(), debug_samples->end());
+      m_visualization_circles.push_back(this_circle);
+      for (const auto &pad : debug_contribs) m_visualization_pad_union[pad.pad_bin] = pad;
+
+      maybeVisualizeAvalanche(side, layernum, phi, rad_gem, cloud_sig_rp, xNew, yNew, debug_contribs,
+                              m_visualization_aggregate_samples, m_visualization_circles);
+    }
+    else
+    {
+      std::vector<VisualizationCircle> single_circle{this_circle};
+      maybeVisualizeAvalanche(side, layernum, phi, rad_gem, cloud_sig_rp, xNew, yNew, debug_contribs,
+                              *debug_samples, single_circle);
+      m_visualization_done = true;
+    }
+    ++m_visualization_cloud_counter;
   }
 
   return;
