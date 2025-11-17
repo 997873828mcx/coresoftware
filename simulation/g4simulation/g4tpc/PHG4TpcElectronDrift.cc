@@ -358,6 +358,7 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
     diffPerSqrtL = new TH1F("diffPerSqrtL", "Transverse diffusion normalized by #sqrt{L};#Delta r/#sqrt{L} (cm^{0.5});Counts", 400, 0.0, 0.2);
     diffDXPerSqrtL = new TH1F("diffDXPerSqrtL", "#Delta x normalized by #sqrt{L};#Delta x/#sqrt{L} (cm^{0.5});Counts", 400, -0.2, 0.2);
     diffDYPerSqrtL = new TH1F("diffDYPerSqrtL", "#Delta y normalized by #sqrt{L};#Delta y/#sqrt{L} (cm^{0.5});Counts", 400, -0.2, 0.2);
+    nElectronsPerCm = new TH1F("nElectronsPerCm", "Sampled electrons per cm;N_{e}/cm;Counts", 400, 0.0, 400.0);
     diffVsDrift = new TH2F("diffVsDrift", "Transverse diffusion vs. drift length;Drift length L (cm);#Delta r (cm)", 200, 0.0, tpc_length / 2., 300, 0.0, 3.0);
     diffDXVsDrift = new TH2F("diffDXVsDrift", "#Delta x vs. drift length;Drift length L (cm);#Delta x (cm)", 200, 0.0, tpc_length / 2., 400, -3.0, 3.0);
     diffDYVsDrift = new TH2F("diffDYVsDrift", "#Delta y vs. drift length;Drift length L (cm);#Delta y (cm)", 200, 0.0, tpc_length / 2., 400, -3.0, 3.0);
@@ -564,6 +565,10 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
 
     if (do_ElectronDriftQAHistos)
     {
+      const double dx_hit = hiter->second->get_x(1) - hiter->second->get_x(0);
+      const double dy_hit = hiter->second->get_y(1) - hiter->second->get_y(0);
+      const double dz_hit = hiter->second->get_z(1) - hiter->second->get_z(0);
+      const double step_length = std::sqrt(square(dx_hit) + square(dy_hit) + square(dz_hit));
       if (poissonMean)
       {
         poissonMean->Fill(poisson_mean);
@@ -571,6 +576,10 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
       if (nElectrons)
       {
         nElectrons->Fill(static_cast<double>(n_electrons));
+      }
+      if (nElectronsPerCm && step_length > 0.)
+      {
+        nElectronsPerCm->Fill(static_cast<double>(n_electrons) / step_length);
       }
       if (nElectronsVsMean)
       {
@@ -1167,6 +1176,10 @@ int PHG4TpcElectronDrift::End(PHCompositeNode * /*topNode*/)
     if (diffPerSqrtL)
     {
       diffPerSqrtL->Write();
+    }
+    if (nElectronsPerCm)
+    {
+      nElectronsPerCm->Write();
     }
     if (diffDXPerSqrtL)
     {

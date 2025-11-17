@@ -1575,7 +1575,6 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
     hist->SetMaximum(1.0);
   }
   hist->SetContour(255);
-  gPad->SetLogz(true);
   hist->Draw("COLZ");
 
   const std::vector<DebugPadContribution>* pads_to_draw = &contribs;

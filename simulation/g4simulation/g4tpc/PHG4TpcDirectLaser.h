@@ -166,7 +166,7 @@ class PHG4TpcDirectLaser : public SubsysReco, public PHParameterInterface
   std::vector<Laser> m_lasers;
 
   /// number of electrons deposited per cm laser track
-  int electrons_per_cm{300};
+  double electrons_per_cm{300.0};
 
   // number of electrons per deposited GeV in TPC gas
   /**
@@ -175,6 +175,7 @@ class PHG4TpcDirectLaser : public SubsysReco, public PHParameterInterface
    * inside PHG4TpcElectronDrift
    */
   double electrons_per_gev{std::numeric_limits<double>::signaling_NaN()};
+  double m_launch_offset_cm{50.0};
 
   double arbitrary_theta{-30.0};  // degrees
   double arbitrary_phi{-30.0};    // degrees
@@ -224,6 +225,15 @@ class PHG4TpcDirectLaser : public SubsysReco, public PHParameterInterface
 
   /// geometry container (needed for per-layer tilt reference)
   PHG4TpcCylinderGeomContainer *m_tpc_geom{nullptr};
+  int m_refine_layer{-1};
+  double m_refine_halfwidth_cm{0.0};
+  double m_refine_step_cm{0.0};
+  double m_refine_rmin{std::numeric_limits<double>::quiet_NaN()};
+  double m_refine_rmax{std::numeric_limits<double>::quiet_NaN()};
+  bool m_refine_active{false};
+  bool segmentNeedsRefinement(const TVector3& start, const TVector3& end) const;
+  void emitLaserHit(int trackid, const TVector3& start, const TVector3& end, const TVector3& dir, const TVector3& origin);
+  int findLayerForRadius(double radius) const;
 
   ///@name transverse tilt configuration
   //@{

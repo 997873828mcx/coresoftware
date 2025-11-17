@@ -287,8 +287,9 @@ int PHG4TpcDirectLaser::InitRun(PHCompositeNode* topNode)
 
   // setup parameters
   UpdateParametersWithMacro();
-  electrons_per_cm = get_int_param("electrons_per_cm");
+  electrons_per_cm = get_double_param("electrons_per_cm");
   electrons_per_gev = get_double_param("electrons_per_gev");
+  m_launch_offset_cm = std::max(0.0, get_double_param("launch_offset_cm"));
 
   m_tilt_layer = get_int_param("tilt_layer");
   m_tilt_steps = std::max(1, get_int_param("tilt_steps"));
@@ -306,9 +307,15 @@ int PHG4TpcDirectLaser::InitRun(PHCompositeNode* topNode)
   m_enable_tilt = (m_tilt_layer >= 0) && (use_tilt_range || std::abs(m_active_tilt_angle_rad) > 0.0);
   m_tilt_reference_radius = std::numeric_limits<double>::quiet_NaN();
 
+  m_refine_layer = get_int_param("refine_layer");
+  m_refine_halfwidth_cm = get_double_param("refine_halfwidth_cm");
+  m_refine_step_cm = get_double_param("refine_step_cm");
+  m_refine_active = false;
+
+  m_tpc_geom = findNode::getClass<PHG4TpcCylinderGeomContainer>(topNode, "CYLINDERCELLGEOM_SVTX");
+
   if (m_enable_tilt)
   {
-    m_tpc_geom = findNode::getClass<PHG4TpcCylinderGeomContainer>(topNode, "CYLINDERCELLGEOM_SVTX");
     if (!m_tpc_geom)
     {
       std::cout << Name() << ": CYLINDERCELLGEOM_SVTX node not found; disabling transverse tilt" << std::endl;
@@ -325,6 +332,28 @@ int PHG4TpcDirectLaser::InitRun(PHCompositeNode* topNode)
         std::cout << Name() << ": geometry for tilt layer " << m_tilt_layer << " not found; disabling transverse tilt" << std::endl;
         m_enable_tilt = false;
       }
+    }
+  }
+
+  if (m_refine_layer >= 0 && m_refine_halfwidth_cm > 0.0 && m_refine_step_cm > 0.0)
+  {
+    if (!m_tpc_geom)
+    {
+      std::cout << Name() << ": refine-layer request ignored (CYLINDERCELLGEOM_SVTX missing)" << std::endl;
+    }
+    else if (auto* geom = m_tpc_geom->GetLayerCellGeom(m_refine_layer))
+    {
+      const double radius = geom->get_radius();
+      const double thickness = geom->get_thickness();
+      const double rlow = std::max(0.0, radius - 0.5 * thickness);
+      const double rhigh = radius + 0.5 * thickness;
+      m_refine_rmin = std::max(0.0, rlow - m_refine_halfwidth_cm);
+      m_refine_rmax = rhigh + m_refine_halfwidth_cm;
+      m_refine_active = true;
+    }
+    else
+    {
+      std::cout << Name() << ": refine-layer " << m_refine_layer << " not found in geometry; disabling refinement" << std::endl;
     }
   }
 
@@ -459,19 +488,33 @@ void PHG4TpcDirectLaser::SetDefaultParameters()
   // http://www.slac.stanford.edu/pubs/icfa/summer98/paper3/paper3.pdf
   // diffusion and drift velocity for 400kV for NeCF4 50/50 from calculations:
   // http://skipper.physics.sunysb.edu/~prakhar/tpc/HTML_Gases/split.html
-  static constexpr double Ne_dEdx = 1.56;    // keV/cm
+/*   static constexpr double Ne_dEdx = 1.56;    // keV/cm
   static constexpr double CF4_dEdx = 7.00;   // keV/cm
   static constexpr double Ne_NTotal = 43;    // Number/cm
   static constexpr double CF4_NTotal = 100;  // Number/cm
   static constexpr double Tpc_NTot = 0.5 * Ne_NTotal + 0.5 * CF4_NTotal;
   static constexpr double Tpc_dEdx = 0.5 * Ne_dEdx + 0.5 * CF4_dEdx;
-  static constexpr double Tpc_ElectronsPerKeV = Tpc_NTot / Tpc_dEdx;
+  static constexpr double Tpc_ElectronsPerKeV = Tpc_NTot / Tpc_dEdx; */
 
+
+  //static constexpr double Ne_dEdx = 1.56;    // keV/cm
+  static constexpr double CF4_dEdx = 7.00;   // keV/cm
+  static constexpr double Ar_dEdx = 2.44;// keV/cm
+  static constexpr double isobutane_dEdx = 5.93;// keV/cm
+
+  //static constexpr double Ne_NTotal = 43;    // Number/cm
+  static constexpr double CF4_NTotal = 100;  // Number/cm
+  static constexpr double Ar_NTotal = 94; // Number/cm
+  static constexpr double isobutane_NTotal = 195; // Number/cm
+  
+  static constexpr double Tpc_NTot = 0.75 * Ar_NTotal + 0.20 * CF4_NTotal + 0.05 * isobutane_NTotal;
+  static constexpr double Tpc_dEdx = 0.75 * Ar_dEdx + 0.20 * CF4_dEdx + 0.05 * isobutane_dEdx;
+  static constexpr double Tpc_ElectronsPerKeV = Tpc_NTot / Tpc_dEdx;
   // number of electrons per deposited GeV in TPC gas
   set_default_double_param("electrons_per_gev", Tpc_ElectronsPerKeV * 1e6);
 
   // number of electrons deposited by laser per cm
-  set_default_int_param("electrons_per_cm", 72);
+  set_default_double_param("electrons_per_cm", 100.25);
 
   // optional transverse tilt (disabled by default)
   set_default_int_param("tilt_layer", -1);
@@ -479,6 +522,10 @@ void PHG4TpcDirectLaser::SetDefaultParameters()
   set_default_double_param("tilt_min_deg", 0.0);
   set_default_double_param("tilt_max_deg", 0.0);
   set_default_int_param("tilt_steps", 1);
+  set_default_int_param("refine_layer", -1);
+  set_default_double_param("refine_halfwidth_cm", 0.0);
+  set_default_double_param("refine_step_cm", 0.0);
+  set_default_double_param("launch_offset_cm", 50.0);
 }
 
 //_____________________________________________________________
@@ -532,7 +579,9 @@ void PHG4TpcDirectLaser::SetupLasers()
   m_lasers.clear();
 
   // position of first laser at positive z
-  const TVector3 position_base(60 * cm, 0., halflength_tpc);
+  const double launch_offset = m_launch_offset_cm * cm;
+  const double launch_radius = 60.0 * cm;
+  const TVector3 position_base(launch_radius, 0., halflength_tpc - launch_offset);
 
   // add lasers
   for (int i = 0; i < 8; ++i)
@@ -553,7 +602,7 @@ void PHG4TpcDirectLaser::SetupLasers()
     }
     else
     {
-      laser.m_position.SetZ(-position_base.z());
+      laser.m_position.SetZ(-(halflength_tpc - launch_offset));
       laser.m_direction = 1;
       laser.m_phi = M_PI / 2 * i + (15 * M_PI / 180);  // additional offset of 15 deg.
     }
@@ -905,14 +954,12 @@ void PHG4TpcDirectLaser::AppendLaserTrack(double theta, double phi, const PHG4Tp
   const TVector3& strike = (fc_strike && (!plane_strike || fc_strike->z() / dir.z() < plane_strike->z() / dir.z())) ? *fc_strike : *plane_strike;
 
   // find length
-  TVector3 delta = (strike - pos);
-  double fullLength = delta.Mag();
+  const double fullLength = (strike - pos).Mag();
   int nHitSteps = fullLength / maxHitLength + 1;
 
   TVector3 start = pos;
   TVector3 end = start;
   TVector3 step = dir * (maxHitLength / (dir.Mag()));
-  double stepLength = 0;
 
   if (Verbosity())
   {
@@ -922,6 +969,8 @@ void PHG4TpcDirectLaser::AppendLaserTrack(double theta, double phi, const PHG4Tp
               << std::endl;
   }
 
+  const double refine_step = m_refine_step_cm * cm;
+
   for (int i = 0; i < nHitSteps; i++)
   {
     start = end;  // new starting point is the previous ending point.
@@ -929,47 +978,148 @@ void PHG4TpcDirectLaser::AppendLaserTrack(double theta, double phi, const PHG4Tp
     {
       // last step is the remainder size
       end = strike;
-      delta = start - end;
-      stepLength = delta.Mag();
     }
     else
     {
       // all other steps are uniform length
       end = start + step;
-      stepLength = step.Mag();
     }
 
-    // from phg4tpcsteppingaction.cc
-    auto* hit = new PHG4Hit_t;
-    hit->set_trkid(trackid);
-    hit->set_layer(99);
-
-    // here we set the entrance values in cm
-    hit->set_x(0, start.X() / cm);
-    hit->set_y(0, start.Y() / cm);
-    hit->set_z(0, start.Z() / cm);
-    hit->set_t(0, (start - pos).Mag() / speed_of_light);
-
-    hit->set_x(1, end.X() / cm);
-    hit->set_y(1, end.Y() / cm);
-    hit->set_z(1, end.Z() / cm);
-    hit->set_t(1, (end - pos).Mag() / speed_of_light);
-
-    // momentum
-    hit->set_px(0, dir.X());  // GeV
-    hit->set_py(0, dir.Y());
-    hit->set_pz(0, dir.Z());
-
-    hit->set_px(1, dir.X());
-    hit->set_py(1, dir.Y());
-    hit->set_pz(1, dir.Z());
-
-    const double totalE = electrons_per_cm * stepLength / electrons_per_gev;
-
-    hit->set_eion(totalE);
-    hit->set_edep(totalE);
-    m_g4hitcontainer->AddHit(detId, hit);
+    const bool do_refine = m_refine_active && m_refine_step_cm > 0.0 && segmentNeedsRefinement(start, end);
+    if (do_refine)
+    {
+      const TVector3 segment = end - start;
+      const double length = segment.Mag();
+      const int n_sub = std::max(1, static_cast<int>(std::ceil(length / refine_step)));
+      for (int isub = 0; isub < n_sub; ++isub)
+      {
+        const double frac0 = static_cast<double>(isub) / n_sub;
+        const double frac1 = static_cast<double>(isub + 1) / n_sub;
+        const TVector3 sub_start = start + segment * frac0;
+        const TVector3 sub_end = start + segment * frac1;
+        emitLaserHit(trackid, sub_start, sub_end, dir, pos);
+      }
+    }
+    else
+    {
+      emitLaserHit(trackid, start, end, dir, pos);
+    }
   }
 
   return;
+}
+
+bool PHG4TpcDirectLaser::segmentNeedsRefinement(const TVector3& start, const TVector3& end) const
+{
+  if (!m_refine_active)
+  {
+    return false;
+  }
+
+  const double r_start = start.Perp();
+  const double r_end = end.Perp();
+
+  if (std::max(r_start, r_end) >= m_refine_rmin && std::min(r_start, r_end) <= m_refine_rmax)
+  {
+    return true;
+  }
+
+  // Radial laser shots are effectively straight towards or away from the origin.
+  // The endpoint check above is therefore sufficient; skip the more expensive
+  // closest-approach test unless we re-enable it for non-radial studies.
+  // (Keep the original logic below for quick reactivation.)
+  /*
+  const TVector3 delta = end - start;
+  const double a = delta.X() * delta.X() + delta.Y() * delta.Y();
+  if (a <= 0.0)
+  {
+    return false;
+  }
+
+  const double b = start.X() * delta.X() + start.Y() * delta.Y();
+  const double s_ext = -b / a;
+  if (s_ext > 0.0 && s_ext < 1.0)
+  {
+    const TVector3 point = start + delta * s_ext;
+    const double r_mid = point.Perp();
+    if (r_mid >= m_refine_rmin && r_mid <= m_refine_rmax)
+    {
+      return true;
+    }
+  }
+  */
+  return false;
+}
+
+void PHG4TpcDirectLaser::emitLaserHit(int trackid, const TVector3& start, const TVector3& end, const TVector3& dir, const TVector3& origin)
+{
+  const double stepLength = (end - start).Mag();
+
+  // from phg4tpcsteppingaction.cc
+  auto* hit = new PHG4Hit_t;
+  hit->set_trkid(trackid);
+  hit->set_layer(99);
+
+  // here we set the entrance values in cm
+  hit->set_x(0, start.X() / cm);
+  hit->set_y(0, start.Y() / cm);
+  hit->set_z(0, start.Z() / cm);
+  hit->set_t(0, (start - origin).Mag() / speed_of_light);
+
+  hit->set_x(1, end.X() / cm);
+  hit->set_y(1, end.Y() / cm);
+  hit->set_z(1, end.Z() / cm);
+  hit->set_t(1, (end - origin).Mag() / speed_of_light);
+
+  // momentum
+  hit->set_px(0, dir.X());  // GeV
+  hit->set_py(0, dir.Y());
+  hit->set_pz(0, dir.Z());
+
+  hit->set_px(1, dir.X());
+  hit->set_py(1, dir.Y());
+  hit->set_pz(1, dir.Z());
+
+  const double totalE = electrons_per_cm * stepLength / electrons_per_gev;
+  if (Verbosity() > 0)
+  {
+    const double r_probe = 0.5 * (start.Perp() + end.Perp());
+    const int layer_guess = findLayerForRadius(r_probe);
+    std::cout << Name() << ": laser step length " << stepLength
+              << " cm, electrons/cm " << electrons_per_cm
+              << ", electrons/GeV " << electrons_per_gev
+              << ", assigned eion " << totalE << " GeV";
+    if (layer_guess >= 0)
+    {
+      std::cout << " (layer " << layer_guess << ", r ~ " << r_probe << " cm)";
+    }
+    std::cout << std::endl;
+  }
+
+  hit->set_eion(totalE);
+  hit->set_edep(totalE);
+  m_g4hitcontainer->AddHit(detId, hit);
+}
+
+int PHG4TpcDirectLaser::findLayerForRadius(double radius) const
+{
+  if (!m_tpc_geom)
+  {
+    return -1;
+  }
+
+  const int nLayers = m_tpc_geom->get_NLayers();
+  for (int ilayer = 0; ilayer < nLayers; ++ilayer)
+  {
+    if (auto* geom = m_tpc_geom->GetLayerCellGeom(ilayer))
+    {
+      const double rcen = geom->get_radius();
+      const double half = 0.5 * geom->get_thickness();
+      if (radius >= rcen - half && radius < rcen + half)
+      {
+        return geom->get_layer();
+      }
+    }
+  }
+  return -1;
 }

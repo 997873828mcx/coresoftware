@@ -117,6 +117,7 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   TH1 *diffPerSqrtL{nullptr};
   TH1 *diffDXPerSqrtL{nullptr};
   TH1 *diffDYPerSqrtL{nullptr};
+  TH1 *nElectronsPerCm{nullptr};
   TH2 *hitmapstart{nullptr};
   TH2 *hitmapend{nullptr};
   TH2 *hitmapstart_z{nullptr};
