@@ -21,6 +21,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 class PHG4TpcPadPlane;
 class PHG4TpcDistortion;
@@ -118,6 +119,7 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   TH1 *diffDXPerSqrtL{nullptr};
   TH1 *diffDYPerSqrtL{nullptr};
   TH1 *nElectronsPerCm{nullptr};
+  TH1 *electronDensityProfile{nullptr};
   TH2 *hitmapstart{nullptr};
   TH2 *hitmapend{nullptr};
   TH2 *hitmapstart_z{nullptr};
@@ -160,6 +162,21 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   double max_time = std::numeric_limits<double>::signaling_NaN();
   double zero_bfield_diffusion_factor{3.5};  // at drift voltage of 400 V
   double force_min_trans_drift_length{0.0};
+  bool m_density_enabled{false};
+  int m_density_layer{-1};
+  double m_density_bin_width_cm{0.05};
+  double m_density_window_cm{0.5};
+  double m_density_layer_radius{0.0};
+  double m_density_layer_rlow{0.0};
+  double m_density_layer_rhigh{0.0};
+  double m_density_radial_margin_cm{0.0};
+  double m_density_capture_rlow{0.0};
+  double m_density_capture_rhigh{0.0};
+  double m_density_hist_half_range{0.0};
+  std::unordered_map<int, double> m_track_path_offset;
+  std::unordered_map<int, bool> m_track_anchor_set;
+  std::unordered_map<int, double> m_track_anchor_length;
+  bool m_uniform_density_test{false};
 
   bool record_ClusHitsVerbose{false};
   bool do_ElectronDriftQAHistos{true};

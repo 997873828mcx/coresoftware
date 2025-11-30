@@ -52,6 +52,7 @@
 
 #include <TFile.h>
 #include <TH1.h>
+#include <TH1F.h>
 #include <TH2.h>
 #include <TNtuple.h>
 #include <TSystem.h>
@@ -70,6 +71,7 @@
 #include <cstdlib>  // for exit
 #include <iostream>
 #include <map>      // for _Rb_tree_cons...
+#include <unordered_map>
 #include <utility>  // for pair
 
 namespace
@@ -196,6 +198,47 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
   assert(seggeo);
 
   UpdateParametersWithMacro();
+  m_density_enabled = false;
+  m_density_layer = get_int_param("density_layer");
+  m_density_bin_width_cm = get_double_param("density_bin_width_cm");
+  m_density_window_cm = get_double_param("density_window_cm");
+  m_uniform_density_test = (get_int_param("uniform_density_test") != 0);
+  if (m_density_layer >= 0 && m_density_bin_width_cm > 0.0 && m_density_window_cm > 0.0)
+  {
+    if (auto *layer_geom = seggeo->GetLayerCellGeom(m_density_layer))
+    {
+      m_density_layer_radius = layer_geom->get_radius();
+      const double half_thickness = 0.5 * layer_geom->get_thickness();
+      m_density_layer_rlow = m_density_layer_radius - half_thickness;
+      m_density_layer_rhigh = m_density_layer_radius + half_thickness;
+      m_density_radial_margin_cm = std::max(0.0, get_double_param("density_radial_margin_cm"));
+      m_density_capture_rlow = m_density_layer_rlow - m_density_radial_margin_cm;
+      m_density_capture_rhigh = m_density_layer_rhigh + m_density_radial_margin_cm;
+      m_density_hist_half_range = (m_density_window_cm > 0.0) ? m_density_window_cm : (half_thickness + m_density_radial_margin_cm);
+      const double low_edge = -m_density_hist_half_range;
+      double high_edge = m_density_hist_half_range;
+      int nbins = static_cast<int>(std::ceil((high_edge - low_edge) / m_density_bin_width_cm));
+      if (nbins < 1)
+      {
+        nbins = 1;
+      }
+      high_edge = low_edge + nbins * m_density_bin_width_cm;
+      if (electronDensityProfile)
+      {
+        delete electronDensityProfile;
+        electronDensityProfile = nullptr;
+      }
+      const std::string hname = Name() + std::string("_ElectronDensityLayer") + std::to_string(m_density_layer);
+      const std::string htitle = "Ionization start vs. layer " + std::to_string(m_density_layer) + ";r - R_{layer} (cm);Electrons";
+      electronDensityProfile = new TH1F(hname.c_str(), htitle.c_str(), nbins, low_edge, high_edge);
+      electronDensityProfile->SetDirectory(nullptr);
+      m_density_enabled = true;
+    }
+    else if (Verbosity() > 0)
+    {
+      std::cout << Name() << ": density_layer " << m_density_layer << " not present in geometry; disabling density histogram" << std::endl;
+    }
+  }
   PHNodeIterator runIter(runNode);
   auto RunDetNode = dynamic_cast<PHCompositeNode *>(runIter.findFirst("PHCompositeNode", detector));
   if (!RunDetNode)
@@ -478,6 +521,10 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
   unsigned int count_g4hits = 0;
   //  int count_electrons = 0;
 
+  m_track_path_offset.clear();
+  m_track_anchor_set.clear();
+  m_track_anchor_length.clear();
+
   //  double ecollectedhits = 0.0;
 //  int ncollectedhits = 0;
   double ihit = 0;
@@ -560,15 +607,24 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
 
     double eion = hiter->second->get_eion();
     const double poisson_mean = eion * electrons_per_gev;
-    unsigned int n_electrons = gsl_ran_poisson(RandomGenerator.get(), poisson_mean);
+    unsigned int n_electrons = 0;
+    if (m_uniform_density_test)
+    {
+      n_electrons = (poisson_mean > 0.) ? static_cast<unsigned int>(std::lround(poisson_mean)) : 0;
+    }
+    else
+    {
+      n_electrons = gsl_ran_poisson(RandomGenerator.get(), poisson_mean);
+    }
     //    count_electrons += n_electrons;
+
+    const double dx_hit = hiter->second->get_x(1) - hiter->second->get_x(0);
+    const double dy_hit = hiter->second->get_y(1) - hiter->second->get_y(0);
+    const double dz_hit = hiter->second->get_z(1) - hiter->second->get_z(0);
+    const double step_length = std::sqrt(square(dx_hit) + square(dy_hit) + square(dz_hit));
 
     if (do_ElectronDriftQAHistos)
     {
-      const double dx_hit = hiter->second->get_x(1) - hiter->second->get_x(0);
-      const double dy_hit = hiter->second->get_y(1) - hiter->second->get_y(0);
-      const double dz_hit = hiter->second->get_z(1) - hiter->second->get_z(0);
-      const double step_length = std::sqrt(square(dx_hit) + square(dy_hit) + square(dz_hit));
       if (poissonMean)
       {
         poissonMean->Fill(poisson_mean);
@@ -612,8 +668,11 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
 
     if (n_electrons == 0)
     {
+      m_track_path_offset[hiter->second->get_trkid()] += step_length;
       continue;
     }
+    const int track_id = hiter->second->get_trkid();
+    double track_segment_start = m_track_path_offset[track_id];
 
     if (Verbosity() > 100)
     {
@@ -636,13 +695,20 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
       // distribution along the path length the parameter t is the fraction of
       // the distance along the path betwen entry and exit points, it has
       // values between 0 and 1
-      const double f = gsl_ran_flat(RandomGenerator.get(), 0.0, 1.0);
+      double f = gsl_ran_flat(RandomGenerator.get(), 0.0, 1.0);
+      if (m_uniform_density_test && n_electrons > 0)
+      {
+        f = (static_cast<double>(i) + 0.5) / static_cast<double>(n_electrons);
+        if (f >= 1.0)
+        {
+          f = std::nextafter(1.0, 0.0);
+        }
+      }
 
       const double x_start = hiter->second->get_x(0) + f * (hiter->second->get_x(1) - hiter->second->get_x(0));
       const double y_start = hiter->second->get_y(0) + f * (hiter->second->get_y(1) - hiter->second->get_y(0));
       const double z_start = hiter->second->get_z(0) + f * (hiter->second->get_z(1) - hiter->second->get_z(0));
       const double t_start = hiter->second->get_t(0) + f * (hiter->second->get_t(1) - hiter->second->get_t(0));
-
       unsigned int side = 0;
       if (z_start > 0)
       {
@@ -826,6 +892,24 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
         driftXY->Fill(x_start, y_start, x_final, y_final);
       }
 
+      if (m_density_enabled && electronDensityProfile)
+      {
+        if (rad_final >= m_density_capture_rlow && rad_final <= m_density_capture_rhigh)
+        {
+          const double delta_r = radstart - m_density_layer_radius;
+          if (delta_r >= -m_density_hist_half_range && delta_r <= m_density_hist_half_range)
+          {
+            const double s_global = track_segment_start + f * step_length;
+            if (!m_track_anchor_set[track_id])
+            {
+              m_track_anchor_set[track_id] = true;
+              m_track_anchor_length[track_id] = s_global;
+            }
+            electronDensityProfile->Fill(s_global - m_track_anchor_length[track_id]);
+          }
+        }
+      }
+
       // remove electrons outside of our acceptance. Careful though, electrons from just inside 30 cm can contribute in the 1st active layer readout, so leave a little margin
       if (rad_final < min_active_radius - 2.0 || rad_final > max_active_radius + 1.0)
       {
@@ -861,6 +945,8 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
                               temp_hitsetcontainer.get(), hittruthassoc, x_final, y_final, t_final,
                               side, hiter, ntpad, nthit);
     }  // end loop over electrons for this g4hit
+
+    m_track_path_offset[track_id] = track_segment_start + step_length;
 
     if (do_ElectronDriftQAHistos)
     {
@@ -1229,6 +1315,10 @@ int PHG4TpcElectronDrift::End(PHCompositeNode * /*topNode*/)
     {
       driftXY->Write();
     }
+    if (electronDensityProfile)
+    {
+      electronDensityProfile->Write();
+    }
     EDrift_outf->Close();
   }
   return Fun4AllReturnCodes::EVENT_OK;
@@ -1264,6 +1354,11 @@ void PHG4TpcElectronDrift::SetDefaultParameters()
   set_default_double_param("added_smear_trans", 0.0);  // cm (used to be 0.085 before sims got better)
   set_default_double_param("added_smear_long", 0.0);   // cm (used to be 0.105 before sims got better)
   set_default_double_param("force_min_trans_drift_length", 0.0);  // cm
+  set_default_int_param("density_layer", -1);
+  set_default_double_param("density_bin_width_cm", 0.05);
+  set_default_double_param("density_window_cm", -1.0);
+  set_default_double_param("density_radial_margin_cm", 0.2);
+  set_default_int_param("uniform_density_test", 0);
 
   return;
 }

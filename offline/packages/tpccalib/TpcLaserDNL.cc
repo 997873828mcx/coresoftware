@@ -848,19 +848,22 @@ void TpcLaserDNL::build_truth_seeds(std::vector<TrackSeed>& seeds) const
           }
           if(!std::isfinite(t_selected)) continue;
 
-          LayerPoint fallback;
-          fallback.layer = layer_id;
-          fallback.radius = R;
-          fallback.x = ox + dx * t_selected;
-          fallback.y = oy + dy * t_selected;
-          fallback.z = oz + dz * t_selected;
-          fallback.dirx = dx;
-          fallback.diry = dy;
-          fallback.dirz = dz;
-          fallback.side = (fallback.z > 0) ? 1 : 0;
-          fallback.path = t_selected * dir_norm;
-          fallback.from_g4hit = false;
-          completed[layer_id] = fallback;
+          if(m_include_fallback_intersections)
+          {
+            LayerPoint fallback;
+            fallback.layer = layer_id;
+            fallback.radius = R;
+            fallback.x = ox + dx * t_selected;
+            fallback.y = oy + dy * t_selected;
+            fallback.z = oz + dz * t_selected;
+            fallback.dirx = dx;
+            fallback.diry = dy;
+            fallback.dirz = dz;
+            fallback.side = (fallback.z > 0) ? 1 : 0;
+            fallback.path = t_selected * dir_norm;
+            fallback.from_g4hit = false;
+            completed[layer_id] = fallback;
+          }
         }
       }
     }
