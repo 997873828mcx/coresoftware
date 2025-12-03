@@ -701,97 +701,107 @@ void TpcLaserDNL::build_truth_seeds(std::vector<TrackSeed>& seeds) const
     unsigned int layer = hit->get_layer();
     if(layer == std::numeric_limits<unsigned int>::max()) continue;
 
-    auto* layergeom = m_geom->GetLayerCellGeom(static_cast<int>(layer));
-    if(!layergeom) continue;
+    // Optimization: Check layers in the vicinity [layer-2, layer+2]
+    // TPC layers are typically 7 to 54 (or similar range depending on geometry)
+    // We clamp the range to avoid invalid lookups
+    const int layer_center = static_cast<int>(layer);
+    const int layer_min = std::max(0, layer_center - 2);
+    const int layer_max = layer_center + 2;
 
-    const double x0 = hit->get_x(0);
-    const double y0 = hit->get_y(0);
-    const double z0 = hit->get_z(0);
-    const double x1 = hit->get_x(1);
-    const double y1 = hit->get_y(1);
-    const double z1 = hit->get_z(1);
-
-    const double dx = x1 - x0;
-    const double dy = y1 - y0;
-    const double dz = z1 - z0;
-    const double path = std::sqrt(dx*dx + dy*dy + dz*dz);
-    if(path < 1e-6) continue;
-
-    const double R = layergeom->get_radius();
-    const double a = dx*dx + dy*dy;
-    const double b = 2.0*(dx*x0 + dy*y0);
-    const double c = x0*x0 + y0*y0 - R*R;
-
-    LayerPoint candidate;
-    bool have_candidate = false;
-    double best_residual = std::numeric_limits<double>::max();
-
-    auto try_record = [&](double t)
+    for(int ilayer = layer_min; ilayer <= layer_max; ++ilayer)
     {
-      const double xi = x0 + t*dx;
-      const double yi = y0 + t*dy;
-      const double zi = z0 + t*dz;
-      const double radial_residual = std::abs(std::sqrt(xi*xi + yi*yi) - R);
-      if(radial_residual > radial_tolerance) return;
-      if(!have_candidate || radial_residual < best_residual)
-      {
-        candidate.layer = layer;
-        candidate.radius = R;
-        candidate.x = xi;
-        candidate.y = yi;
-        candidate.z = zi;
-        candidate.dirx = dx;
-        candidate.diry = dy;
-        candidate.dirz = dz;
-        candidate.side = (zi > 0) ? 1 : 0;
-        candidate.path = path;
-        candidate.from_g4hit = true;
-        best_residual = radial_residual;
-        have_candidate = true;
-      }
-    };
+      auto* layergeom = m_geom->GetLayerCellGeom(ilayer);
+      if(!layergeom) continue;
 
-    if(a < axial_threshold)
-    {
-      const double r0 = std::sqrt(x0*x0 + y0*y0);
-      const double r1 = std::sqrt(x1*x1 + y1*y1);
-      const double res0 = std::abs(r0 - R);
-      const double res1 = std::abs(r1 - R);
-      if(res0 <= radial_tolerance || res1 <= radial_tolerance)
-      {
-        const double t = (res0 <= res1) ? 0.0 : 1.0;
-        try_record(t);
-      }
-    }
-    else
-    {
-      double disc = b*b - 4.0*a*c;
-      if(disc >= -1e-12)
-      {
-        disc = std::max(0.0, disc);
-        const double sqrt_disc = std::sqrt(disc);
-        const double t_candidates[2] = {
-            (-b - sqrt_disc) / (2.0*a),
-            (-b + sqrt_disc) / (2.0*a)};
+      const double x0 = hit->get_x(0);
+      const double y0 = hit->get_y(0);
+      const double z0 = hit->get_z(0);
+      const double x1 = hit->get_x(1);
+      const double y1 = hit->get_y(1);
+      const double z1 = hit->get_z(1);
 
-        for(double t_candidate : t_candidates)
+      const double dx = x1 - x0;
+      const double dy = y1 - y0;
+      const double dz = z1 - z0;
+      const double path = std::sqrt(dx*dx + dy*dy + dz*dz);
+      if(path < 1e-6) continue;
+
+      const double R = layergeom->get_radius();
+      const double a = dx*dx + dy*dy;
+      const double b = 2.0*(dx*x0 + dy*y0);
+      const double c = x0*x0 + y0*y0 - R*R;
+
+      LayerPoint candidate;
+      bool have_candidate = false;
+      double best_residual = std::numeric_limits<double>::max();
+
+      auto try_record = [&](double t)
+      {
+        const double xi = x0 + t*dx;
+        const double yi = y0 + t*dy;
+        const double zi = z0 + t*dz;
+        const double radial_residual = std::abs(std::sqrt(xi*xi + yi*yi) - R);
+        if(radial_residual > radial_tolerance) return;
+        if(!have_candidate || radial_residual < best_residual)
         {
-          if(t_candidate < -param_tolerance || t_candidate > 1.0 + param_tolerance) continue;
-          double t_clamped = t_candidate;
-          if(t_clamped < 0.0) t_clamped = 0.0;
-          if(t_clamped > 1.0) t_clamped = 1.0;
-          try_record(t_clamped);
+          candidate.layer = static_cast<unsigned int>(ilayer);
+          candidate.radius = R;
+          candidate.x = xi;
+          candidate.y = yi;
+          candidate.z = zi;
+          candidate.dirx = dx;
+          candidate.diry = dy;
+          candidate.dirz = dz;
+          candidate.side = (zi > 0) ? 1 : 0;
+          candidate.path = path;
+          candidate.from_g4hit = true;
+          best_residual = radial_residual;
+          have_candidate = true;
+        }
+      };
+
+      if(a < axial_threshold)
+      {
+        const double r0 = std::sqrt(x0*x0 + y0*y0);
+        const double r1 = std::sqrt(x1*x1 + y1*y1);
+        const double res0 = std::abs(r0 - R);
+        const double res1 = std::abs(r1 - R);
+        if(res0 <= radial_tolerance || res1 <= radial_tolerance)
+        {
+          const double t = (res0 <= res1) ? 0.0 : 1.0;
+          try_record(t);
         }
       }
-    }
+      else
+      {
+        double disc = b*b - 4.0*a*c;
+        if(disc >= -1e-12)
+        {
+          disc = std::max(0.0, disc);
+          const double sqrt_disc = std::sqrt(disc);
+          const double t_candidates[2] = {
+              (-b - sqrt_disc) / (2.0*a),
+              (-b + sqrt_disc) / (2.0*a)};
 
-    if(!have_candidate) continue;
+          for(double t_candidate : t_candidates)
+          {
+            if(t_candidate < -param_tolerance || t_candidate > 1.0 + param_tolerance) continue;
+            double t_clamped = t_candidate;
+            if(t_clamped < 0.0) t_clamped = 0.0;
+            if(t_clamped > 1.0) t_clamped = 1.0;
+            try_record(t_clamped);
+          }
+        }
+      }
 
-    auto& layer_map = layer_cache[static_cast<unsigned int>(trkid)];
-    auto layer_it = layer_map.find(layer);
-    if(layer_it == layer_map.end() || candidate.path > layer_it->second.path)
-    {
-      layer_map[layer] = candidate;
+      if(!have_candidate) continue;
+
+      auto& layer_map = layer_cache[static_cast<unsigned int>(trkid)];
+      auto layer_it = layer_map.find(static_cast<unsigned int>(ilayer));
+      if(layer_it == layer_map.end() || candidate.path > layer_it->second.path)
+      {
+        layer_map[static_cast<unsigned int>(ilayer)] = candidate;
+      }
     }
   }
 

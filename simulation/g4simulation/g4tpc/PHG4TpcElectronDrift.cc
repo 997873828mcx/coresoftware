@@ -198,6 +198,59 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
   assert(seggeo);
 
   UpdateParametersWithMacro();
+
+  // Initialize cluster size CDF
+  // Probabilities from Fischle et al. (1991) for Argon
+  std::map<int, double> fischle_data = {
+      {1, 0.656},
+      {2, 0.150},
+      {3, 0.064},
+      {4, 0.035},
+      {5, 0.022},
+      {6, 0.015},
+      {7, 0.011},
+      {8, 0.008},
+      {9, 0.006}};
+
+  double prob_discrete = 0.0;
+  for (auto const& [n, p] : fischle_data)
+  {
+    prob_discrete += p;
+  }
+
+  double remaining_prob = 1.0 - prob_discrete;
+  double w_value_ev = 26.0;
+  double cutoff_energy_kev = 10.0;
+  int n_max = int((cutoff_energy_kev * 1000) / w_value_ev);
+
+  double sum_inv_sq = 0.0;
+  for (int n = 10; n <= n_max; ++n)
+  {
+    sum_inv_sq += 1.0 / (n * n);
+  }
+  double C = remaining_prob / sum_inv_sq;
+
+  cluster_size_cdf.clear();
+  cluster_size_cdf.resize(n_max + 1, 0.0);
+  double current_cdf = 0.0;
+
+  for (int n = 1; n <= n_max; ++n)
+  {
+    double p = 0.0;
+    if (n <= 9)
+    {
+      p = fischle_data[n];
+    }
+    else
+    {
+      p = C / (n * n);
+    }
+    current_cdf += p;
+    cluster_size_cdf[n] = current_cdf;
+  }
+  // Ensure the last element is exactly 1.0 to avoid floating point issues
+  cluster_size_cdf[n_max] = 1.0;
+
   m_density_enabled = false;
   m_density_layer = get_int_param("density_layer");
   m_density_bin_width_cm = get_double_param("density_bin_width_cm");
@@ -689,8 +742,23 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
 
     int notReachingReadout = 0;
 //    int notInAcceptance = 0;
+
+    // Loop over primary electrons (clusters)
     for (unsigned int i = 0; i < n_electrons; i++)
     {
+      // Sample cluster size
+      // Sample cluster size
+      int cluster_size = 1;
+      if (m_enable_laser_clustering)
+      {
+        double p = gsl_ran_flat(RandomGenerator.get(), 0.0, 1.0);
+        auto it = std::lower_bound(cluster_size_cdf.begin(), cluster_size_cdf.end(), p);
+        if (it != cluster_size_cdf.end())
+        {
+          cluster_size = std::distance(cluster_size_cdf.begin(), it);
+        }
+      }
+      
       // We choose the electron starting position at random from a flat
       // distribution along the path length the parameter t is the fraction of
       // the distance along the path betwen entry and exit points, it has
@@ -704,6 +772,11 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
           f = std::nextafter(1.0, 0.0);
         }
       }
+
+      // Loop over secondary electrons in the cluster
+      for (int j = 0; j < cluster_size; ++j)
+      {
+
 
       const double x_start = hiter->second->get_x(0) + f * (hiter->second->get_x(1) - hiter->second->get_x(0));
       const double y_start = hiter->second->get_y(0) + f * (hiter->second->get_y(1) - hiter->second->get_y(0));
@@ -799,6 +872,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
         {
           diffDYVsDrift->Fill(drift_distance, delta_y);
         }
+
         if (drift_distance > 0.)
         {
           const double sqrtL = std::sqrt(drift_distance);
@@ -944,6 +1018,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
       padplane->MapToPadPlane(truth_clusterer, single_hitsetcontainer.get(),
                               temp_hitsetcontainer.get(), hittruthassoc, x_final, y_final, t_final,
                               side, hiter, ntpad, nthit);
+    } // end loop over secondary electrons
     }  // end loop over electrons for this g4hit
 
     m_track_path_offset[track_id] = track_segment_start + step_length;

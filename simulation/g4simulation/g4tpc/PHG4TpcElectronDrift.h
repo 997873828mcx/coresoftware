@@ -22,6 +22,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 class PHG4TpcPadPlane;
 class PHG4TpcDistortion;
@@ -89,6 +90,7 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
     force_min_trans_drift_length = (length > 0.) ? length : 0.;
     set_double_param("force_min_trans_drift_length", force_min_trans_drift_length);
   }
+  void set_enable_laser_clustering(bool b) { m_enable_laser_clustering = b; }
   ClusHitsVerbosev1 *mClusHitsVerbose{nullptr};
 
  private:
@@ -177,6 +179,8 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   std::unordered_map<int, bool> m_track_anchor_set;
   std::unordered_map<int, double> m_track_anchor_length;
   bool m_uniform_density_test{false};
+  std::vector<double> cluster_size_cdf;
+  bool m_enable_laser_clustering{false};
 
   bool record_ClusHitsVerbose{false};
   bool do_ElectronDriftQAHistos{true};

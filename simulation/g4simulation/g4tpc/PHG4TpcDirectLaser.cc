@@ -514,7 +514,7 @@ void PHG4TpcDirectLaser::SetDefaultParameters()
   set_default_double_param("electrons_per_gev", Tpc_ElectronsPerKeV * 1e6);
 
   // number of electrons deposited by laser per cm
-  set_default_double_param("electrons_per_cm", 100.25);
+  set_default_double_param("electrons_per_cm", 34);
 
   // optional transverse tilt (disabled by default)
   set_default_int_param("tilt_layer", -1);
