@@ -131,6 +131,9 @@ std::vector<ULong64_t> m_hitkeys;
 std::vector<ULong64_t> m_hitsetkeys;
   std::vector<unsigned int> m_iphi;
   std::vector<unsigned int> m_tbin;
+  std::vector<double> m_hit_charge;
+  double m_total_charge_layer{0.0};
+  double m_max_charge_layer{0.0};
 
 // helpers
 static bool cylinder_intersection(double x0,double y0,double z0,

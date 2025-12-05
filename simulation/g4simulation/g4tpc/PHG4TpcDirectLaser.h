@@ -114,6 +114,13 @@ class PHG4TpcDirectLaser : public SubsysReco, public PHParameterInterface
     m_use_random_phi = true;
   }
 
+  /// set number of laser tracks to fire per event (default 1)
+  void set_tracks_per_event(int n)
+  {
+    m_tracks_per_event = n;
+    set_int_param("tracks_per_event", n);
+  }
+
  private:
   /// define lasers
   /* by default there are 4 lasers on each side of the TPC */
@@ -218,6 +225,9 @@ class PHG4TpcDirectLaser : public SubsysReco, public PHParameterInterface
 
   /// if true, choose a random phi each event between [minPhi,maxPhi]
   bool m_use_random_phi{false};
+
+  /// number of tracks to fire per event
+  int m_tracks_per_event{1};
 
   // GSL RNG for random-phi sampling (private to this module)
   struct GslDeleter { void operator()(gsl_rng* p) const { if(p) gsl_rng_free(p); } };

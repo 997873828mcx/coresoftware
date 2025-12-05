@@ -16,6 +16,7 @@
 #include <gsl/gsl_rng.h>
 
 #include <array>
+#include <cstddef>
 #include <cmath>
 #include <fstream>
 #include <limits>
@@ -30,6 +31,7 @@ class PHCompositeNode;
 class TH1;
 class TH2;
 class TNtuple;
+class TTree;
 class TFile;
 class TrkrHitSetContainer;
 class TrkrHitTruthAssoc;
@@ -39,6 +41,7 @@ class TrkrTruthTrack;
 class DistortedTrackContainer;
 class TpcClusterBuilder;
 class PHG4TpcCylinderGeomContainer;
+class SvtxTrackMap;
 class ClusHitsVerbose;
 
 class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
@@ -91,6 +94,9 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
     set_double_param("force_min_trans_drift_length", force_min_trans_drift_length);
   }
   void set_enable_laser_clustering(bool b) { m_enable_laser_clustering = b; }
+  void set_qa_output_file(const std::string &f) { m_qa_output_file = f; }
+  void set_avg_output_file(const std::string &f) { m_avg_output_file = f; }
+  void set_do_ElectronDriftQAHistos(bool b) { do_ElectronDriftQAHistos = b; }
   ClusHitsVerbosev1 *mClusHitsVerbose{nullptr};
 
  private:
@@ -101,11 +107,34 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   TrkrClusterContainer *truthclustercontainer{nullptr};  // the TrkrClusterContainer for truth clusters
   ActsGeometry *m_tGeometry{nullptr};
   PHG4TpcCylinderGeomContainer *seggeo{nullptr};
+  SvtxTrackMap *m_track_map{nullptr};
 
   TNtuple *nt{nullptr};
   TNtuple *nthit{nullptr};
   TNtuple *ntfinalhit{nullptr};
   TNtuple *ntpad{nullptr};
+  TTree *m_avgXResidualTree{nullptr};
+  float m_avgTree_trackid{0};
+  float m_avgTree_residual{0};
+  float m_avgTree_avgx{0};
+  float m_avgTree_xint{0};
+  float m_avgTree_residual_primary{0};
+  float m_avgTree_avgx_primary{0};
+  float m_avgTree_count_primary{0};
+  float m_avgTree_residual_end{0};
+  float m_avgTree_avgx_end{0};
+  float m_avgTree_count_end{0};
+  float m_avgTree_residual_end_primary{0};
+  float m_avgTree_avgx_end_primary{0};
+  float m_avgTree_count_end_primary{0};
+  float m_avgTree_residual_x{0};
+  float m_avgTree_avgx_cart{0};
+  float m_avgTree_residual_x_primary{0};
+  float m_avgTree_avgx_cart_primary{0};
+  float m_avgTree_residual_x_end{0};
+  float m_avgTree_avgx_cart_end{0};
+  float m_avgTree_residual_x_end_primary{0};
+  float m_avgTree_avgx_cart_end_primary{0};
 
   ///@name evaluation histograms
   //@{
@@ -175,12 +204,42 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   double m_density_capture_rlow{0.0};
   double m_density_capture_rhigh{0.0};
   double m_density_hist_half_range{0.0};
+  bool m_avg_x_enabled{false};
+  int m_avg_layer{-1};
+  double m_avg_layer_radius{0.0};
+  double m_avg_layer_rlow{0.0};
+  double m_avg_layer_rhigh{0.0};
   std::unordered_map<int, double> m_track_path_offset;
   std::unordered_map<int, bool> m_track_anchor_set;
   std::unordered_map<int, double> m_track_anchor_length;
+  struct TrackLayerData
+  {
+    double sum_rphi{0.0};
+    double sum_rphi_primary{0.0};
+    double sum_rphi_end{0.0};
+    double sum_rphi_end_primary{0.0};
+    double sum_x{0.0};
+    double sum_x_primary{0.0};
+    double sum_x_end{0.0};
+    double sum_x_end_primary{0.0};
+    std::size_t count{0};
+    std::size_t count_primary{0};
+    std::size_t count_end{0};
+    std::size_t count_end_primary{0};
+    double base_x{0.0};
+    double base_y{0.0};
+    double base_z{0.0};
+    double dir_x{0.0};
+    double dir_y{0.0};
+    double dir_z{0.0};
+    bool have_line{false};
+  };
+  std::unordered_map<int, TrackLayerData> m_track_layer_data;
   bool m_uniform_density_test{false};
   std::vector<double> cluster_size_cdf;
   bool m_enable_laser_clustering{false};
+  std::string m_qa_output_file{"ElectronDriftQA.root"};
+  std::string m_avg_output_file{"avgXResidual.root"};
 
   bool record_ClusHitsVerbose{false};
   bool do_ElectronDriftQAHistos{true};
@@ -194,6 +253,7 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   std::unique_ptr<PHG4TpcDistortion> m_distortionMap;
   std::unique_ptr<TFile> m_outf;
   std::unique_ptr<TFile> EDrift_outf;
+  std::unique_ptr<TFile> m_avgOutf;
 
   std::string detector;
   std::string hitnodename;
@@ -207,6 +267,11 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
     void operator()(gsl_rng *rng) const { gsl_rng_free(rng); }
   };
   std::unique_ptr<gsl_rng, Deleter> RandomGenerator;
+
+  bool cylinder_intersection(double x0, double y0, double z0,
+                             double vx, double vy, double vz,
+                             double R, double &t_out,
+                             double &xi, double &yi, double &zi) const;
 };
 
 #endif  // G4TPC_PHG4TPCELECTRONDRIFT_H

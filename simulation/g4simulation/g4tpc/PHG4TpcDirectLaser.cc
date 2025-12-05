@@ -290,6 +290,7 @@ int PHG4TpcDirectLaser::InitRun(PHCompositeNode* topNode)
   electrons_per_cm = get_double_param("electrons_per_cm");
   electrons_per_gev = get_double_param("electrons_per_gev");
   m_launch_offset_cm = std::max(0.0, get_double_param("launch_offset_cm"));
+  m_tracks_per_event = std::max(1, get_int_param("tracks_per_event"));
 
   m_tilt_layer = get_int_param("tilt_layer");
   m_tilt_steps = std::max(1, get_int_param("tilt_steps"));
@@ -451,19 +452,23 @@ int PHG4TpcDirectLaser::process_event(PHCompositeNode* topNode)
   assert(m_track_map);
 
   // if random phi mode is enabled, override stepping and pick a uniform phi in [minPhi,maxPhi]
+  // if random phi mode is enabled, override stepping and pick a uniform phi in [minPhi,maxPhi]
   if (m_use_random_phi)
   {
-    // use configured theta; if a range was set, pick the lower edge (common usage is a fixed theta)
-    const double theta = (nThetaSteps > 0) ? minTheta : 0.0;
-    // draw phi parameter uniformly in [minPhi, maxPhi]
-    double phi = minPhi;
-    if (maxPhi > minPhi)
+    for (int i = 0; i < m_tracks_per_event; ++i)
     {
-      // uniform draw from [minPhi,maxPhi) using module-private GSL RNG
-      const double width = (maxPhi - minPhi);
-      phi = minPhi + gsl_ran_flat(m_rng.get(), 0.0, width);
+      // use configured theta; if a range was set, pick the lower edge (common usage is a fixed theta)
+      const double theta = (nThetaSteps > 0) ? minTheta : 0.0;
+      // draw phi parameter uniformly in [minPhi, maxPhi]
+      double phi = minPhi;
+      if (maxPhi > minPhi)
+      {
+        // uniform draw from [minPhi,maxPhi) using module-private GSL RNG
+        const double width = (maxPhi - minPhi);
+        phi = minPhi + gsl_ran_flat(m_rng.get(), 0.0, width);
+      }
+      AimToThetaPhi(theta, phi);
     }
-    AimToThetaPhi(theta, phi);
   }
   else if (m_autoAdvanceDirectLaser || m_steppingpattern)
   {
@@ -526,6 +531,7 @@ void PHG4TpcDirectLaser::SetDefaultParameters()
   set_default_double_param("refine_halfwidth_cm", 0.0);
   set_default_double_param("refine_step_cm", 0.0);
   set_default_double_param("launch_offset_cm", 50.0);
+  set_default_int_param("tracks_per_event", 1);
 }
 
 //_____________________________________________________________

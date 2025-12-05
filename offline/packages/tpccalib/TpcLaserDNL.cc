@@ -71,6 +71,10 @@ m_tt->Branch("phi_pad_max",&m_phi_pad_max,"phi_pad_max/D");
 m_tt->Branch("phase",&m_phase,"phase/D");
 m_tt->Branch("phase_reco",&m_phase_reco,"phase_reco/D");
 m_tt->Branch("pad_phi_center",&m_pad_phi_centers);
+// additional charge bookkeeping
+m_tt->Branch("hit_charge",&m_hit_charge);
+m_tt->Branch("total_charge_layer",&m_total_charge_layer,"total_charge_layer/D");
+m_tt->Branch("max_charge_layer",&m_max_charge_layer,"max_charge_layer/D");
 // debug vectors (only filled with hits that pass selection)
 m_tt->Branch("hitkey",&m_hitkeys);
 m_tt->Branch("hitsetkey",&m_hitsetkeys);
@@ -234,6 +238,11 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
   {
     build_truth_seeds(seeds);
   }
+  // fallback: if no seeds from truth and a track map exists, try reco seeds even if disabled
+  if(seeds.empty() && m_track_map && !m_track_map->empty())
+  {
+    build_reco_seeds(seeds);
+  }
 
   if(seeds.empty())
   {
@@ -318,6 +327,9 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
       m_hitsetkeys.clear();
       m_iphi.clear();
       m_tbin.clear();
+      m_hit_charge.clear();
+      m_total_charge_layer = 0.0;
+      m_max_charge_layer = 0.0;
       m_pad_phi_centers.clear();
       m_npad_used = 0;
       m_phi_pad_max = std::numeric_limits<double>::quiet_NaN();
@@ -389,6 +401,9 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
             m_hitsetkeys.push_back(static_cast<ULong64_t>(hsk));
             m_iphi.push_back(static_cast<unsigned int>(iphi));
             m_tbin.push_back(static_cast<unsigned int>(tbin));
+            m_hit_charge.push_back(weight);
+            m_total_charge_layer += weight;
+            if (weight > m_max_charge_layer) m_max_charge_layer = weight;
             padWeights[iphi] += weight;
           }
         }
@@ -434,6 +449,9 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
             wsum += weight;
             m_adcsum += weight;
             m_nused++;
+            m_hit_charge.push_back(weight);
+            m_total_charge_layer += weight;
+            if (weight > m_max_charge_layer) m_max_charge_layer = weight;
           }
         }
       }
@@ -637,8 +655,6 @@ void TpcLaserDNL::build_truth_seeds(std::vector<TrackSeed>& seeds) const
   if(!m_truth_tracks || !m_geom || !m_g4hits) return;
 
   TrkrTruthTrackContainer::ConstRange range = m_truth_tracks->getTruthTrackRange();
-  if(range.first == range.second) return;
-
   std::unordered_map<unsigned int, std::size_t> index_by_id;
   seeds.reserve(std::distance(range.first, range.second));
   for(auto it = range.first; it != range.second; ++it)
@@ -696,7 +712,30 @@ void TpcLaserDNL::build_truth_seeds(std::vector<TrackSeed>& seeds) const
     if(trkid < 0) continue;
 
     auto idxIt = index_by_id.find(static_cast<unsigned int>(trkid));
-    if(idxIt == index_by_id.end()) continue;
+    if(idxIt == index_by_id.end())
+    {
+      // fallback: create a seed directly from the first G4 hit we see for this trkid
+      TrackSeed seed;
+      seed.id = trkid;
+      seed.origin[0] = hit->get_x(0);
+      seed.origin[1] = hit->get_y(0);
+      seed.origin[2] = hit->get_z(0);
+      const double vx = hit->get_x(1) - hit->get_x(0);
+      const double vy = hit->get_y(1) - hit->get_y(0);
+      const double vz = hit->get_z(1) - hit->get_z(0);
+      const double v2 = vx*vx + vy*vy + vz*vz;
+      if(v2 > 0)
+      {
+        const double vmag = std::sqrt(v2);
+        seed.dir[0] = vx / vmag;
+        seed.dir[1] = vy / vmag;
+        seed.dir[2] = vz / vmag;
+        seed.dir_valid = true;
+      }
+      index_by_id[static_cast<unsigned int>(trkid)] = seeds.size();
+      seeds.push_back(std::move(seed));
+      idxIt = index_by_id.find(static_cast<unsigned int>(trkid));
+    }
 
     unsigned int layer = hit->get_layer();
     if(layer == std::numeric_limits<unsigned int>::max()) continue;

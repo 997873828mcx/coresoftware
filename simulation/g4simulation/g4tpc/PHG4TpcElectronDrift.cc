@@ -18,6 +18,8 @@
 #include <trackbase/TrkrHitTruthAssoc.h>  // for TrkrHitTruthA...
 #include <trackbase/TrkrHitTruthAssocv1.h>
 #include <trackbase/TrkrHitv2.h>
+#include <trackbase_historic/SvtxTrack.h>
+#include <trackbase_historic/SvtxTrackMap.h>
 
 #include <g4tracking/TrkrTruthTrackContainerv1.h>
 #include <g4tracking/TrkrTruthTrackv1.h>
@@ -55,6 +57,7 @@
 #include <TH1F.h>
 #include <TH2.h>
 #include <TNtuple.h>
+#include <TTree.h>
 #include <TSystem.h>
 
 // for event id tagging in debug prints
@@ -65,6 +68,7 @@
 #include <gsl/gsl_randist.h>
 #include <gsl/gsl_rng.h>  // for gsl_rng_alloc
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cmath>    // for sqrt, abs, NAN
@@ -193,6 +197,12 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
     DetNode->addNode(newNode);
   }
 
+  m_track_map = findNode::getClass<SvtxTrackMap>(topNode, "SvtxTrackMap");
+  if (Verbosity() > 0 && m_track_map)
+  {
+    std::cout << Name() << ": found SvtxTrackMap with " << m_track_map->size() << " entries" << std::endl;
+  }
+
   seggeonodename = "CYLINDERCELLGEOM_SVTX";  // + detector;
   seggeo = findNode::getClass<PHG4TpcCylinderGeomContainer>(topNode, seggeonodename);
   assert(seggeo);
@@ -290,6 +300,31 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
     else if (Verbosity() > 0)
     {
       std::cout << Name() << ": density_layer " << m_density_layer << " not present in geometry; disabling density histogram" << std::endl;
+    }
+  }
+  m_avg_x_enabled = false;
+  m_avg_layer = get_int_param("average_x_layer");
+  if (m_avg_layer >= 0)
+  {
+    if (auto *layer_geom = seggeo->GetLayerCellGeom(m_avg_layer))
+    {
+      m_avg_layer_radius = layer_geom->get_radius();
+      const double half_thickness = 0.5 * layer_geom->get_thickness();
+      m_avg_layer_rlow = m_avg_layer_radius - half_thickness;
+      m_avg_layer_rhigh = m_avg_layer_radius + half_thickness;
+      m_avg_x_enabled = true;
+      if (Verbosity() > 0)
+      {
+        const double full_thickness = layer_geom->get_thickness();
+        std::cout << Name() << ": averaging x for layer " << m_avg_layer
+                  << " at R=" << m_avg_layer_radius << " cm"
+                  << " thickness=" << full_thickness << " cm (rlow=" << m_avg_layer_rlow
+                  << ", rhigh=" << m_avg_layer_rhigh << ")" << std::endl;
+      }
+    }
+    else if (Verbosity() > 0)
+    {
+      std::cout << Name() << ": average_x_layer " << m_avg_layer << " not present in geometry; disabling average-x residual histogram" << std::endl;
     }
   }
   PHNodeIterator runIter(runNode);
@@ -437,12 +472,14 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
   }
 
   auto se = Fun4AllServer::instance();
-  dlong = new TH1F("difflong", "longitudinal diffusion", 100, diffusion_long - diffusion_long / 2., diffusion_long + diffusion_long / 2.);
-  se->registerHisto(dlong);
-  dtrans = new TH1F("difftrans", "transversal diffusion", 100, diffusion_trans - diffusion_trans / 2., diffusion_trans + diffusion_trans / 2.);
-  se->registerHisto(dtrans);
+  if (do_ElectronDriftQAHistos)
+  {
+    dlong = new TH1F("difflong", "longitudinal diffusion", 100, diffusion_long - diffusion_long / 2., diffusion_long + diffusion_long / 2.);
+    se->registerHisto(dlong);
+    dtrans = new TH1F("difftrans", "transversal diffusion", 100, diffusion_trans - diffusion_trans / 2., diffusion_trans + diffusion_trans / 2.);
+    se->registerHisto(dtrans);
+  }
 
-  do_ElectronDriftQAHistos = true;  // Whether or not to produce an ElectronDriftQA.root file with useful info
   if (do_ElectronDriftQAHistos)
   {
     diffDistance = new TH1F("diffDistance", "Transverse diffusion displacement;#Delta r (cm);Counts", 300, 0.0, 3.0);
@@ -477,6 +514,41 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
     deltarnodist = new TH2F("deltarnodist", "Delta r (no SC distortion, only diffusion); r (cm);#Delta r (cm)", 580, 20, 78, 1000, -2, 5);
     ratioElectronsRR = new TH1F("ratioElectronsRR", "Ratio of electrons reach readout vs all in acceptance", 1561, -0.0325, 1.0465);
     driftXY = new TNtuple("driftXY", "Electron start/end positions", "xs:ys:xf:yf");
+  }
+
+  if (m_avg_x_enabled)
+  {
+    m_avgOutf.reset(new TFile(m_avg_output_file.c_str(), "recreate"));
+    if (!m_avgOutf || m_avgOutf->IsZombie())
+    {
+      std::cout << Name() << ": failed to open avg output file " << m_avg_output_file << std::endl;
+    }
+    if (m_avgOutf)
+    {
+      m_avgOutf->cd();
+    }
+    m_avgXResidualTree = new TTree("avgXResidual", "Track-level <x>-x_int residuals");
+    m_avgXResidualTree->Branch("trackid", &m_avgTree_trackid, "trackid/F");
+    m_avgXResidualTree->Branch("residual", &m_avgTree_residual, "residual/F");
+    m_avgXResidualTree->Branch("avgx", &m_avgTree_avgx, "avgx/F");
+    m_avgXResidualTree->Branch("xint", &m_avgTree_xint, "xint/F");
+    m_avgXResidualTree->Branch("residual_primary", &m_avgTree_residual_primary, "residual_primary/F");
+    m_avgXResidualTree->Branch("avgx_primary", &m_avgTree_avgx_primary, "avgx_primary/F");
+    m_avgXResidualTree->Branch("count_primary", &m_avgTree_count_primary, "count_primary/F");
+    m_avgXResidualTree->Branch("residual_end", &m_avgTree_residual_end, "residual_end/F");
+    m_avgXResidualTree->Branch("avgx_end", &m_avgTree_avgx_end, "avgx_end/F");
+    m_avgXResidualTree->Branch("count_end", &m_avgTree_count_end, "count_end/F");
+    m_avgXResidualTree->Branch("residual_end_primary", &m_avgTree_residual_end_primary, "residual_end_primary/F");
+    m_avgXResidualTree->Branch("avgx_end_primary", &m_avgTree_avgx_end_primary, "avgx_end_primary/F");
+    m_avgXResidualTree->Branch("count_end_primary", &m_avgTree_count_end_primary, "count_end_primary/F");
+    m_avgXResidualTree->Branch("residual_x", &m_avgTree_residual_x, "residual_x/F");
+    m_avgXResidualTree->Branch("avgx_cart", &m_avgTree_avgx_cart, "avgx_cart/F");
+    m_avgXResidualTree->Branch("residual_x_primary", &m_avgTree_residual_x_primary, "residual_x_primary/F");
+    m_avgXResidualTree->Branch("avgx_cart_primary", &m_avgTree_avgx_cart_primary, "avgx_cart_primary/F");
+    m_avgXResidualTree->Branch("residual_x_end", &m_avgTree_residual_x_end, "residual_x_end/F");
+    m_avgXResidualTree->Branch("avgx_cart_end", &m_avgTree_avgx_cart_end, "avgx_cart_end/F");
+    m_avgXResidualTree->Branch("residual_x_end_primary", &m_avgTree_residual_x_end_primary, "residual_x_end_primary/F");
+    m_avgXResidualTree->Branch("avgx_cart_end_primary", &m_avgTree_avgx_cart_end_primary, "avgx_cart_end_primary/F");
   }
 
   if (Verbosity())
@@ -545,6 +617,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
     std::cout << PHWHERE << "ActsGeometry not found on node tree. Exiting" << std::endl;
     return Fun4AllReturnCodes::ABORTRUN;
   }
+  m_track_layer_data.clear();
 
   if (truth_clusterer.needs_input_nodes())
   {
@@ -634,6 +707,30 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
           std::cout << " NOT embedded" << std::endl;
         }
       }
+
+      if (m_avg_x_enabled && m_track_map && trkid >= 0)
+      {
+        auto it = m_track_map->find(static_cast<unsigned int>(trkid));
+        if (it != m_track_map->end())
+        {
+          const SvtxTrack *trk = it->second;
+          const double vx = trk->get_px();
+          const double vy = trk->get_py();
+          const double vz = trk->get_pz();
+          const double vmag = std::sqrt(square(vx) + square(vy) + square(vz));
+          if (vmag > 0.)
+          {
+            auto &layer_data = m_track_layer_data[trkid];
+            layer_data.base_x = trk->get_x();
+            layer_data.base_y = trk->get_y();
+            layer_data.base_z = trk->get_z();
+            layer_data.dir_x = vx / vmag;
+            layer_data.dir_y = vy / vmag;
+            layer_data.dir_z = vz / vmag;
+            layer_data.have_line = true;
+          }
+        }
+      }
     }
 
     // see if there is a jump in x or y relative to previous PHG4Hit
@@ -675,6 +772,24 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
     const double dy_hit = hiter->second->get_y(1) - hiter->second->get_y(0);
     const double dz_hit = hiter->second->get_z(1) - hiter->second->get_z(0);
     const double step_length = std::sqrt(square(dx_hit) + square(dy_hit) + square(dz_hit));
+    if (m_avg_x_enabled)
+    {
+      auto &layer_data = m_track_layer_data[trkid_new];
+      if (!layer_data.have_line)
+      {
+        const double norm = step_length;
+        if (norm > 0.)
+        {
+          layer_data.base_x = hiter->second->get_x(0);
+          layer_data.base_y = hiter->second->get_y(0);
+          layer_data.base_z = hiter->second->get_z(0);
+          layer_data.dir_x = dx_hit / norm;
+          layer_data.dir_y = dy_hit / norm;
+          layer_data.dir_z = dz_hit / norm;
+          layer_data.have_line = true;
+        }
+      }
+    }
 
     if (do_ElectronDriftQAHistos)
     {
@@ -822,6 +937,20 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
 
       const double radstart = std::sqrt(square(x_start) + square(y_start));
       const double phistart = std::atan2(y_start, x_start);
+      if (m_avg_x_enabled && radstart >= m_avg_layer_rlow && radstart <= m_avg_layer_rhigh)
+      {
+        // collect undiffused electron start positions for the configured layer
+        auto &layer_data = m_track_layer_data[track_id];
+        layer_data.sum_rphi += m_avg_layer_radius * phistart;
+        layer_data.sum_x += x_start;
+        layer_data.count++;
+        if (j == 0)
+        {
+          layer_data.sum_rphi_primary += m_avg_layer_radius * phistart;
+          layer_data.sum_x_primary += x_start;
+          layer_data.count_primary++;
+        }
+      }
       const double ranphi = gsl_ran_flat(RandomGenerator.get(), -M_PI, M_PI);
       double x_final = x_start + rantrans * std::cos(ranphi);  // Initialize these to be only diffused first, will be overwritten if doing SC distortion
       double y_final = y_start + rantrans * std::sin(ranphi);
@@ -845,6 +974,19 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
 
       double rad_final = sqrt(square(x_final) + square(y_final));
       double phi_final = atan2(y_final, x_final);
+      if (m_avg_x_enabled && rad_final >= m_avg_layer_rlow && rad_final <= m_avg_layer_rhigh)
+      {
+        auto &layer_data = m_track_layer_data[track_id];
+        layer_data.sum_rphi_end += rad_final * phi_final;
+        layer_data.sum_x_end += x_final;
+        layer_data.count_end++;
+        if (j == 0)
+        {
+          layer_data.sum_rphi_end_primary += rad_final * phi_final;
+          layer_data.sum_x_end_primary += x_final;
+          layer_data.count_end_primary++;
+        }
+      }
 
       if (do_ElectronDriftQAHistos)
       {
@@ -1215,6 +1357,92 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
     temp_hitsetcontainer->Reset();
   }
 
+  if (m_avg_x_enabled && m_avgXResidualTree)
+  {
+    for (const auto &entry : m_track_layer_data)
+    {
+      const auto &data = entry.second;
+      if (!data.have_line || data.count == 0)
+      {
+        continue;
+      }
+      double t_out = 0.0;
+      double xi = 0.0;
+      double yi = 0.0;
+      double zi = 0.0;
+      if (!cylinder_intersection(data.base_x, data.base_y, data.base_z,
+                                 data.dir_x, data.dir_y, data.dir_z,
+                                 m_avg_layer_radius, t_out, xi, yi, zi))
+      {
+        continue;
+      }
+      const double avg_rphi = data.sum_rphi / static_cast<double>(data.count);
+      const double rphi_int = m_avg_layer_radius * std::atan2(yi, xi);
+      m_avgTree_trackid = static_cast<float>(entry.first);
+      m_avgTree_residual = static_cast<float>(avg_rphi - rphi_int);
+      m_avgTree_avgx = static_cast<float>(avg_rphi);
+      m_avgTree_xint = static_cast<float>(rphi_int);
+      const double avg_x_cart = data.sum_x / static_cast<double>(data.count);
+      m_avgTree_residual_x = static_cast<float>(avg_x_cart - xi);
+      m_avgTree_avgx_cart = static_cast<float>(avg_x_cart);
+      if (data.count_primary > 0)
+      {
+        const double avg_rphi_primary = data.sum_rphi_primary / static_cast<double>(data.count_primary);
+        m_avgTree_residual_primary = static_cast<float>(avg_rphi_primary - rphi_int);
+        m_avgTree_avgx_primary = static_cast<float>(avg_rphi_primary);
+        m_avgTree_count_primary = static_cast<float>(data.count_primary);
+        const double avg_x_primary = data.sum_x_primary / static_cast<double>(data.count_primary);
+        m_avgTree_residual_x_primary = static_cast<float>(avg_x_primary - xi);
+        m_avgTree_avgx_cart_primary = static_cast<float>(avg_x_primary);
+      }
+      else
+      {
+        m_avgTree_residual_primary = std::numeric_limits<float>::quiet_NaN();
+        m_avgTree_avgx_primary = std::numeric_limits<float>::quiet_NaN();
+        m_avgTree_count_primary = 0.0f;
+        m_avgTree_residual_x_primary = std::numeric_limits<float>::quiet_NaN();
+        m_avgTree_avgx_cart_primary = std::numeric_limits<float>::quiet_NaN();
+      }
+      if (data.count_end > 0)
+      {
+        const double avg_rphi_end = data.sum_rphi_end / static_cast<double>(data.count_end);
+        m_avgTree_residual_end = static_cast<float>(avg_rphi_end - rphi_int);
+        m_avgTree_avgx_end = static_cast<float>(avg_rphi_end);
+        m_avgTree_count_end = static_cast<float>(data.count_end);
+        const double avg_x_end = data.sum_x_end / static_cast<double>(data.count_end);
+        m_avgTree_residual_x_end = static_cast<float>(avg_x_end - xi);
+        m_avgTree_avgx_cart_end = static_cast<float>(avg_x_end);
+      }
+      else
+      {
+        m_avgTree_residual_end = std::numeric_limits<float>::quiet_NaN();
+        m_avgTree_avgx_end = std::numeric_limits<float>::quiet_NaN();
+        m_avgTree_count_end = 0.0f;
+        m_avgTree_residual_x_end = std::numeric_limits<float>::quiet_NaN();
+        m_avgTree_avgx_cart_end = std::numeric_limits<float>::quiet_NaN();
+      }
+      if (data.count_end_primary > 0)
+      {
+        const double avg_rphi_end_primary = data.sum_rphi_end_primary / static_cast<double>(data.count_end_primary);
+        m_avgTree_residual_end_primary = static_cast<float>(avg_rphi_end_primary - rphi_int);
+        m_avgTree_avgx_end_primary = static_cast<float>(avg_rphi_end_primary);
+        m_avgTree_count_end_primary = static_cast<float>(data.count_end_primary);
+        const double avg_x_end_primary = data.sum_x_end_primary / static_cast<double>(data.count_end_primary);
+        m_avgTree_residual_x_end_primary = static_cast<float>(avg_x_end_primary - xi);
+        m_avgTree_avgx_cart_end_primary = static_cast<float>(avg_x_end_primary);
+      }
+      else
+      {
+        m_avgTree_residual_end_primary = std::numeric_limits<float>::quiet_NaN();
+        m_avgTree_avgx_end_primary = std::numeric_limits<float>::quiet_NaN();
+        m_avgTree_count_end_primary = 0.0f;
+        m_avgTree_residual_x_end_primary = std::numeric_limits<float>::quiet_NaN();
+        m_avgTree_avgx_cart_end_primary = std::numeric_limits<float>::quiet_NaN();
+      }
+      m_avgXResidualTree->Fill();
+    }
+  }
+
   if (truth_track)
   {
     truth_clusterer.cluster_hits(truth_track);
@@ -1305,7 +1533,7 @@ int PHG4TpcElectronDrift::End(PHCompositeNode * /*topNode*/)
   }
   if (do_ElectronDriftQAHistos)
   {
-    EDrift_outf.reset(new TFile("ElectronDriftQA.root", "recreate"));
+    EDrift_outf.reset(new TFile(m_qa_output_file.c_str(), "recreate"));
     EDrift_outf->cd();
     deltar->Write();
     deltaphi->Write();
@@ -1396,6 +1624,16 @@ int PHG4TpcElectronDrift::End(PHCompositeNode * /*topNode*/)
     }
     EDrift_outf->Close();
   }
+  if (m_avgOutf && m_avgXResidualTree)
+  {
+    m_avgOutf->cd();
+    m_avgXResidualTree->Write();
+    if (Verbosity() > 0)
+    {
+      std::cout << Name() << ": wrote avgXResidual tree to " << m_avg_output_file << std::endl;
+    }
+    m_avgOutf->Close();
+  }
   return Fun4AllReturnCodes::EVENT_OK;
 }
 
@@ -1434,8 +1672,45 @@ void PHG4TpcElectronDrift::SetDefaultParameters()
   set_default_double_param("density_window_cm", -1.0);
   set_default_double_param("density_radial_margin_cm", 0.2);
   set_default_int_param("uniform_density_test", 0);
+  set_default_int_param("average_x_layer", -1);
 
   return;
+}
+
+bool PHG4TpcElectronDrift::cylinder_intersection(const double x0, const double y0, const double z0,
+                                                 const double vx, const double vy, const double vz,
+                                                 const double R, double &t_out,
+                                                 double &xi, double &yi, double &zi) const
+{
+  const double a = square(vx) + square(vy);
+  const double b = 2.0 * (vx * x0 + vy * y0);
+  const double c = square(x0) + square(y0) - square(R);
+  const double disc = b * b - 4.0 * a * c;
+  if (a == 0.0 || disc < 0.0)
+  {
+    return false;
+  }
+  const double s = std::sqrt(disc);
+  const double t1 = (-b + s) / (2.0 * a);
+  const double t2 = (-b - s) / (2.0 * a);
+  double t = std::numeric_limits<double>::max();
+  if (t1 > 0.0)
+  {
+    t = std::min(t, t1);
+  }
+  if (t2 > 0.0)
+  {
+    t = std::min(t, t2);
+  }
+  if (!std::isfinite(t) || t <= 0.0)
+  {
+    return false;
+  }
+  t_out = t;
+  xi = x0 + t * vx;
+  yi = y0 + t * vy;
+  zi = z0 + t * vz;
+  return true;
 }
 
 void PHG4TpcElectronDrift::setTpcDistortion(PHG4TpcDistortion *distortionMap)
