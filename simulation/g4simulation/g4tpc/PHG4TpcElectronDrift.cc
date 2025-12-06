@@ -977,12 +977,14 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
       if (m_avg_x_enabled && rad_final >= m_avg_layer_rlow && rad_final <= m_avg_layer_rhigh)
       {
         auto &layer_data = m_track_layer_data[track_id];
-        layer_data.sum_rphi_end += rad_final * phi_final;
+        // Use the nominal layer radius so residuals are purely angular and not
+        // inflated by radius fluctuations from diffusion.
+        layer_data.sum_rphi_end += m_avg_layer_radius * phi_final;
         layer_data.sum_x_end += x_final;
         layer_data.count_end++;
         if (j == 0)
         {
-          layer_data.sum_rphi_end_primary += rad_final * phi_final;
+          layer_data.sum_rphi_end_primary += m_avg_layer_radius * phi_final;
           layer_data.sum_x_end_primary += x_final;
           layer_data.count_end_primary++;
         }
