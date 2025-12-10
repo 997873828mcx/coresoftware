@@ -1824,25 +1824,54 @@ void PHG4TpcPadPlaneReadout::SERF_zigzag_phibins(const unsigned int side, const 
 
     //std::cout<<"   SERF    zigzags: ipad " << ipad << " pad_now " << pad_now << " phibin_low " << phibin_low
          //     << " phibin_high " << phibin_high << " npads " << npads << "ntpc_phibins_sector[tpc_module] = "<<ntpc_phibins_sector[tpc_module]<<" pad look "<<ntpc_phibins_sector[tpc_module] - (pad_now - ntpc_phibins_sector[tpc_module]*sector) << std::endl;
-    // Guard against missing pad polygons
-    if (layernum >= Pads.size() || look_pad < 0 || static_cast<size_t>(look_pad) >= Pads[layernum].size())
+    // Build polygon: either use loaded zigzag vertices (default) or synthetic rectangular pad
+    std::vector<Point> poly;
+    if (m_use_rectangular_pad_response)
     {
-      // No polygon data for this pad/layer; skip contribution
-      continue;
+      // rectangular pad approximated by radial and phi bounds
+      const double pad_phi_center = LayerGeom->get_phicenter(pad_now, side);
+      const double half_phi = 0.5 * LayerGeom->get_phistep();
+      const double r_center = LayerGeom->get_radius();
+      const double half_thickness = 0.5 * LayerGeom->get_thickness();
+      const double r_low = r_center - half_thickness;
+      const double r_high = r_center + half_thickness;
+
+      const double phi_edges[2] = {pad_phi_center - half_phi, pad_phi_center + half_phi};
+      const double r_edges[2] = {r_low, r_high};
+
+      poly.reserve(4);
+      // ordered rectangle: (r_low,phi_low) -> (r_low,phi_high) -> (r_high,phi_high) -> (r_high,phi_low)
+      poly.push_back({r_edges[0] * std::cos(phi_edges[0]), r_edges[0] * std::sin(phi_edges[0])});
+      poly.push_back({r_edges[0] * std::cos(phi_edges[1]), r_edges[0] * std::sin(phi_edges[1])});
+      poly.push_back({r_edges[1] * std::cos(phi_edges[1]), r_edges[1] * std::sin(phi_edges[1])});
+      poly.push_back({r_edges[1] * std::cos(phi_edges[0]), r_edges[1] * std::sin(phi_edges[0])});
     }
-    auto  padinfo = Pads[layernum][look_pad];
+    else
+    {
+      // Guard against missing pad polygons
+      if (layernum >= Pads.size() || look_pad < 0 || static_cast<size_t>(look_pad) >= Pads[layernum].size())
+      {
+        // No polygon data for this pad/layer; skip contribution
+        continue;
+      }
+      auto  padinfo = Pads[layernum][look_pad];
+      poly = padinfo.vertices;
+    }
   // std::cout<<"Calculate charge for pad with cx = "<<padinfo.cx<<", cy = "<<padinfo.cy<<" phi from Pads = "<<padinfo.phi<<", phi center(get pad now) = "
  //  <<LayerGeom->get_phicenter(pad_now, side)<<", phi center(get look_pad) = "<<LayerGeom->get_phicenter(look_pad, side)<< "sigma = "<<cloud_sig_rp<< "sigma/r = "<<cloud_sig_rp/rad_gem <<" pad look "<<look_pad<<" number of vert = "<<padinfo.vertices.size()<<std::endl;
   //std::cout<<"n = ntpc_phibins_sector[tpc_module]-1 = "<<n<<"  look up pad = "<<look_pad<<" Pads[layernum] "<<Pads[layernum].size()<<" xNew = "<<xNew<<" yNew = "<<yNew<<std::endl;
 
-    double charge = integratedDensityOfCircleAndPad( xNew, yNew, cloud_sig_rp , padinfo.vertices, 0.0, debug_samples);
+    // pick coordinate frame consistent with polygon choice
+    const double hit_x = m_use_rectangular_pad_response ? x : xNew;
+    const double hit_y = m_use_rectangular_pad_response ? y : yNew;
+    double charge = integratedDensityOfCircleAndPad(hit_x, hit_y, cloud_sig_rp , poly, 0.0, debug_samples);
     if (capture_debug && charge > 0.0)
     {
       DebugPadContribution dbg;
       dbg.pad_bin = pad_now;
       dbg.charge = charge;
       dbg.pad_phi = LayerGeom->get_phicenter(pad_now, side);
-      dbg.polygon = padinfo.vertices;
+      dbg.polygon = poly;
       debug_contribs.push_back(std::move(dbg));
     }
 
@@ -1867,13 +1896,17 @@ void PHG4TpcPadPlaneReadout::SERF_zigzag_phibins(const unsigned int side, const 
       m_visualization_circles.push_back(this_circle);
       for (const auto &pad : debug_contribs) m_visualization_pad_union[pad.pad_bin] = pad;
 
-      maybeVisualizeAvalanche(side, layernum, phi, rad_gem, cloud_sig_rp, xNew, yNew, debug_contribs,
+      const double vis_x = m_use_rectangular_pad_response ? x : xNew;
+      const double vis_y = m_use_rectangular_pad_response ? y : yNew;
+      maybeVisualizeAvalanche(side, layernum, phi, rad_gem, cloud_sig_rp, vis_x, vis_y, debug_contribs,
                               m_visualization_aggregate_samples, m_visualization_circles);
     }
     else
     {
       std::vector<VisualizationCircle> single_circle{this_circle};
-      maybeVisualizeAvalanche(side, layernum, phi, rad_gem, cloud_sig_rp, xNew, yNew, debug_contribs,
+      const double vis_x = m_use_rectangular_pad_response ? x : xNew;
+      const double vis_y = m_use_rectangular_pad_response ? y : yNew;
+      maybeVisualizeAvalanche(side, layernum, phi, rad_gem, cloud_sig_rp, vis_x, vis_y, debug_contribs,
                               *debug_samples, single_circle);
       m_visualization_done = true;
     }
@@ -2019,13 +2052,24 @@ void PHG4TpcPadPlaneReadout::populate_zigzag_phibins(const unsigned int side, co
     }
 
     const double x_loc = x_loc_tmp;
-    // calculate fraction of the total charge on this strip
-    /*
-    this corresponds to integrating the charge distribution Gaussian function (centered on rphi and of width cloud_sig_rp),
-    convoluted with a strip response function, which is triangular from -pitch to +pitch, with a maximum of 1. at stript center
-    */
-    overlap[ipad] =
-        (pitch - x_loc) * (std::erf(x_loc / (M_SQRT2 * sigma)) - std::erf((x_loc - pitch) / (M_SQRT2 * sigma))) / (pitch * 2) + (pitch + x_loc) * (std::erf((x_loc + pitch) / (M_SQRT2 * sigma)) - std::erf(x_loc / (M_SQRT2 * sigma))) / (pitch * 2) + (gaus(x_loc - pitch, sigma) - gaus(x_loc, sigma)) * square(sigma) / pitch + (gaus(x_loc + pitch, sigma) - gaus(x_loc, sigma)) * square(sigma) / pitch;
+    // calculate fraction of the total charge on this pad
+    if (m_use_rectangular_pad_response)
+    {
+      // flat response across the pad width (rectangular pad)
+      const double half_width = pad_rphi / 2.0;
+      const double upper = (x_loc + half_width) / (M_SQRT2 * sigma);
+      const double lower = (x_loc - half_width) / (M_SQRT2 * sigma);
+      overlap[ipad] = 0.5 * (std::erf(upper) - std::erf(lower));
+    }
+    else
+    {
+      /*
+      this corresponds to integrating the charge distribution Gaussian function (centered on rphi and of width cloud_sig_rp),
+      convoluted with a strip response function, which is triangular from -pitch to +pitch, with a maximum of 1. at strip center
+      */
+      overlap[ipad] =
+          (pitch - x_loc) * (std::erf(x_loc / (M_SQRT2 * sigma)) - std::erf((x_loc - pitch) / (M_SQRT2 * sigma))) / (pitch * 2) + (pitch + x_loc) * (std::erf((x_loc + pitch) / (M_SQRT2 * sigma)) - std::erf(x_loc / (M_SQRT2 * sigma))) / (pitch * 2) + (gaus(x_loc - pitch, sigma) - gaus(x_loc, sigma)) * square(sigma) / pitch + (gaus(x_loc + pitch, sigma) - gaus(x_loc, sigma)) * square(sigma) / pitch;
+    }
   }
 
   // now we have the overlap for each pad

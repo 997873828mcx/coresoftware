@@ -45,6 +45,8 @@ class PHG4TpcPadPlaneReadout : public PHG4TpcPadPlane
   void RequireSerfPadSharing(bool require) { m_require_serf = require; }
   // If true, also require polygons for all readout layers (partial coverage aborts)
   void RequireSerfFullCoverage(bool require) { m_require_serf_full = require; }
+  // When using analytic sharing (no SERF polygons), choose rectangular response instead of triangular
+  void UseRectangularPadResponse(bool use_rectangular) { m_use_rectangular_pad_response = use_rectangular; }
 
   void SetDriftVelocity(double vd) override { drift_velocity = vd; }
   void SetReadoutTime(float t) override { extended_readout_time = t; }
@@ -205,6 +207,8 @@ double max_radii_module[3]={399.85222874031024, 569.695373910603, 753.6667758418
   bool m_require_serf_full = false;
   bool m_serf_polygons_present = false; // summarized availability after InitRun
   bool m_warned_serf_fallback = false;  // printed once if per-hit fallback occurs
+  // analytic sharing option: rectangular (flat) pad response instead of triangular
+  bool m_use_rectangular_pad_response = false;
 
   // Debug: restrict PadHit prints to a single layer (or all if < 0)
   int m_dbg_pad_hit_layer = 49;
