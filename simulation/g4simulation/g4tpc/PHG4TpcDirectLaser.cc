@@ -508,9 +508,9 @@ void PHG4TpcDirectLaser::SetDefaultParameters()
   static constexpr double isobutane_dEdx = 5.93;// keV/cm
 
   //static constexpr double Ne_NTotal = 43;    // Number/cm
-  static constexpr double CF4_NTotal = 100;  // Number/cm
-  static constexpr double Ar_NTotal = 94; // Number/cm
-  static constexpr double isobutane_NTotal = 195; // Number/cm
+  static constexpr double CF4_NTotal = 51;  // Number/cm
+  static constexpr double Ar_NTotal = 23; // Number/cm
+  static constexpr double isobutane_NTotal = 84; // Number/cm
   
   static constexpr double Tpc_NTot = 0.75 * Ar_NTotal + 0.20 * CF4_NTotal + 0.05 * isobutane_NTotal;
   static constexpr double Tpc_dEdx = 0.75 * Ar_dEdx + 0.20 * CF4_dEdx + 0.05 * isobutane_dEdx;
@@ -519,7 +519,7 @@ void PHG4TpcDirectLaser::SetDefaultParameters()
   set_default_double_param("electrons_per_gev", Tpc_ElectronsPerKeV * 1e6);
 
   // number of electrons deposited by laser per cm
-  set_default_double_param("electrons_per_cm", 34);
+  set_default_double_param("electrons_per_cm", 31.65);
 
   // optional transverse tilt (disabled by default)
   set_default_int_param("tilt_layer", -1);

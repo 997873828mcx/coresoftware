@@ -33,9 +33,11 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <iterator>
+#include <Eigen/Dense>
 
 // For EventHeader event sequence tagging
 #include <ffaobjects/EventHeader.h>
@@ -67,10 +69,19 @@ m_tt->Branch("xreco",&m_xreco,"xreco/D");
 m_tt->Branch("yreco",&m_yreco,"yreco/D");
 m_tt->Branch("zreco",&m_zreco,"zreco/D");
 m_tt->Branch("npad_used",&m_npad_used,"npad_used/I");
+m_tt->Branch("ntbin_used",&m_ntbin_used,"ntbin_used/I");
+m_tt->Branch("nbins_used",&m_nbins_used,"nbins_used/I");
 m_tt->Branch("phi_pad_max",&m_phi_pad_max,"phi_pad_max/D");
 m_tt->Branch("phase",&m_phase,"phase/D");
 m_tt->Branch("phase_reco",&m_phase_reco,"phase_reco/D");
 m_tt->Branch("pad_phi_center",&m_pad_phi_centers);
+// fitted straight-line prediction at layer 44 (NaN elsewhere)
+m_tt->Branch("xfit_layer44",&m_xfit_layer44,"xfit_layer44/D");
+m_tt->Branch("yfit_layer44",&m_yfit_layer44,"yfit_layer44/D");
+m_tt->Branch("zfit_layer44",&m_zfit_layer44,"zfit_layer44/D");
+m_tt->Branch("phi_fit_layer44",&m_phi_fit_layer44,"phi_fit_layer44/D");
+m_tt->Branch("dphi_fit_layer44",&m_dphi_fit_layer44,"dphi_fit_layer44/D");
+m_tt->Branch("dRphi_fit_layer44",&m_dRphi_fit_layer44,"dRphi_fit_layer44/D");
 // additional charge bookkeeping
 m_tt->Branch("hit_charge",&m_hit_charge);
 m_tt->Branch("total_charge_layer",&m_total_charge_layer,"total_charge_layer/D");
@@ -204,6 +215,97 @@ double TpcLaserDNL::wrap_dphi(double d)
   return d;
 }
 
+namespace
+{
+  struct FitPoint
+  {
+    Eigen::Vector3d pos{Eigen::Vector3d::Zero()};
+    double weight{0.};
+    unsigned int layer{0};
+    int side{0};
+  };
+
+  bool weighted_line_fit(const std::vector<FitPoint>& points,
+                         Eigen::Vector3d& origin,
+                         Eigen::Vector3d& direction)
+  {
+    origin.setZero();
+    direction.setZero();
+    if(points.size() < 2) return false;
+
+    double wsum = 0.;
+    for(const auto& p : points)
+    {
+      if(p.weight <= 0) continue;
+      origin += p.weight * p.pos;
+      wsum += p.weight;
+    }
+    if(wsum <= 0) return false;
+    origin /= wsum;
+
+    Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
+    for(const auto& p : points)
+    {
+      if(p.weight <= 0) continue;
+      const Eigen::Vector3d diff = p.pos - origin;
+      cov += p.weight * (diff * diff.transpose());
+    }
+
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(cov);
+    if(solver.info() != Eigen::Success) return false;
+    direction = solver.eigenvectors().col(2);
+    const double norm = direction.norm();
+    if(norm < 1e-9) return false;
+    direction /= norm;
+    return true;
+  }
+
+  bool select_cylinder_intersection(const Eigen::Vector3d& origin,
+                                    const Eigen::Vector3d& direction,
+                                    double radius,
+                                    int side_filter,
+                                    const Eigen::Vector3d* target_point,
+                                    Eigen::Vector3d& intersection)
+  {
+    const double a = direction.x()*direction.x() + direction.y()*direction.y();
+    const double b = 2.0*(direction.x()*origin.x() + direction.y()*origin.y());
+    const double c = origin.x()*origin.x() + origin.y()*origin.y() - radius*radius;
+
+    if(std::abs(a) < 1e-12) return false;
+    double disc = b*b - 4.0*a*c;
+    if(disc < 0) return false;
+    disc = std::max(0.0, disc);
+    const double sdisc = std::sqrt(disc);
+
+    const double t_candidates[2] = {
+      (-b - sdisc)/(2.0*a),
+      (-b + sdisc)/(2.0*a)
+    };
+
+    bool found = false;
+    double best_metric = std::numeric_limits<double>::infinity();
+    for(double t : t_candidates)
+    {
+      if(!std::isfinite(t)) continue;
+      const Eigen::Vector3d candidate = origin + t*direction;
+      if(side_filter == 0 && candidate.z() > 0) continue;
+      if(side_filter == 1 && candidate.z() < 0) continue;
+      double metric = std::abs(t);
+      if(target_point)
+      {
+        metric = (candidate - *target_point).squaredNorm();
+      }
+      if(metric < best_metric)
+      {
+        best_metric = metric;
+        intersection = candidate;
+        found = true;
+      }
+    }
+    return found;
+  }
+}
+
 int TpcLaserDNL::process_event(PHCompositeNode* topNode)
 {
   static int ievt = 0;
@@ -257,6 +359,54 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
   {
     m_trkid = seed.id;
 
+    struct LayerRecoResult
+    {
+      unsigned int layer{0};
+      int side{0};
+      double r{0.};
+      double phi_true{0.};
+      double phi_reco{std::numeric_limits<double>::quiet_NaN()};
+      double dphi{std::numeric_limits<double>::quiet_NaN()};
+      double dRphi{std::numeric_limits<double>::quiet_NaN()};
+      int nused{0};
+      int nhit_scanned{0};
+      double adcsum{0.};
+      double xtrue{0.};
+      double ytrue{0.};
+      double ztrue{0.};
+      double xreco{std::numeric_limits<double>::quiet_NaN()};
+      double yreco{std::numeric_limits<double>::quiet_NaN()};
+      double zreco{std::numeric_limits<double>::quiet_NaN()};
+      int npad_used{0};
+      int ntbin_used{0};
+      int nbins_used{0};
+      double phi_pad_max{std::numeric_limits<double>::quiet_NaN()};
+      double phase{std::numeric_limits<double>::quiet_NaN()};
+      double phase_reco{std::numeric_limits<double>::quiet_NaN()};
+      std::vector<double> pad_phi_centers;
+      std::vector<ULong64_t> hitkeys;
+      std::vector<ULong64_t> hitsetkeys;
+      std::vector<unsigned int> iphi;
+      std::vector<unsigned int> tbin;
+      std::vector<double> hit_charge;
+      double total_charge_layer{0.};
+      double max_charge_layer{0.};
+      double weight_sum{0.};
+      double xfit{std::numeric_limits<double>::quiet_NaN()};
+      double yfit{std::numeric_limits<double>::quiet_NaN()};
+      double zfit{std::numeric_limits<double>::quiet_NaN()};
+      double phi_fit{std::numeric_limits<double>::quiet_NaN()};
+      double dphi_fit{std::numeric_limits<double>::quiet_NaN()};
+      double dRphi_fit{std::numeric_limits<double>::quiet_NaN()};
+    };
+
+  std::vector<LayerRecoResult> layer_results;
+  layer_results.reserve(seed.layers.size());
+    const bool do_fit_layer44 = m_enable_fit_layer44_residuals;
+    constexpr unsigned int kTargetLayer = 44;
+    std::vector<FitPoint> fit_points;
+    if(do_fit_layer44) fit_points.reserve(seed.layers.size());
+
     for(const auto& layerPoint : seed.layers)
     {
       auto* layergeom = m_geom->GetLayerCellGeom(static_cast<int>(layerPoint.layer));
@@ -271,20 +421,18 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
       const double v2 = vx*vx + vy*vy + vz*vz;
       if(v2 == 0) continue;
 
-      m_layer = layerPoint.layer;
+      const unsigned int layer = layerPoint.layer;
+      const int side = layerPoint.side;
+      m_layer = layer;
       if (layerPoint.radius <= 0)
       {
-        std::cout << Name() << ": layer " << m_layer
+        std::cout << Name() << ": layer " << layer
                   << " track " << seed.id
                   << " has non-positive radius " << layerPoint.radius
                   << ", falling back to geometry radius." << std::endl;
       }
-      m_r = layerPoint.radius > 0 ? layerPoint.radius : layergeom->get_radius();
-      m_xtrue = x0;
-      m_ytrue = y0;
-      m_ztrue = z0;
-      m_phi_true = std::atan2(y0, x0);
-      m_side = layerPoint.side;
+      const double radius = layerPoint.radius > 0 ? layerPoint.radius : layergeom->get_radius();
+      const double phi_true = std::atan2(y0, x0);
 
       if(!std::isfinite(x0) || !std::isfinite(y0) || !std::isfinite(z0))
       {
@@ -299,13 +447,13 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
       {
         m_display_intersection.event = m_event;
         m_display_intersection.trackid = seed.id;
-        m_display_intersection.layer = static_cast<int>(m_layer);
-        m_display_intersection.side = m_side;
+        m_display_intersection.layer = static_cast<int>(layer);
+        m_display_intersection.side = side;
         m_display_intersection.gx = x0;
         m_display_intersection.gy = y0;
         m_display_intersection.gz = z0;
-        m_display_intersection.r = m_r;
-        m_display_intersection.phi = m_phi_true;
+        m_display_intersection.r = radius;
+        m_display_intersection.phi = phi_true;
         m_display_intersection.path = layerPoint.path;
         m_display_intersection.used_in_seed = 1;
         m_tt_display_intersections->Fill();
@@ -316,27 +464,26 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
       const double tdriftmax = AdcClockPeriod * NTBins / 2.0;
       const double vdrift = m_acts->get_drift_velocity();
 
+      LayerRecoResult result;
+      result.layer = layer;
+      result.side = side;
+      result.r = radius;
+      result.phi_true = phi_true;
+      result.xtrue = x0;
+      result.ytrue = y0;
+      result.ztrue = z0;
+
       double wx = 0;
       double wy = 0;
       double wz = 0;
       double wsum = 0;
-      m_nused = 0;
-      m_nhit_scanned = 0;
-      m_adcsum = 0;
-      m_hitkeys.clear();
-      m_hitsetkeys.clear();
-      m_iphi.clear();
-      m_tbin.clear();
-      m_hit_charge.clear();
-      m_total_charge_layer = 0.0;
-      m_max_charge_layer = 0.0;
-      m_pad_phi_centers.clear();
-      m_npad_used = 0;
-      m_phi_pad_max = std::numeric_limits<double>::quiet_NaN();
-      m_phase = std::numeric_limits<double>::quiet_NaN();
-      m_phase_reco = std::numeric_limits<double>::quiet_NaN();
-
       std::map<unsigned short, double> padWeights;
+      std::vector<ULong64_t> hitkeys;
+      std::vector<ULong64_t> hitsetkeys_vec;
+      std::vector<unsigned int> iphi_vec;
+      std::vector<unsigned int> tbin_vec;
+      std::vector<double> hit_charge;
+      std::set<unsigned int> unique_tbins;
 
       if(!m_use_clusters)
       {
@@ -345,8 +492,8 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
         for(auto hsit = hr.first; hsit != hr.second; ++hsit)
         {
           const TrkrDefs::hitsetkey& hsk = hsit->first;
-          if(TrkrDefs::getLayer(hsk) != m_layer) continue;
-          if(TpcDefs::getSide(hsk) != static_cast<unsigned int>(m_side)) continue;
+          if(TrkrDefs::getLayer(hsk) != layer) continue;
+          if(TpcDefs::getSide(hsk) != static_cast<unsigned int>(side)) continue;
 
           TrkrHitSet* hitset = hsit->second;
           if(!hitset) continue;
@@ -357,7 +504,7 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
             const auto hitkey = hitit->first;
             TrkrHit* hit = hitit->second;
             if(!hit) continue;
-            ++m_nhit_scanned;
+            ++result.nhit_scanned;
 
             double weight = m_weight_by_adc ? static_cast<double>(hit->getAdc())
                                             : static_cast<double>(hit->getEnergy());
@@ -367,14 +514,14 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
             const unsigned short iphi = TpcDefs::getPad(hitkey);
             const unsigned short tbin = TpcDefs::getTBin(hitkey);
 
-            const double phi_c = layergeom->get_phicenter(static_cast<int>(iphi), m_side);
-            const double xh = m_r*std::cos(phi_c);
-            const double yh = m_r*std::sin(phi_c);
+            const double phi_c = layergeom->get_phicenter(static_cast<int>(iphi), side);
+            const double xh = radius*std::cos(phi_c);
+            const double yh = radius*std::sin(phi_c);
 
             const double zcenter = layergeom->get_zcenter(tbin);
             double zdriftlen = zcenter * vdrift;
             double zh = tdriftmax * vdrift - zdriftlen;
-            if(m_side == 0) zh = -zh;
+            if(side == 0) zh = -zh;
 
             const double ox = xh - x0;
             const double oy = yh - y0;
@@ -394,16 +541,17 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
             wy += weight * yh;
             wz += weight * zh;
             wsum += weight;
-            m_adcsum += weight;
-            m_nused++;
+            result.adcsum += weight;
+            result.nused++;
 
-            m_hitkeys.push_back(static_cast<ULong64_t>(hitkey));
-            m_hitsetkeys.push_back(static_cast<ULong64_t>(hsk));
-            m_iphi.push_back(static_cast<unsigned int>(iphi));
-            m_tbin.push_back(static_cast<unsigned int>(tbin));
-            m_hit_charge.push_back(weight);
-            m_total_charge_layer += weight;
-            if (weight > m_max_charge_layer) m_max_charge_layer = weight;
+            hitkeys.push_back(static_cast<ULong64_t>(hitkey));
+            hitsetkeys_vec.push_back(static_cast<ULong64_t>(hsk));
+            iphi_vec.push_back(static_cast<unsigned int>(iphi));
+            tbin_vec.push_back(static_cast<unsigned int>(tbin));
+            hit_charge.push_back(weight);
+            unique_tbins.insert(static_cast<unsigned int>(tbin));
+            result.total_charge_layer += weight;
+            if (weight > result.max_charge_layer) result.max_charge_layer = weight;
             padWeights[iphi] += weight;
           }
         }
@@ -414,8 +562,8 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
         auto hitsetkeys = m_clusters->getHitSetKeys(TrkrDefs::TrkrId::tpcId);
         for(const auto& hsk : hitsetkeys)
         {
-          if(TrkrDefs::getLayer(hsk) != m_layer) continue;
-          if(TpcDefs::getSide(hsk) != static_cast<unsigned int>(m_side)) continue;
+          if(TrkrDefs::getLayer(hsk) != layer) continue;
+          if(TpcDefs::getSide(hsk) != static_cast<unsigned int>(side)) continue;
 
           auto crange = m_clusters->getClusters(hsk);
           for(auto cit = crange.first; cit != crange.second; ++cit)
@@ -447,23 +595,24 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
             wy += weight * g.y();
             wz += weight * g.z();
             wsum += weight;
-            m_adcsum += weight;
-            m_nused++;
-            m_hit_charge.push_back(weight);
-            m_total_charge_layer += weight;
-            if (weight > m_max_charge_layer) m_max_charge_layer = weight;
+            result.adcsum += weight;
+            result.nused++;
+            hit_charge.push_back(weight);
+            result.total_charge_layer += weight;
+            if (weight > result.max_charge_layer) result.max_charge_layer = weight;
           }
         }
       }
 
       if(wsum > 0)
       {
-        m_xreco = wx/wsum;
-        m_yreco = wy/wsum;
-        m_zreco = wz/wsum;
-        m_phi_reco = std::atan2(m_yreco, m_xreco);
-        m_dphi = wrap_dphi(m_phi_reco - m_phi_true);
-        m_dRphi = m_r * m_dphi;
+        result.xreco = wx/wsum;
+        result.yreco = wy/wsum;
+        result.zreco = wz/wsum;
+        result.phi_reco = std::atan2(result.yreco, result.xreco);
+        result.dphi = wrap_dphi(result.phi_reco - phi_true);
+        result.dRphi = radius * result.dphi;
+        result.weight_sum = wsum;
 
         if(!m_use_clusters && !padWeights.empty())
         {
@@ -472,34 +621,139 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
           {
             const auto pad = entry.first;
             const auto weight = entry.second;
-            const double phi_c = layergeom->get_phicenter(static_cast<int>(pad), m_side);
-            m_pad_phi_centers.push_back(phi_c);
+            const double phi_c = layergeom->get_phicenter(static_cast<int>(pad), side);
+            result.pad_phi_centers.push_back(phi_c);
             if(weight > maxWeight)
             {
               maxWeight = weight;
-              m_phi_pad_max = phi_c;
+              result.phi_pad_max = phi_c;
             }
           }
-          m_npad_used = static_cast<int>(padWeights.size());
+          result.npad_used = static_cast<int>(padWeights.size());
 
           const double phi_width = std::abs(layergeom->get_phistep());
-          if(phi_width > 1e-12 && std::isfinite(m_phi_pad_max))
+          if(phi_width > 1e-12 && std::isfinite(result.phi_pad_max))
           {
-            const double dphi_phase_true = wrap_dphi(m_phi_true - m_phi_pad_max);
-            const double dphi_phase_reco = wrap_dphi(m_phi_reco - m_phi_pad_max);
-            m_phase = dphi_phase_true / phi_width;
-            m_phase_reco = dphi_phase_reco / phi_width;
+            const double dphi_phase_true = wrap_dphi(phi_true - result.phi_pad_max);
+            const double dphi_phase_reco = wrap_dphi(result.phi_reco - result.phi_pad_max);
+            result.phase = dphi_phase_true / phi_width;
+            result.phase_reco = dphi_phase_reco / phi_width;
           }
           else
           {
-            m_phase = std::numeric_limits<double>::quiet_NaN();
-            m_phase_reco = std::numeric_limits<double>::quiet_NaN();
+            result.phase = std::numeric_limits<double>::quiet_NaN();
+            result.phase_reco = std::numeric_limits<double>::quiet_NaN();
           }
         }
 
-        m_tt->Fill();
+        result.hitkeys = std::move(hitkeys);
+        result.hitsetkeys = std::move(hitsetkeys_vec);
+        result.iphi = std::move(iphi_vec);
+        result.tbin = std::move(tbin_vec);
+        result.hit_charge = std::move(hit_charge);
+        result.ntbin_used = static_cast<int>(unique_tbins.size());
+        result.nbins_used = static_cast<int>(result.hitkeys.size());
+        layer_results.push_back(std::move(result));
+        if(do_fit_layer44 && layer != kTargetLayer)
+        {
+          // use equal weighting across clusters for the fit
+          fit_points.push_back({Eigen::Vector3d(layer_results.back().xreco, layer_results.back().yreco, layer_results.back().zreco), 1.0, layer, side});
+        }
       }
     } // layer loop
+
+    // perform straight-line fit to the reconstructed clusters (optional)
+    Eigen::Vector3d intersection{Eigen::Vector3d::Zero()};
+    bool have_intersection = false;
+    if(do_fit_layer44)
+    {
+      Eigen::Vector3d fit_origin{Eigen::Vector3d::Zero()};
+      Eigen::Vector3d fit_dir{Eigen::Vector3d::Zero()};
+      const bool have_fit = weighted_line_fit(fit_points, fit_origin, fit_dir);
+      auto* target_geom = m_geom->GetLayerCellGeom(static_cast<int>(kTargetLayer));
+      Eigen::Vector3d target_cluster = Eigen::Vector3d::Zero();
+      bool have_target_cluster = false;
+      int target_side = -1;
+      for(const auto& res : layer_results)
+      {
+        if(res.layer == kTargetLayer)
+        {
+          target_cluster = Eigen::Vector3d(res.xreco, res.yreco, res.zreco);
+          have_target_cluster = true;
+          target_side = res.side;
+          break;
+        }
+      }
+
+      have_intersection = have_fit && target_geom &&
+        select_cylinder_intersection(
+          fit_origin,
+          fit_dir,
+          target_geom->get_radius(),
+          target_side,
+          have_target_cluster ? &target_cluster : nullptr,
+          intersection);
+    }
+
+    for(auto& res : layer_results)
+    {
+      if(res.layer == kTargetLayer && have_intersection)
+      {
+        res.xfit = intersection.x();
+        res.yfit = intersection.y();
+        res.zfit = intersection.z();
+        res.phi_fit = std::atan2(intersection.y(), intersection.x());
+        res.dphi_fit = wrap_dphi(res.phi_reco - res.phi_fit);
+        res.dRphi_fit = res.r * res.dphi_fit;
+      }
+      else
+      {
+        res.xfit = std::numeric_limits<double>::quiet_NaN();
+        res.yfit = std::numeric_limits<double>::quiet_NaN();
+        res.zfit = std::numeric_limits<double>::quiet_NaN();
+        res.phi_fit = std::numeric_limits<double>::quiet_NaN();
+        res.dphi_fit = std::numeric_limits<double>::quiet_NaN();
+        res.dRphi_fit = std::numeric_limits<double>::quiet_NaN();
+      }
+
+      m_layer = res.layer;
+      m_side = res.side;
+      m_r = res.r;
+      m_phi_true = res.phi_true;
+      m_phi_reco = res.phi_reco;
+      m_dphi = res.dphi;
+      m_dRphi = res.dRphi;
+      m_nused = res.nused;
+      m_nhit_scanned = res.nhit_scanned;
+      m_adcsum = res.adcsum;
+      m_xtrue = res.xtrue;
+      m_ytrue = res.ytrue;
+      m_ztrue = res.ztrue;
+      m_xreco = res.xreco;
+      m_yreco = res.yreco;
+      m_zreco = res.zreco;
+      m_npad_used = res.npad_used;
+      m_ntbin_used = res.ntbin_used;
+      m_nbins_used = res.nbins_used;
+      m_phi_pad_max = res.phi_pad_max;
+      m_phase = res.phase;
+      m_phase_reco = res.phase_reco;
+      m_pad_phi_centers = res.pad_phi_centers;
+      m_hitkeys = res.hitkeys;
+      m_hitsetkeys = res.hitsetkeys;
+      m_iphi = res.iphi;
+      m_tbin = res.tbin;
+      m_hit_charge = res.hit_charge;
+      m_total_charge_layer = res.total_charge_layer;
+      m_max_charge_layer = res.max_charge_layer;
+      m_xfit_layer44 = res.xfit;
+      m_yfit_layer44 = res.yfit;
+      m_zfit_layer44 = res.zfit;
+      m_phi_fit_layer44 = res.phi_fit;
+      m_dphi_fit_layer44 = res.dphi_fit;
+      m_dRphi_fit_layer44 = res.dRphi_fit;
+      m_tt->Fill();
+    }
   } // track loop
 
   if(m_write_display_ntuple && m_tt_display_g4hits && m_g4hits)

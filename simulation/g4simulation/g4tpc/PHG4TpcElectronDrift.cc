@@ -209,58 +209,6 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
 
   UpdateParametersWithMacro();
 
-  // Initialize cluster size CDF
-  // Probabilities from Fischle et al. (1991) for Argon
-  std::map<int, double> fischle_data = {
-      {1, 0.656},
-      {2, 0.150},
-      {3, 0.064},
-      {4, 0.035},
-      {5, 0.022},
-      {6, 0.015},
-      {7, 0.011},
-      {8, 0.008},
-      {9, 0.006}};
-
-  double prob_discrete = 0.0;
-  for (auto const& [n, p] : fischle_data)
-  {
-    prob_discrete += p;
-  }
-
-  double remaining_prob = 1.0 - prob_discrete;
-  double w_value_ev = 26.0;
-  double cutoff_energy_kev = 10.0;
-  int n_max = int((cutoff_energy_kev * 1000) / w_value_ev);
-
-  double sum_inv_sq = 0.0;
-  for (int n = 10; n <= n_max; ++n)
-  {
-    sum_inv_sq += 1.0 / (n * n);
-  }
-  double C = remaining_prob / sum_inv_sq;
-
-  cluster_size_cdf.clear();
-  cluster_size_cdf.resize(n_max + 1, 0.0);
-  double current_cdf = 0.0;
-
-  for (int n = 1; n <= n_max; ++n)
-  {
-    double p = 0.0;
-    if (n <= 9)
-    {
-      p = fischle_data[n];
-    }
-    else
-    {
-      p = C / (n * n);
-    }
-    current_cdf += p;
-    cluster_size_cdf[n] = current_cdf;
-  }
-  // Ensure the last element is exactly 1.0 to avoid floating point issues
-  cluster_size_cdf[n_max] = 1.0;
-
   m_density_enabled = false;
   m_density_layer = get_int_param("density_layer");
   m_density_bin_width_cm = get_double_param("density_bin_width_cm");
@@ -404,11 +352,11 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
   double Ne_frac = tpcparam->get_double_param("Ne_frac");
 
   double Ar_dEdx = 2.44; // keV/cm
-  double Ar_NTotal = 94; // Number/cm
+  double Ar_NTotal = 23; // Primary electrons/cm
   double Ar_frac = tpcparam->get_double_param("Ar_frac");
 
   double CF4_dEdx = 7; // keV/cm
-  double CF4_NTotal = 100; // Number/cm
+  double CF4_NTotal = 51; // Primary electrons/cm
   double CF4_frac = tpcparam->get_double_param("CF4_frac");
 
   double N2_dEdx = 2.127;   // keV/cm https://pdg.lbl.gov/2024/AtomicNuclearProperties/HTML/nitrogen_gas.html
@@ -416,7 +364,7 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
   double N2_frac = tpcparam->get_double_param("N2_frac");
 
   double isobutane_dEdx = 5.93;   // keV/cm
-  double isobutane_NTotal = 195;    // Number/cm
+  double isobutane_NTotal = 84;    // Primary electrons/cm
   double isobutane_frac = tpcparam->get_double_param("isobutane_frac");
 
   if (m_use_PDG_gas_params)
@@ -446,6 +394,143 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
   electrons_per_gev = (Tpc_NTot / Tpc_dEdx) * 1e6; 
 
   std::cout << "PHG4TpcElectronDrift::InitRun - electrons per GeV = " << electrons_per_gev << std::endl;
+
+  // Initialize cluster size CDF for sPHENIX Ar/CF4/iC4H10 mixture.
+  constexpr int kClusterSizeCutoff = 384;
+  // Argon probabilities from the provided table (column b), converted to fractions.
+  const std::map<int, double> ar_cluster_prob = {
+      {1, 0.656},
+      {2, 0.150},
+      {3, 0.064},
+      {4, 0.035},
+      {5, 0.0225},
+      {6, 0.0155},
+      {7, 0.0105},
+      {8, 0.0081},
+      {9, 0.0061},
+      {10, 0.0049},
+      {11, 0.0039},
+      {12, 0.0030},
+      {13, 0.0025},
+      {14, 0.0020},
+      {15, 0.0016},
+      {16, 0.0012},
+      {17, 0.00095},
+      {18, 0.00075},
+      {19, 0.00063}};
+  // CH4 probabilities from the provided table (column b), converted to fractions.
+  const std::map<int, double> ch4_cluster_prob = {
+      {1, 0.786},
+      {2, 0.120},
+      {3, 0.034},
+      {4, 0.016},
+      {5, 0.0095},
+      {6, 0.0060},
+      {7, 0.0044},
+      {8, 0.0034},
+      {9, 0.0027},
+      {10, 0.0021},
+      {11, 0.0017},
+      {12, 0.0013},
+      {13, 0.0010},
+      {14, 0.0008},
+      {15, 0.0006},
+      {16, 0.00050},
+      {17, 0.00042},
+      {18, 0.00037},
+      {19, 0.00033}};
+
+  auto build_cluster_prob = [&](const std::map<int, double> &discrete, int tail_start)
+  {
+    std::vector<double> prob(kClusterSizeCutoff + 1, 0.0);
+    double sum_discrete = 0.0;
+    for (auto const& [n, p] : discrete)
+    {
+      if (n > kClusterSizeCutoff)
+      {
+        continue;
+      }
+      prob[n] = p;
+      sum_discrete += p;
+    }
+    double remaining = 1.0 - sum_discrete;
+    if (remaining > 0.0 && tail_start <= kClusterSizeCutoff)
+    {
+      double sum_inv_sq = 0.0;
+      for (int n = tail_start; n <= kClusterSizeCutoff; ++n)
+      {
+        sum_inv_sq += 1.0 / (n * n);
+      }
+      double C = (sum_inv_sq > 0.0) ? remaining / sum_inv_sq : 0.0;
+      for (int n = tail_start; n <= kClusterSizeCutoff; ++n)
+      {
+        if (prob[n] == 0.0)
+        {
+          prob[n] = C / (n * n);
+        }
+      }
+    }
+    double norm = 0.0;
+    for (int n = 1; n <= kClusterSizeCutoff; ++n)
+    {
+      norm += prob[n];
+    }
+    if (norm > 0.0)
+    {
+      for (int n = 1; n <= kClusterSizeCutoff; ++n)
+      {
+        prob[n] /= norm;
+      }
+    }
+    return prob;
+  };
+
+  const auto prob_ar = build_cluster_prob(ar_cluster_prob, 20);
+  const auto prob_ch4 = build_cluster_prob(ch4_cluster_prob, 20);
+
+  const double mix_primary = (Ar_frac * Ar_NTotal)
+                           + (CF4_frac * CF4_NTotal)
+                           + (isobutane_frac * isobutane_NTotal);
+  const double weight_ar = (mix_primary > 0.0) ? (Ar_frac * Ar_NTotal / mix_primary) : 0.0;
+  const double weight_cf4 = (mix_primary > 0.0) ? (CF4_frac * CF4_NTotal / mix_primary) : 0.0;
+  const double weight_iso = (mix_primary > 0.0) ? (isobutane_frac * isobutane_NTotal / mix_primary) : 0.0;
+
+  std::vector<double> mix_prob(kClusterSizeCutoff + 1, 0.0);
+  if (mix_primary > 0.0)
+  {
+    for (int n = 1; n <= kClusterSizeCutoff; ++n)
+    {
+      mix_prob[n] = (weight_ar + weight_cf4) * prob_ar[n] + weight_iso * prob_ch4[n];
+    }
+  }
+  else
+  {
+    mix_prob = prob_ar;
+    std::cout << "PHG4TpcElectronDrift::InitRun - Warning: gas mixture has no Ar, CF4, or isobutane content, defaulting to pure Argon cluster size distribution." << std::endl;
+  }
+
+  double mix_norm = 0.0;
+  for (int n = 1; n <= kClusterSizeCutoff; ++n)
+  {
+    mix_norm += mix_prob[n];
+  }
+  if (mix_norm > 0.0)
+  {
+    for (int n = 1; n <= kClusterSizeCutoff; ++n)
+    {
+      mix_prob[n] /= mix_norm;
+    }
+  }
+
+  cluster_size_cdf.clear();
+  cluster_size_cdf.resize(kClusterSizeCutoff + 1, 0.0);
+  double current_cdf = 0.0;
+  for (int n = 1; n <= kClusterSizeCutoff; ++n)
+  {
+    current_cdf += mix_prob[n];
+    cluster_size_cdf[n] = current_cdf;
+  }
+  cluster_size_cdf[kClusterSizeCutoff] = 1.0;
 
   // min_time to max_time is the time window for accepting drifted electrons after the trigger
   min_time = 0.0;

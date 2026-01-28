@@ -1592,6 +1592,7 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
   const auto faint_color = TColor::GetColor(180, 180, 190);
   double max_pad_charge = 0.0;
   for (const auto &pad : *pads_to_draw) max_pad_charge = std::max(max_pad_charge, pad.charge);
+  std::vector<TGraph *> pad_center_markers;
   for (const auto &pad : *pads_to_draw)
   {
     if (pad.polygon.empty())
@@ -1615,6 +1616,16 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
     {
       outline->SetLineColor(center_color);
       outline->SetLineWidth(1);
+      // Mark the geometry-based pad center (phi from geom, radius from layer)
+      const double pad_r = (pad.pad_r > 0.0) ? pad.pad_r : LayerGeom->get_radius();
+      double center_x = pad_r * std::cos(pad.pad_phi);
+      double center_y = pad_r * std::sin(pad.pad_phi);
+      TGraph *pad_center = new TGraph(1, &center_x, &center_y);
+      pad_center->SetMarkerStyle(30);    // star
+      pad_center->SetMarkerSize(2.0);
+      pad_center->SetMarkerColor(kMagenta + 2);
+      pad_center->Draw("P SAME");
+      pad_center_markers.push_back(pad_center);
     }
     else
     {
@@ -1703,6 +1714,7 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
 
   for (TGraph *c : center_markers) delete c;
   for (TGraph *g : pad_graphs) delete g;
+  for (TGraph *pc : pad_center_markers) delete pc;
   delete canvas;
   delete hist;
 }
@@ -1871,6 +1883,7 @@ void PHG4TpcPadPlaneReadout::SERF_zigzag_phibins(const unsigned int side, const 
       dbg.pad_bin = pad_now;
       dbg.charge = charge;
       dbg.pad_phi = LayerGeom->get_phicenter(pad_now, side);
+      dbg.pad_r = LayerGeom->get_radius();
       dbg.polygon = poly;
       debug_contribs.push_back(std::move(dbg));
     }

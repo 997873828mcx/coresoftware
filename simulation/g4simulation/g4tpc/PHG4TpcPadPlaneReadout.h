@@ -219,6 +219,7 @@ double max_radii_module[3]={399.85222874031024, 569.695373910603, 753.6667758418
     double charge = 0.0;
     std::vector<Point> polygon;
     double pad_phi = 0.0;
+    double pad_r = 0.0;
   };
   struct VisualizationCircle
   {

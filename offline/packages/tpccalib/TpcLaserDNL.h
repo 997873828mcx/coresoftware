@@ -52,6 +52,8 @@ void set_max_dz(double v) { m_max_dz = v; }
   void set_display_hit_subsamples(unsigned int v) { m_display_hit_subsamples = v; }
   // optionally include extrapolated intersections (no G4 support) in the display output
   void set_include_fallback_intersections(bool v) { m_include_fallback_intersections = v; }
+  // enable/disable fitted-layer-44 residual calculation
+  void set_enable_fit_layer44_residuals(bool v) { m_enable_fit_layer44_residuals = v; }
 
 private:
 // nodes
@@ -80,6 +82,7 @@ double m_max_dz{1.0}; // cm
   bool m_write_display_ntuple{false};
   unsigned int m_display_hit_subsamples{0};
   bool m_include_fallback_intersections{false};
+  bool m_enable_fit_layer44_residuals{true};
 
   struct LayerPoint
   {
@@ -121,10 +124,19 @@ double m_adcsum{0};
 double m_xtrue{0}, m_ytrue{0}, m_ztrue{0};
 double m_xreco{0}, m_yreco{0}, m_zreco{0};
 int m_npad_used{0};
+  int m_ntbin_used{0};
+  int m_nbins_used{0};
 double m_phi_pad_max{std::numeric_limits<double>::quiet_NaN()};
 double m_phase{std::numeric_limits<double>::quiet_NaN()};
 double m_phase_reco{std::numeric_limits<double>::quiet_NaN()};
 std::vector<double> m_pad_phi_centers;
+  // fitted straight-line intersection with layer 44 (NaN for other layers or failed fits)
+  double m_xfit_layer44{std::numeric_limits<double>::quiet_NaN()};
+  double m_yfit_layer44{std::numeric_limits<double>::quiet_NaN()};
+  double m_zfit_layer44{std::numeric_limits<double>::quiet_NaN()};
+  double m_phi_fit_layer44{std::numeric_limits<double>::quiet_NaN()};
+  double m_dphi_fit_layer44{std::numeric_limits<double>::quiet_NaN()};
+  double m_dRphi_fit_layer44{std::numeric_limits<double>::quiet_NaN()};
 
 // debug vectors: store per-hit info for used hits
 std::vector<ULong64_t> m_hitkeys;
