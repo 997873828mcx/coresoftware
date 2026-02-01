@@ -13,6 +13,8 @@
 #include <cmath>
 #include <string>  // for string
 #include <vector>
+#include <map>
+typedef std::map<TrkrDefs::hitsetkey, std::vector<TrkrDefs::hitkey>> hitMaskTpc;
 
 class PHCompositeNode;
 class PHG4TpcCylinderGeomContainer;
@@ -58,7 +60,20 @@ class PHG4TpcPadPlaneReadout : public PHG4TpcPadPlane
 
   void SetDefaultParameters() override;
   void UpdateInternalParameters() override;
-
+void SetMaskChannelsFromFile() 
+  {
+    m_maskFromFile = true;
+  } 
+  void SetDeadChannelMapName(const std::string& dcmap) 
+  {
+    m_maskDeadChannels = true;
+    m_deadChannelMapName = dcmap;
+  }
+  void SetHotChannelMapName(const std::string& hmap) 
+  {
+    m_maskHotChannels = true;
+    m_hotChannelMapName = hmap;
+  }
   // Debug printing helpers
   // If set >= 0, limit PadHit prints to a single layer number; otherwise prints for all layers.
   void SetDebugPadHitLayer(int layer) { m_dbg_pad_hit_layer = layer; }
@@ -82,7 +97,7 @@ class PHG4TpcPadPlaneReadout : public PHG4TpcPadPlane
   void populate_tbins(const double t, const std::array<double, 2> &cloud_sig_tt, std::vector<int> &adc_tbin, std::vector<double> &adc_tbin_share);
 
   double check_phi(const unsigned int side, const double phi, const double radius);
-
+void makeChannelMask(hitMaskTpc& aMask, const std::string& dbName, const std::string& totalChannelsToMask);
   // utility: pick layers whose annulus intersects a radial window around rad
   std::vector<unsigned int> layersInRadialWindow(double rad, double sigma, double nsig) const;
 
@@ -153,7 +168,13 @@ class PHG4TpcPadPlaneReadout : public PHG4TpcPadPlane
   };
 
   TF1 *flangau[2][3][12] = {};
-
+    hitMaskTpc m_deadChannelMap;
+  hitMaskTpc m_hotChannelMap; 
+bool m_maskDeadChannels {false};
+  bool m_maskHotChannels {false};
+  bool m_maskFromFile {false};
+  std::string m_deadChannelMapName; 
+  std::string m_hotChannelMapName; 
   struct Point { double x, y; };
 
   struct PadInfo {
