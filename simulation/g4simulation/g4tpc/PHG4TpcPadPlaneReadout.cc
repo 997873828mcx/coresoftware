@@ -1065,6 +1065,24 @@ norm1 = 0.0;
 
         const unsigned int sector = (pad_num >= 0) ? (static_cast<unsigned>(pad_num) / pads_per_sector) : 0;
         TrkrDefs::hitsetkey hitsetkey = TpcDefs::genHitSetKey(layer_cand, sector, side);
+        if (m_maskDeadChannels)
+        {
+          TrkrDefs::hitkey checkkey = TpcDefs::genHitKey(static_cast<unsigned int>(pad_num), 0);
+          if (m_deadChannelMap.contains(hitsetkey) &&
+              std::find(m_deadChannelMap[hitsetkey].begin(), m_deadChannelMap[hitsetkey].end(), checkkey) != m_deadChannelMap[hitsetkey].end())
+          {
+            continue; // Skip this hit, the channel is dead
+          }
+        }
+        if (m_maskHotChannels)
+        {
+          TrkrDefs::hitkey checkkey = TpcDefs::genHitKey(static_cast<unsigned int>(pad_num), 0);
+          if (m_hotChannelMap.contains(hitsetkey) &&
+              std::find(m_hotChannelMap[hitsetkey].begin(), m_hotChannelMap[hitsetkey].end(), checkkey) != m_hotChannelMap[hitsetkey].end())
+          {
+            continue; // Skip this hit, the channel is hot
+          }
+        }
         auto hitsetit        = hitsetcontainer->findOrAddHitSet(hitsetkey);
         auto single_hitsetit = single_hitsetcontainer->findOrAddHitSet(hitsetkey);
 

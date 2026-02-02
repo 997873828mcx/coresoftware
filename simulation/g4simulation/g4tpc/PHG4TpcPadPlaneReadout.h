@@ -69,11 +69,13 @@ void SetMaskChannelsFromFile()
     m_maskDeadChannels = true;
     m_deadChannelMapName = dcmap;
   }
+  const std::string& GetDeadChannelMapName() const { return m_deadChannelMapName; }
   void SetHotChannelMapName(const std::string& hmap) 
   {
     m_maskHotChannels = true;
     m_hotChannelMapName = hmap;
   }
+  const std::string& GetHotChannelMapName() const { return m_hotChannelMapName; }
   // Debug printing helpers
   // If set >= 0, limit PadHit prints to a single layer number; otherwise prints for all layers.
   void SetDebugPadHitLayer(int layer) { m_dbg_pad_hit_layer = layer; }
