@@ -24,8 +24,8 @@
 #include <g4tracking/TrkrTruthTrackContainerv1.h>
 #include <g4tracking/TrkrTruthTrackv1.h>
 
-#include <g4detectors/PHG4TpcCylinderGeom.h>
-#include <g4detectors/PHG4TpcCylinderGeomContainer.h>
+#include <g4detectors/PHG4TpcGeom.h>
+#include <g4detectors/PHG4TpcGeomContainer.h>
 
 #include <g4main/PHG4Hit.h>
 #include <g4main/PHG4HitContainer.h>
@@ -203,8 +203,8 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
     std::cout << Name() << ": found SvtxTrackMap with " << m_track_map->size() << " entries" << std::endl;
   }
 
-  seggeonodename = "CYLINDERCELLGEOM_SVTX";  // + detector;
-  seggeo = findNode::getClass<PHG4TpcCylinderGeomContainer>(topNode, seggeonodename);
+  seggeonodename = "TPCGEOMCONTAINER";  // + detector;
+  seggeo = findNode::getClass<PHG4TpcGeomContainer>(topNode, seggeonodename);
   assert(seggeo);
 
   UpdateParametersWithMacro();

@@ -8,8 +8,8 @@
 #include <trackbase/TrkrHitTruthAssoc.h>
 #include <trackbase/TrkrHitv2.h>
 
-#include <g4detectors/PHG4TpcCylinderGeom.h>
-#include <g4detectors/PHG4TpcCylinderGeomContainer.h>
+#include <g4detectors/PHG4TpcGeom.h>
+#include <g4detectors/PHG4TpcGeomContainer.h>
 
 #include <fun4all/Fun4AllReturnCodes.h>
 #include <fun4all/SubsysReco.h>  // for SubsysReco
@@ -38,8 +38,8 @@ PHG4TpcDigitizer::PHG4TpcDigitizer(const std::string &name)
   , TpcEnc(670)                                                           // electrons
   , Pedestal(50000)                                                       // electrons
   , ChargeToPeakVolts(20)                                                 // mV/fC
-  , ADCSignalConversionGain(std::numeric_limits<float>::signaling_NaN())  // will be assigned in PHG4TpcDigitizer::InitRun
-  , ADCNoiseConversionGain(std::numeric_limits<float>::signaling_NaN())
+  , ADCSignalConversionGain(std::numeric_limits<float>::quiet_NaN())  // will be assigned in PHG4TpcDigitizer::InitRun
+  , ADCNoiseConversionGain(std::numeric_limits<float>::quiet_NaN())
   , RandomGenerator(gsl_rng_alloc(gsl_rng_mt19937))  // will be assigned in PHG4TpcDigitizer::InitRun
 {
   unsigned int seed = PHRandomSeed();  // fixed seed is handled in this funtcion
@@ -119,22 +119,22 @@ void PHG4TpcDigitizer::CalculateCylinderCellADCScale(PHCompositeNode *topNode)
 {
   // defaults to 8-bit ADC, short-axis MIP placed at 1/4 dynamic range
 
-  PHG4TpcCylinderGeomContainer *geom_container = findNode::getClass<PHG4TpcCylinderGeomContainer>(topNode, "CYLINDERCELLGEOM_SVTX");
+  PHG4TpcGeomContainer *geom_container = findNode::getClass<PHG4TpcGeomContainer>(topNode, "TPCGEOMCONTAINER");
 
   if (!geom_container)
   {
     return;
   }
 
-  PHG4TpcCylinderGeomContainer::ConstRange layerrange = geom_container->get_begin_end();
-  for (PHG4TpcCylinderGeomContainer::ConstIterator layeriter = layerrange.first;
+  PHG4TpcGeomContainer::ConstRange layerrange = geom_container->get_begin_end();
+  for (PHG4TpcGeomContainer::ConstIterator layeriter = layerrange.first;
        layeriter != layerrange.second;
        ++layeriter)
   {
     int layer = layeriter->second->get_layer();
     float thickness = (layeriter->second)->get_thickness();
     float pitch = (layeriter->second)->get_phistep() * (layeriter->second)->get_radius();
-    float length = (layeriter->second)->get_zstep() * _drift_velocity;
+    float length = (layeriter->second)->get_zstep() * (layeriter->second)->get_drift_velocity_sim();
 
     float minpath = pitch;
     minpath = std::min(length, minpath);
@@ -216,19 +216,18 @@ void PHG4TpcDigitizer::DigitizeCylinderCells(PHCompositeNode *topNode)
   // We convert to volts at the input to the ADC and add noise generated with the RMS value of the noise voltage at the ADC input
   // We assume the pedestal is zero, for simplicity, so the noise fluctuates above and below zero
 
-  // Note that tbin = 0 corresponds to -105.5 cm, tbin 248 corresponds to 0 cm, and tbin 497 corresponds to +105.5 cm
+  // Note that tbin = 0 corresponds to - max drift length, tbin 248 corresponds to 0 cm, and tbin 497 corresponds to max drift length
   // increasing time should be bins (497 -> 249) and (0 -> 248)
 
   //----------
   // Get Nodes
   //----------
 
-  PHG4TpcCylinderGeomContainer *geom_container =
-      findNode::getClass<PHG4TpcCylinderGeomContainer>(topNode, "CYLINDERCELLGEOM_SVTX");
+  PHG4TpcGeomContainer *geom_container =
+      findNode::getClass<PHG4TpcGeomContainer>(topNode, "TPCGEOMCONTAINER");
   if (!geom_container)
   {
-    std::cout << PHWHERE << "ERROR: Can't find node CYLINDERCELLGEOM_SVTX" << std::endl;
-    return;
+    std::cout << PHWHERE << "ERROR: Can't find node TPCGEOMCONTAINER" << std::endl;
   }
 
   // Get the TrkrHitSetContainer node
@@ -254,7 +253,7 @@ void PHG4TpcDigitizer::DigitizeCylinderCells(PHCompositeNode *topNode)
   for (unsigned int layer = TpcMinLayer; layer < TpcMinLayer + TpcNLayers; ++layer)
   {
     // we need the geometry object for this layer
-    PHG4TpcCylinderGeom *layergeom = geom_container->GetLayerCellGeom(layer);
+    PHG4TpcGeom *layergeom = geom_container->GetLayerCellGeom(layer);
     if (!layergeom)
     {
       exit(1);

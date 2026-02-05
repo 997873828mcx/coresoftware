@@ -40,7 +40,7 @@ class TrkrClusterContainer;
 class TrkrTruthTrack;
 class DistortedTrackContainer;
 class TpcClusterBuilder;
-class PHG4TpcCylinderGeomContainer;
+class PHG4TpcGeomContainer;
 class SvtxTrackMap;
 class ClusHitsVerbose;
 
@@ -106,7 +106,7 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   TrkrTruthTrack *truth_track{nullptr};
   TrkrClusterContainer *truthclustercontainer{nullptr};  // the TrkrClusterContainer for truth clusters
   ActsGeometry *m_tGeometry{nullptr};
-  PHG4TpcCylinderGeomContainer *seggeo{nullptr};
+  PHG4TpcGeomContainer *seggeo{nullptr};
   SvtxTrackMap *m_track_map{nullptr};
 
   TNtuple *nt{nullptr};

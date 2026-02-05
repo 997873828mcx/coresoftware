@@ -17,8 +17,8 @@
 typedef std::map<TrkrDefs::hitsetkey, std::vector<TrkrDefs::hitkey>> hitMaskTpc;
 
 class PHCompositeNode;
-class PHG4TpcCylinderGeomContainer;
-class PHG4TpcCylinderGeom;
+class PHG4TpcGeomContainer;
+class PHG4TpcGeom;
 class TH2;
 class TF1;
 class TNtuple;
@@ -69,13 +69,11 @@ void SetMaskChannelsFromFile()
     m_maskDeadChannels = true;
     m_deadChannelMapName = dcmap;
   }
-  const std::string& GetDeadChannelMapName() const { return m_deadChannelMapName; }
   void SetHotChannelMapName(const std::string& hmap) 
   {
     m_maskHotChannels = true;
     m_hotChannelMapName = hmap;
   }
-  const std::string& GetHotChannelMapName() const { return m_hotChannelMapName; }
   // Debug printing helpers
   // If set >= 0, limit PadHit prints to a single layer number; otherwise prints for all layers.
   void SetDebugPadHitLayer(int layer) { m_dbg_pad_hit_layer = layer; }
@@ -90,13 +88,21 @@ void SetMaskChannelsFromFile()
   void SetVisualizationDumpFile(const std::string &file);
   void SetVisualizeAllClouds(bool enable);
 
+  protected: 
+  double Ts = 80.0; // SAMPA peaking time
+
+  double sampaShapingResponseFunction(double tzero, double t) const;
+
+  void sampaTimeDistribution(double tzero, 
+                             std::vector<int> &adc_tbin, 
+                             std::vector<double> &adc_tbin_share);
 
  private:
 
   //  void populate_rectangular_phibins(const unsigned int layernum, const double phi, const double cloud_sig_rp, std::vector<int> &pad_phibin, std::vector<double> &pad_phibin_share);
   void populate_zigzag_phibins(const unsigned int side, const unsigned int layernum, const double phi, const double cloud_sig_rp, std::vector<int> &pad_phibin, std::vector<double> &pad_phibin_share);
   void SERF_zigzag_phibins(const unsigned int side, const unsigned int layernum, const double phi, const double rad_gem, const double cloud_sig_rp, std::vector<int> &pad_phibin, std::vector<double> &pad_phibin_share);
-  void populate_tbins(const double t, const std::array<double, 2> &cloud_sig_tt, std::vector<int> &adc_tbin, std::vector<double> &adc_tbin_share);
+  //void populate_tbins(const double t, const std::array<double, 2> &cloud_sig_tt, std::vector<int> &adc_tbin, std::vector<double> &adc_tbin_share);
 
   double check_phi(const unsigned int side, const double phi, const double radius);
 void makeChannelMask(hitMaskTpc& aMask, const std::string& dbName, const std::string& totalChannelsToMask);
@@ -104,13 +110,13 @@ void makeChannelMask(hitMaskTpc& aMask, const std::string& dbName, const std::st
   std::vector<unsigned int> layersInRadialWindow(double rad, double sigma, double nsig) const;
 
   // utility: find geometry for a given layer
-  PHG4TpcCylinderGeom* getGeomForLayer(unsigned int layer) const;
+  PHG4TpcGeom* getGeomForLayer(unsigned int layer) const;
 
   // utility: determine sector for (x,y) and rotate to a canonical frame
   void rotatePointToSector(double x, double y, unsigned int side, int& sectorFound, double& xNew, double& yNew);
 
-  PHG4TpcCylinderGeomContainer *GeomContainer = nullptr;
-  PHG4TpcCylinderGeom *LayerGeom = nullptr;
+  PHG4TpcGeomContainer *GeomContainer = nullptr;
+  PHG4TpcGeom *LayerGeom = nullptr;
 
   // Minimum effective electrons per (pad,tbin) to create a hit.
   // Default to 0.0 so all contributions are kept unless configured otherwise.
