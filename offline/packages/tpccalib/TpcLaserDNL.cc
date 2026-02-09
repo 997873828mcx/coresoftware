@@ -10,8 +10,8 @@
 #include <trackbase/TpcDefs.h>
 #include <trackbase/ActsGeometry.h>
 
-#include <g4detectors/PHG4TpcCylinderGeom.h>
-#include <g4detectors/PHG4TpcCylinderGeomContainer.h>
+#include <g4detectors/PHG4TpcGeom.h>
+#include <g4detectors/PHG4TpcGeomContainer.h>
 
 #include <g4tracking/TrkrTruthTrackContainer.h>
 #include <g4tracking/TrkrTruthTrack.h>
@@ -137,7 +137,7 @@ int TpcLaserDNL::InitRun(PHCompositeNode* topNode)
     m_track_map = findNode::getClass<SvtxTrackMap>(topNode,"SvtxTrackMap");
   }
   m_hitsets = findNode::getClass<TrkrHitSetContainer>(topNode,"TRKR_HITSET");
-  m_geom = findNode::getClass<PHG4TpcCylinderGeomContainer>(topNode,"CYLINDERCELLGEOM_SVTX");
+  m_geom = findNode::getClass<PHG4TpcGeomContainer>(topNode,"TPCGEOMCONTAINER");
   m_acts = findNode::getClass<ActsGeometry>(topNode,"ActsGeometry");
   m_truth_tracks = findNode::getClass<TrkrTruthTrackContainer>(topNode, "TRKR_TRUTHTRACKCONTAINER");
   m_g4hits = findNode::getClass<PHG4HitContainer>(topNode, "G4HIT_TPC");

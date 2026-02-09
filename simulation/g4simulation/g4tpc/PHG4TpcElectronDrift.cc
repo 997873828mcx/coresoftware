@@ -29,6 +29,7 @@
 
 #include <g4main/PHG4Hit.h>
 #include <g4main/PHG4HitContainer.h>
+#include <g4main/PHG4Hitv1.h>
 #include <g4main/PHG4Particlev3.h>
 #include <g4main/PHG4TruthInfoContainer.h>
 
@@ -57,8 +58,8 @@
 #include <TH1F.h>
 #include <TH2.h>
 #include <TNtuple.h>
-#include <TTree.h>
 #include <TSystem.h>
+#include <TTree.h>
 
 // for event id tagging in debug prints
 #include <ffaobjects/EventHeader.h>
@@ -74,12 +75,16 @@
 #include <cmath>    // for sqrt, abs, NAN
 #include <cstdlib>  // for exit
 #include <iostream>
-#include <map>      // for _Rb_tree_cons...
+#include <map>  // for _Rb_tree_cons...
 #include <unordered_map>
 #include <utility>  // for pair
 
 namespace
 {
+  // Stores one track-layer truth intersection (treated as a "true cluster")
+  // per event entry as a PHG4Hit.
+  static constexpr const char *kTpcTruthIntersectionNodeName = "G4HIT_TPC_TRUECLUSTER";
+
   template <class T>
   inline constexpr T square(const T &x)
   {
@@ -206,6 +211,34 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
   seggeonodename = "TPCGEOMCONTAINER";  // + detector;
   seggeo = findNode::getClass<PHG4TpcGeomContainer>(topNode, seggeonodename);
   assert(seggeo);
+
+  m_tpc_layer_radii.clear();
+  {
+    const auto layer_range = seggeo->get_begin_end();
+    m_tpc_layer_radii.reserve(std::distance(layer_range.first, layer_range.second));
+    for (auto layeriter = layer_range.first; layeriter != layer_range.second; ++layeriter)
+    {
+      auto *layergeom = layeriter->second;
+      if (!layergeom)
+      {
+        continue;
+      }
+      m_tpc_layer_radii.push_back({static_cast<unsigned int>(layergeom->get_layer()), layergeom->get_radius()});
+    }
+    std::sort(
+        m_tpc_layer_radii.begin(),
+        m_tpc_layer_radii.end(),
+        [](const TpcLayerRadius &lhs, const TpcLayerRadius &rhs)
+        { return lhs.layer < rhs.layer; });
+  }
+
+  m_truth_intersection_hits = findNode::getClass<PHG4HitContainer>(topNode, kTpcTruthIntersectionNodeName);
+  if (!m_truth_intersection_hits)
+  {
+    m_truth_intersection_hits = new PHG4HitContainer(kTpcTruthIntersectionNodeName);
+    auto *newNode = new PHIODataNode<PHObject>(m_truth_intersection_hits, kTpcTruthIntersectionNodeName, "PHObject");
+    dstNode->addNode(newNode);
+  }
 
   UpdateParametersWithMacro();
 
@@ -347,24 +380,24 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
   // diffusion and drift velocity for 400kV for NeCF4 50/50 from calculations:
   // http://skipper.physics.sunysb.edu/~prakhar/tpc/HTML_Gases/split.html
 
-  double Ne_dEdx = 1.56; // keV/cm
-  double Ne_NTotal = 43; // Number/cm
+  double Ne_dEdx = 1.56;  // keV/cm
+  double Ne_NTotal = 43;  // Number/cm
   double Ne_frac = tpcparam->get_double_param("Ne_frac");
 
-  double Ar_dEdx = 2.44; // keV/cm
-  double Ar_NTotal = 23; // Primary electrons/cm
+  double Ar_dEdx = 2.44;  // keV/cm
+  double Ar_NTotal = 23;  // Primary electrons/cm
   double Ar_frac = tpcparam->get_double_param("Ar_frac");
 
-  double CF4_dEdx = 7; // keV/cm
-  double CF4_NTotal = 51; // Primary electrons/cm
+  double CF4_dEdx = 7;     // keV/cm
+  double CF4_NTotal = 51;  // Primary electrons/cm
   double CF4_frac = tpcparam->get_double_param("CF4_frac");
 
-  double N2_dEdx = 2.127;   // keV/cm https://pdg.lbl.gov/2024/AtomicNuclearProperties/HTML/nitrogen_gas.html
-  double N2_NTotal = 25;    // Number/cm (probably not right but has a very small impact)
+  double N2_dEdx = 2.127;  // keV/cm https://pdg.lbl.gov/2024/AtomicNuclearProperties/HTML/nitrogen_gas.html
+  double N2_NTotal = 25;   // Number/cm (probably not right but has a very small impact)
   double N2_frac = tpcparam->get_double_param("N2_frac");
 
-  double isobutane_dEdx = 5.93;   // keV/cm
-  double isobutane_NTotal = 84;    // Primary electrons/cm
+  double isobutane_dEdx = 5.93;  // keV/cm
+  double isobutane_NTotal = 84;  // Primary electrons/cm
   double isobutane_frac = tpcparam->get_double_param("isobutane_frac");
 
   if (m_use_PDG_gas_params)
@@ -376,22 +409,14 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
     Ar_NTotal = 97;
 
     CF4_dEdx = 6.382;
-    CF4_NTotal = 120; 
+    CF4_NTotal = 120;
   }
 
-  double Tpc_NTot = (Ne_NTotal * Ne_frac)
-                  + (Ar_NTotal * Ar_frac)
-                  + (CF4_NTotal * CF4_frac)
-                  + (N2_NTotal * N2_frac)
-                  + (isobutane_NTotal * isobutane_frac);
+  double Tpc_NTot = (Ne_NTotal * Ne_frac) + (Ar_NTotal * Ar_frac) + (CF4_NTotal * CF4_frac) + (N2_NTotal * N2_frac) + (isobutane_NTotal * isobutane_frac);
 
-  double Tpc_dEdx = (Ne_dEdx * Ne_frac)
-                  + (Ar_dEdx * Ar_frac)
-                  + (CF4_dEdx * CF4_frac)
-                  + (N2_dEdx * N2_frac)
-                  + (isobutane_dEdx * isobutane_frac);
+  double Tpc_dEdx = (Ne_dEdx * Ne_frac) + (Ar_dEdx * Ar_frac) + (CF4_dEdx * CF4_frac) + (N2_dEdx * N2_frac) + (isobutane_dEdx * isobutane_frac);
 
-  electrons_per_gev = (Tpc_NTot / Tpc_dEdx) * 1e6; 
+  electrons_per_gev = (Tpc_NTot / Tpc_dEdx) * 1e6;
 
   std::cout << "PHG4TpcElectronDrift::InitRun - electrons per GeV = " << electrons_per_gev << std::endl;
 
@@ -444,7 +469,7 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
   {
     std::vector<double> prob(kClusterSizeCutoff + 1, 0.0);
     double sum_discrete = 0.0;
-    for (auto const& [n, p] : discrete)
+    for (auto const &[n, p] : discrete)
     {
       if (n > kClusterSizeCutoff)
       {
@@ -488,9 +513,7 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
   const auto prob_ar = build_cluster_prob(ar_cluster_prob, 20);
   const auto prob_ch4 = build_cluster_prob(ch4_cluster_prob, 20);
 
-  const double mix_primary = (Ar_frac * Ar_NTotal)
-                           + (CF4_frac * CF4_NTotal)
-                           + (isobutane_frac * isobutane_NTotal);
+  const double mix_primary = (Ar_frac * Ar_NTotal) + (CF4_frac * CF4_NTotal) + (isobutane_frac * isobutane_NTotal);
   const double weight_ar = (mix_primary > 0.0) ? (Ar_frac * Ar_NTotal / mix_primary) : 0.0;
   const double weight_cf4 = (mix_primary > 0.0) ? (CF4_frac * CF4_NTotal / mix_primary) : 0.0;
   const double weight_iso = (mix_primary > 0.0) ? (isobutane_frac * isobutane_NTotal / mix_primary) : 0.0;
@@ -729,6 +752,28 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
       findNode::getClass<PHG4TruthInfoContainer>(topNode, "G4TruthInfo");
 
   PHG4HitContainer::ConstRange hit_begin_end = g4hit->getHits();
+  if (m_truth_intersection_hits)
+  {
+    m_truth_intersection_hits->Reset();
+  }
+
+  struct TruthLayerIntersection
+  {
+    int track_id{0};
+    unsigned int layer{0};
+    double x{0.0};
+    double y{0.0};
+    double z{0.0};
+    double t{0.0};
+    //double dirx{0.0};
+    //double diry{0.0};
+    //double dirz{0.0};
+    double path{0.0};
+    //double eion{0.0};
+    //double edep{0.0};
+  };
+  std::map<std::pair<int, unsigned int>, TruthLayerIntersection> truth_layer_intersections;
+
   unsigned int count_g4hits = 0;
   //  int count_electrons = 0;
 
@@ -737,7 +782,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
   m_track_anchor_length.clear();
 
   //  double ecollectedhits = 0.0;
-//  int ncollectedhits = 0;
+  //  int ncollectedhits = 0;
   double ihit = 0;
   unsigned int dump_interval = 5000;  // dump temp_hitsetcontainer to the node tree after this many g4hits
   unsigned int dump_counter = 0;
@@ -857,6 +902,8 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
     const double dy_hit = hiter->second->get_y(1) - hiter->second->get_y(0);
     const double dz_hit = hiter->second->get_z(1) - hiter->second->get_z(0);
     const double step_length = std::sqrt(square(dx_hit) + square(dy_hit) + square(dz_hit));
+    const int track_id = hiter->second->get_trkid();
+    double track_segment_start = m_track_path_offset[track_id];
     if (m_avg_x_enabled)
     {
       auto &layer_data = m_track_layer_data[trkid_new];
@@ -872,6 +919,102 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
           layer_data.dir_y = dy_hit / norm;
           layer_data.dir_z = dz_hit / norm;
           layer_data.have_line = true;
+        }
+      }
+    }
+
+    if (m_truth_intersection_hits && !m_tpc_layer_radii.empty() && step_length > 1e-9)
+    {
+      const double x0 = hiter->second->get_x(0);
+      const double y0 = hiter->second->get_y(0);
+      const double z0 = hiter->second->get_z(0);
+      const double t0_hit = hiter->second->get_t(0);
+      const double dt = hiter->second->get_t(1) - t0_hit;
+      const double r0 = std::sqrt(square(x0) + square(y0));
+      const double r1 = std::sqrt(square(hiter->second->get_x(1)) + square(hiter->second->get_y(1)));
+      const double rmin = std::min(r0, r1);
+      const double rmax = std::max(r0, r1);
+      const double a = square(dx_hit) + square(dy_hit);
+      const double b = 2.0 * (dx_hit * x0 + dy_hit * y0);
+      const double c0 = square(x0) + square(y0);
+      static constexpr double radial_tol = 5e-3;
+      static constexpr double t_tol = 1e-6;
+
+      if (a > 1e-12)
+      {
+        for (const auto &layer_info : m_tpc_layer_radii)
+        {
+          const double radius = layer_info.radius;
+          if (radius < rmin - radial_tol || radius > rmax + radial_tol)
+          {
+            continue;
+          }
+
+          const double c = c0 - square(radius);
+          double disc = b * b - 4.0 * a * c;
+          if (disc < -1e-10)
+          {
+            continue;
+          }
+
+          disc = std::max(0.0, disc);
+          const double sqrt_disc = std::sqrt(disc);
+          const std::array<double, 2> t_candidates = {
+              (-b - sqrt_disc) / (2.0 * a),
+              (-b + sqrt_disc) / (2.0 * a)};
+
+          bool have_candidate = false;
+          double best_t = 0.0;
+          double best_residual = std::numeric_limits<double>::max();
+
+          for (double t_candidate : t_candidates)
+          {
+            if (t_candidate < -t_tol || t_candidate > 1.0 + t_tol)
+            {
+              continue;
+            }
+            const double t = std::clamp(t_candidate, 0.0, 1.0);
+            const double xi = x0 + t * dx_hit;
+            const double yi = y0 + t * dy_hit;
+            const double residual = std::abs(std::sqrt(square(xi) + square(yi)) - radius);
+            if (!have_candidate || residual < best_residual)
+            {
+              best_t = t;
+              best_residual = residual;
+              have_candidate = true;
+            }
+          }
+
+          if (!have_candidate)
+          {
+            continue;
+          }
+
+          const double xi = x0 + best_t * dx_hit;
+          const double yi = y0 + best_t * dy_hit;
+          const double zi = z0 + best_t * dz_hit;
+          const double ti = t0_hit + best_t * dt;
+          const double path = track_segment_start + best_t * step_length;
+
+          const std::pair<int, unsigned int> key(track_id, layer_info.layer);
+          auto cache_it = truth_layer_intersections.find(key);
+          if (cache_it == truth_layer_intersections.end() || path < cache_it->second.path)
+          {
+            TruthLayerIntersection intersection;
+            intersection.track_id = track_id;
+            intersection.layer = layer_info.layer;
+            intersection.x = xi;
+            intersection.y = yi;
+            intersection.z = zi;
+            intersection.t = ti;
+            // intersection.dirx = dx_hit;
+            // intersection.diry = dy_hit;
+            // intersection.dirz = dz_hit;
+            intersection.path = path;
+            // intersection.eion = hiter->second->get_eion();
+            // intersection.edep = hiter->second->get_edep();
+            truth_layer_intersections[key] = intersection;
+          }
         }
       }
     }
@@ -921,11 +1064,9 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
 
     if (n_electrons == 0)
     {
-      m_track_path_offset[hiter->second->get_trkid()] += step_length;
+      m_track_path_offset[track_id] += step_length;
       continue;
     }
-    const int track_id = hiter->second->get_trkid();
-    double track_segment_start = m_track_path_offset[track_id];
 
     if (Verbosity() > 100)
     {
@@ -941,7 +1082,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
     }
 
     int notReachingReadout = 0;
-//    int notInAcceptance = 0;
+    //    int notInAcceptance = 0;
 
     // Loop over primary electrons (clusters)
     for (unsigned int i = 0; i < n_electrons; i++)
@@ -958,7 +1099,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
           cluster_size = std::distance(cluster_size_cdf.begin(), it);
         }
       }
-      
+
       // We choose the electron starting position at random from a flat
       // distribution along the path length the parameter t is the fraction of
       // the distance along the path betwen entry and exit points, it has
@@ -976,278 +1117,276 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
       // Loop over secondary electrons in the cluster
       for (int j = 0; j < cluster_size; ++j)
       {
-
-
-      const double x_start = hiter->second->get_x(0) + f * (hiter->second->get_x(1) - hiter->second->get_x(0));
-      const double y_start = hiter->second->get_y(0) + f * (hiter->second->get_y(1) - hiter->second->get_y(0));
-      const double z_start = hiter->second->get_z(0) + f * (hiter->second->get_z(1) - hiter->second->get_z(0));
-      const double t_start = hiter->second->get_t(0) + f * (hiter->second->get_t(1) - hiter->second->get_t(0));
-      unsigned int side = 0;
-      if (z_start > 0)
-      {
-        side = 1;
-      }
-
-      double drift_distance = tpc_length / 2. - std::abs(z_start);
-      if (drift_distance < 0.)
-      {
-        drift_distance = 0.;
-      }
-      const double r_sigma = diffusion_trans * sqrt(drift_distance);
-      double rantrans =
-          gsl_ran_gaussian(RandomGenerator.get(), r_sigma) +
-          gsl_ran_gaussian(RandomGenerator.get(), added_smear_sigma_trans);
-
-      const double t_path = drift_distance / drift_velocity;
-      const double t_sigma = diffusion_long * std::sqrt(drift_distance) / drift_velocity;
-      const double rantime =
-          gsl_ran_gaussian(RandomGenerator.get(), t_sigma) +
-          gsl_ran_gaussian(RandomGenerator.get(), added_smear_sigma_long) / drift_velocity;
-      double t_final = t_start + t_path + rantime;
-
-      if (t_final < min_time || t_final > max_time)
-      {
-        continue;
-      }
-
-      double z_final;
-      if (z_start < 0)
-      {
-        z_final = -tpc_length / 2. + t_final * drift_velocity;
-      }
-      else
-      {
-        z_final = tpc_length / 2. - t_final * drift_velocity;
-      }
-
-      const double radstart = std::sqrt(square(x_start) + square(y_start));
-      const double phistart = std::atan2(y_start, x_start);
-      if (m_avg_x_enabled && radstart >= m_avg_layer_rlow && radstart <= m_avg_layer_rhigh)
-      {
-        // collect undiffused electron start positions for the configured layer
-        auto &layer_data = m_track_layer_data[track_id];
-        layer_data.sum_rphi += m_avg_layer_radius * phistart;
-        layer_data.sum_x += x_start;
-        layer_data.count++;
-        if (j == 0)
+        const double x_start = hiter->second->get_x(0) + f * (hiter->second->get_x(1) - hiter->second->get_x(0));
+        const double y_start = hiter->second->get_y(0) + f * (hiter->second->get_y(1) - hiter->second->get_y(0));
+        const double z_start = hiter->second->get_z(0) + f * (hiter->second->get_z(1) - hiter->second->get_z(0));
+        const double t_start = hiter->second->get_t(0) + f * (hiter->second->get_t(1) - hiter->second->get_t(0));
+        unsigned int side = 0;
+        if (z_start > 0)
         {
-          layer_data.sum_rphi_primary += m_avg_layer_radius * phistart;
-          layer_data.sum_x_primary += x_start;
-          layer_data.count_primary++;
-        }
-      }
-      const double ranphi = gsl_ran_flat(RandomGenerator.get(), -M_PI, M_PI);
-      double x_final = x_start + rantrans * std::cos(ranphi);  // Initialize these to be only diffused first, will be overwritten if doing SC distortion
-      double y_final = y_start + rantrans * std::sin(ranphi);
-
-      if (force_min_trans_drift_length > drift_distance)
-      {
-        const double additional_length = force_min_trans_drift_length - drift_distance;
-        if (additional_length > 0.)
-        {
-          const double extra_sigma = diffusion_trans * std::sqrt(additional_length);
-          const double extra_r = gsl_ran_gaussian(RandomGenerator.get(), extra_sigma);
-          const double extra_phi = gsl_ran_flat(RandomGenerator.get(), -M_PI, M_PI);
-          x_final += extra_r * std::cos(extra_phi);
-          y_final += extra_r * std::sin(extra_phi);
-        }
-      }
-
-      const double delta_x = x_final - x_start;
-      const double delta_y = y_final - y_start;
-      rantrans = std::sqrt(square(delta_x) + square(delta_y));
-
-      double rad_final = sqrt(square(x_final) + square(y_final));
-      double phi_final = atan2(y_final, x_final);
-      if (m_avg_x_enabled && rad_final >= m_avg_layer_rlow && rad_final <= m_avg_layer_rhigh)
-      {
-        auto &layer_data = m_track_layer_data[track_id];
-        // Use the nominal layer radius so residuals are purely angular and not
-        // inflated by radius fluctuations from diffusion.
-        layer_data.sum_rphi_end += m_avg_layer_radius * phi_final;
-        layer_data.sum_x_end += x_final;
-        layer_data.count_end++;
-        if (j == 0)
-        {
-          layer_data.sum_rphi_end_primary += m_avg_layer_radius * phi_final;
-          layer_data.sum_x_end_primary += x_final;
-          layer_data.count_end_primary++;
-        }
-      }
-
-      if (do_ElectronDriftQAHistos)
-      {
-        if (diffDistance)
-        {
-          diffDistance->Fill(rantrans);
-        }
-        if (diffDX)
-        {
-          diffDX->Fill(delta_x);
-        }
-        if (diffDY)
-        {
-          diffDY->Fill(delta_y);
-        }
-        if (diffVsDrift)
-        {
-          diffVsDrift->Fill(drift_distance, rantrans);
-        }
-        if (diffDXVsDrift)
-        {
-          diffDXVsDrift->Fill(drift_distance, delta_x);
-        }
-        if (diffDYVsDrift)
-        {
-          diffDYVsDrift->Fill(drift_distance, delta_y);
+          side = 1;
         }
 
-        if (drift_distance > 0.)
+        double drift_distance = tpc_length / 2. - std::abs(z_start);
+        if (drift_distance < 0.)
         {
-          const double sqrtL = std::sqrt(drift_distance);
-          const double norm = rantrans / sqrtL;
-          if (diffPerSqrtL)
-          {
-            diffPerSqrtL->Fill(norm);
-          }
-          if (diffPerSqrtLVsDrift)
-          {
-            diffPerSqrtLVsDrift->Fill(drift_distance, norm);
-          }
-          const double dxnorm = delta_x / sqrtL;
-          const double dynorm = delta_y / sqrtL;
-          if (diffDXPerSqrtL)
-          {
-            diffDXPerSqrtL->Fill(dxnorm);
-          }
-          if (diffDYPerSqrtL)
-          {
-            diffDYPerSqrtL->Fill(dynorm);
-          }
-          if (diffDXPerSqrtLVsDrift)
-          {
-            diffDXPerSqrtLVsDrift->Fill(drift_distance, dxnorm);
-          }
-          if (diffDYPerSqrtLVsDrift)
-          {
-            diffDYPerSqrtLVsDrift->Fill(drift_distance, dynorm);
-          }
+          drift_distance = 0.;
         }
-        z_startmap->Fill(z_start, radstart);                   // map of starting location in Z vs. R
-        deltaphinodist->Fill(phistart, rantrans / rad_final);  // delta phi no distortion, just diffusion+smear
-        deltarnodist->Fill(radstart, rantrans);                // delta r no distortion, just diffusion+smear
-      }
+        const double r_sigma = diffusion_trans * sqrt(drift_distance);
+        double rantrans =
+            gsl_ran_gaussian(RandomGenerator.get(), r_sigma) +
+            gsl_ran_gaussian(RandomGenerator.get(), added_smear_sigma_trans);
 
-      if (m_distortionMap)
-      {
-        // zhangcanyu
-        const double reaches = m_distortionMap->get_reaches_readout(radstart, phistart, z_start);
-        if (reaches < thresholdforreachesreadout)
+        const double t_path = drift_distance / drift_velocity;
+        const double t_sigma = diffusion_long * std::sqrt(drift_distance) / drift_velocity;
+        const double rantime =
+            gsl_ran_gaussian(RandomGenerator.get(), t_sigma) +
+            gsl_ran_gaussian(RandomGenerator.get(), added_smear_sigma_long) / drift_velocity;
+        double t_final = t_start + t_path + rantime;
+
+        if (t_final < min_time || t_final > max_time)
         {
-          notReachingReadout++;
           continue;
         }
 
-        const double r_distortion = m_distortionMap->get_r_distortion(radstart, phistart, z_start);
-        const double phi_distortion = m_distortionMap->get_rphi_distortion(radstart, phistart, z_start) / radstart;
-        const double z_distortion = m_distortionMap->get_z_distortion(radstart, phistart, z_start);
-
-        rad_final += r_distortion;
-        phi_final += phi_distortion;
-        z_final += z_distortion;
+        double z_final;
         if (z_start < 0)
         {
-          t_final = (z_final + tpc_length / 2.0) / drift_velocity;
+          z_final = -tpc_length / 2. + t_final * drift_velocity;
         }
         else
         {
-          t_final = (tpc_length / 2.0 - z_final) / drift_velocity;
+          z_final = tpc_length / 2. - t_final * drift_velocity;
         }
 
-        x_final = rad_final * std::cos(phi_final);
-        y_final = rad_final * std::sin(phi_final);
+        const double radstart = std::sqrt(square(x_start) + square(y_start));
+        const double phistart = std::atan2(y_start, x_start);
+        if (m_avg_x_enabled && radstart >= m_avg_layer_rlow && radstart <= m_avg_layer_rhigh)
+        {
+          // collect undiffused electron start positions for the configured layer
+          auto &layer_data = m_track_layer_data[track_id];
+          layer_data.sum_rphi += m_avg_layer_radius * phistart;
+          layer_data.sum_x += x_start;
+          layer_data.count++;
+          if (j == 0)
+          {
+            layer_data.sum_rphi_primary += m_avg_layer_radius * phistart;
+            layer_data.sum_x_primary += x_start;
+            layer_data.count_primary++;
+          }
+        }
+        const double ranphi = gsl_ran_flat(RandomGenerator.get(), -M_PI, M_PI);
+        double x_final = x_start + rantrans * std::cos(ranphi);  // Initialize these to be only diffused first, will be overwritten if doing SC distortion
+        double y_final = y_start + rantrans * std::sin(ranphi);
 
-        //	if(i < 1)
-        //{std::cout << " electron " << i << " r_distortion " << r_distortion << " phi_distortion " << phi_distortion << " rad_final " << rad_final << " phi_final " << phi_final << " r*dphi distortion " << rad_final * phi_distortion << " z_distortion " << z_distortion << std::endl;}
+        if (force_min_trans_drift_length > drift_distance)
+        {
+          const double additional_length = force_min_trans_drift_length - drift_distance;
+          if (additional_length > 0.)
+          {
+            const double extra_sigma = diffusion_trans * std::sqrt(additional_length);
+            const double extra_r = gsl_ran_gaussian(RandomGenerator.get(), extra_sigma);
+            const double extra_phi = gsl_ran_flat(RandomGenerator.get(), -M_PI, M_PI);
+            x_final += extra_r * std::cos(extra_phi);
+            y_final += extra_r * std::sin(extra_phi);
+          }
+        }
+
+        const double delta_x = x_final - x_start;
+        const double delta_y = y_final - y_start;
+        rantrans = std::sqrt(square(delta_x) + square(delta_y));
+
+        double rad_final = sqrt(square(x_final) + square(y_final));
+        double phi_final = atan2(y_final, x_final);
+        if (m_avg_x_enabled && rad_final >= m_avg_layer_rlow && rad_final <= m_avg_layer_rhigh)
+        {
+          auto &layer_data = m_track_layer_data[track_id];
+          // Use the nominal layer radius so residuals are purely angular and not
+          // inflated by radius fluctuations from diffusion.
+          layer_data.sum_rphi_end += m_avg_layer_radius * phi_final;
+          layer_data.sum_x_end += x_final;
+          layer_data.count_end++;
+          if (j == 0)
+          {
+            layer_data.sum_rphi_end_primary += m_avg_layer_radius * phi_final;
+            layer_data.sum_x_end_primary += x_final;
+            layer_data.count_end_primary++;
+          }
+        }
 
         if (do_ElectronDriftQAHistos)
         {
-          const double phi_final_nodiff = phistart + phi_distortion;
-          const double rad_final_nodiff = radstart + r_distortion;
-          deltarnodiff->Fill(radstart, rad_final_nodiff - radstart);    // delta r no diffusion, just distortion
-          deltaphinodiff->Fill(phistart, phi_final_nodiff - phistart);  // delta phi no diffusion, just distortion
-          deltaphivsRnodiff->Fill(radstart, phi_final_nodiff - phistart);
-          deltaRphinodiff->Fill(radstart, rad_final_nodiff * phi_final_nodiff - radstart * phistart);
-
-          // Fill Diagnostic plots, written into ElectronDriftQA.root
-          hitmapstart->Fill(x_start, y_start);  // G4Hit starting positions
-          hitmapend->Fill(x_final, y_final);    // INcludes diffusion and distortion
-          hitmapstart_z->Fill(z_start, radstart);
-          hitmapend_z->Fill(z_final, rad_final);
-          deltar->Fill(radstart, rad_final - radstart);    // total delta r
-          deltaphi->Fill(phistart, phi_final - phistart);  // total delta phi
-          deltaz->Fill(z_start, z_distortion);             // map of distortion in Z (time)
-        }
-      }
-
-      if (do_ElectronDriftQAHistos && driftXY)
-      {
-        driftXY->Fill(x_start, y_start, x_final, y_final);
-      }
-
-      if (m_density_enabled && electronDensityProfile)
-      {
-        if (rad_final >= m_density_capture_rlow && rad_final <= m_density_capture_rhigh)
-        {
-          const double delta_r = radstart - m_density_layer_radius;
-          if (delta_r >= -m_density_hist_half_range && delta_r <= m_density_hist_half_range)
+          if (diffDistance)
           {
-            const double s_global = track_segment_start + f * step_length;
-            if (!m_track_anchor_set[track_id])
+            diffDistance->Fill(rantrans);
+          }
+          if (diffDX)
+          {
+            diffDX->Fill(delta_x);
+          }
+          if (diffDY)
+          {
+            diffDY->Fill(delta_y);
+          }
+          if (diffVsDrift)
+          {
+            diffVsDrift->Fill(drift_distance, rantrans);
+          }
+          if (diffDXVsDrift)
+          {
+            diffDXVsDrift->Fill(drift_distance, delta_x);
+          }
+          if (diffDYVsDrift)
+          {
+            diffDYVsDrift->Fill(drift_distance, delta_y);
+          }
+
+          if (drift_distance > 0.)
+          {
+            const double sqrtL = std::sqrt(drift_distance);
+            const double norm = rantrans / sqrtL;
+            if (diffPerSqrtL)
             {
-              m_track_anchor_set[track_id] = true;
-              m_track_anchor_length[track_id] = s_global;
+              diffPerSqrtL->Fill(norm);
             }
-            electronDensityProfile->Fill(s_global - m_track_anchor_length[track_id]);
+            if (diffPerSqrtLVsDrift)
+            {
+              diffPerSqrtLVsDrift->Fill(drift_distance, norm);
+            }
+            const double dxnorm = delta_x / sqrtL;
+            const double dynorm = delta_y / sqrtL;
+            if (diffDXPerSqrtL)
+            {
+              diffDXPerSqrtL->Fill(dxnorm);
+            }
+            if (diffDYPerSqrtL)
+            {
+              diffDYPerSqrtL->Fill(dynorm);
+            }
+            if (diffDXPerSqrtLVsDrift)
+            {
+              diffDXPerSqrtLVsDrift->Fill(drift_distance, dxnorm);
+            }
+            if (diffDYPerSqrtLVsDrift)
+            {
+              diffDYPerSqrtLVsDrift->Fill(drift_distance, dynorm);
+            }
+          }
+          z_startmap->Fill(z_start, radstart);                   // map of starting location in Z vs. R
+          deltaphinodist->Fill(phistart, rantrans / rad_final);  // delta phi no distortion, just diffusion+smear
+          deltarnodist->Fill(radstart, rantrans);                // delta r no distortion, just diffusion+smear
+        }
+
+        if (m_distortionMap)
+        {
+          // zhangcanyu
+          const double reaches = m_distortionMap->get_reaches_readout(radstart, phistart, z_start);
+          if (reaches < thresholdforreachesreadout)
+          {
+            notReachingReadout++;
+            continue;
+          }
+
+          const double r_distortion = m_distortionMap->get_r_distortion(radstart, phistart, z_start);
+          const double phi_distortion = m_distortionMap->get_rphi_distortion(radstart, phistart, z_start) / radstart;
+          const double z_distortion = m_distortionMap->get_z_distortion(radstart, phistart, z_start);
+
+          rad_final += r_distortion;
+          phi_final += phi_distortion;
+          z_final += z_distortion;
+          if (z_start < 0)
+          {
+            t_final = (z_final + tpc_length / 2.0) / drift_velocity;
+          }
+          else
+          {
+            t_final = (tpc_length / 2.0 - z_final) / drift_velocity;
+          }
+
+          x_final = rad_final * std::cos(phi_final);
+          y_final = rad_final * std::sin(phi_final);
+
+          //	if(i < 1)
+          //{std::cout << " electron " << i << " r_distortion " << r_distortion << " phi_distortion " << phi_distortion << " rad_final " << rad_final << " phi_final " << phi_final << " r*dphi distortion " << rad_final * phi_distortion << " z_distortion " << z_distortion << std::endl;}
+
+          if (do_ElectronDriftQAHistos)
+          {
+            const double phi_final_nodiff = phistart + phi_distortion;
+            const double rad_final_nodiff = radstart + r_distortion;
+            deltarnodiff->Fill(radstart, rad_final_nodiff - radstart);    // delta r no diffusion, just distortion
+            deltaphinodiff->Fill(phistart, phi_final_nodiff - phistart);  // delta phi no diffusion, just distortion
+            deltaphivsRnodiff->Fill(radstart, phi_final_nodiff - phistart);
+            deltaRphinodiff->Fill(radstart, rad_final_nodiff * phi_final_nodiff - radstart * phistart);
+
+            // Fill Diagnostic plots, written into ElectronDriftQA.root
+            hitmapstart->Fill(x_start, y_start);  // G4Hit starting positions
+            hitmapend->Fill(x_final, y_final);    // INcludes diffusion and distortion
+            hitmapstart_z->Fill(z_start, radstart);
+            hitmapend_z->Fill(z_final, rad_final);
+            deltar->Fill(radstart, rad_final - radstart);    // total delta r
+            deltaphi->Fill(phistart, phi_final - phistart);  // total delta phi
+            deltaz->Fill(z_start, z_distortion);             // map of distortion in Z (time)
           }
         }
-      }
 
-      // remove electrons outside of our acceptance. Careful though, electrons from just inside 30 cm can contribute in the 1st active layer readout, so leave a little margin
-      if (rad_final < min_active_radius - 2.0 || rad_final > max_active_radius + 1.0)
-      {
-//        notInAcceptance++;
-        continue;
-      }
+        if (do_ElectronDriftQAHistos && driftXY)
+        {
+          driftXY->Fill(x_start, y_start, x_final, y_final);
+        }
 
-      if (Verbosity() > 1000)
-      //      if(i < 1)
-      {
-        std::cout << "electron " << i << " g4hitid " << hiter->first << " f " << f << std::endl;
-        std::cout << "radstart " << radstart << " x_start: " << x_start
-                  << ", y_start: " << y_start
-                  << ",z_start: " << z_start
-                  << " t_start " << t_start
-                  << " t_path " << t_path
-                  << " t_sigma " << t_sigma
-                  << " rantime " << rantime
-                  << std::endl;
+        if (m_density_enabled && electronDensityProfile)
+        {
+          if (rad_final >= m_density_capture_rlow && rad_final <= m_density_capture_rhigh)
+          {
+            const double delta_r = radstart - m_density_layer_radius;
+            if (delta_r >= -m_density_hist_half_range && delta_r <= m_density_hist_half_range)
+            {
+              const double s_global = track_segment_start + f * step_length;
+              if (!m_track_anchor_set[track_id])
+              {
+                m_track_anchor_set[track_id] = true;
+                m_track_anchor_length[track_id] = s_global;
+              }
+              electronDensityProfile->Fill(s_global - m_track_anchor_length[track_id]);
+            }
+          }
+        }
 
-        std::cout << "       rad_final " << rad_final << " x_final " << x_final
-                  << " y_final " << y_final
-                  << " z_final " << z_final << " t_final " << t_final
-                  << " zdiff " << z_final - z_start << std::endl;
-      }
+        // remove electrons outside of our acceptance. Careful though, electrons from just inside 30 cm can contribute in the 1st active layer readout, so leave a little margin
+        if (rad_final < min_active_radius - 2.0 || rad_final > max_active_radius + 1.0)
+        {
+          //        notInAcceptance++;
+          continue;
+        }
 
-      if (Verbosity() > 0)
-      {
-        assert(nt);
-        nt->Fill(ihit, t_start, t_final, t_sigma, rad_final, z_start, z_final);
-      }
-      padplane->MapToPadPlane(truth_clusterer, single_hitsetcontainer.get(),
-                              temp_hitsetcontainer.get(), hittruthassoc, x_final, y_final, t_final,
-                              side, hiter, ntpad, nthit);
-    } // end loop over secondary electrons
+        if (Verbosity() > 1000)
+        //      if(i < 1)
+        {
+          std::cout << "electron " << i << " g4hitid " << hiter->first << " f " << f << std::endl;
+          std::cout << "radstart " << radstart << " x_start: " << x_start
+                    << ", y_start: " << y_start
+                    << ",z_start: " << z_start
+                    << " t_start " << t_start
+                    << " t_path " << t_path
+                    << " t_sigma " << t_sigma
+                    << " rantime " << rantime
+                    << std::endl;
+
+          std::cout << "       rad_final " << rad_final << " x_final " << x_final
+                    << " y_final " << y_final
+                    << " z_final " << z_final << " t_final " << t_final
+                    << " zdiff " << z_final - z_start << std::endl;
+        }
+
+        if (Verbosity() > 0)
+        {
+          assert(nt);
+          nt->Fill(ihit, t_start, t_final, t_sigma, rad_final, z_start, z_final);
+        }
+        padplane->MapToPadPlane(truth_clusterer, single_hitsetcontainer.get(),
+                                temp_hitsetcontainer.get(), hittruthassoc, x_final, y_final, t_final,
+                                side, hiter, ntpad, nthit);
+      }  // end loop over secondary electrons
     }  // end loop over electrons for this g4hit
 
     m_track_path_offset[track_id] = track_segment_start + step_length;
@@ -1299,7 +1438,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
       if (Verbosity() > 50)
       {
         int evtseq_dbg = -1;
-        if (auto* eh = findNode::getClass<EventHeader>(topNode, "EventHeader"))
+        if (auto *eh = findNode::getClass<EventHeader>(topNode, "EventHeader"))
         {
           evtseq_dbg = eh->get_EvtSequence();
         }
@@ -1353,7 +1492,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
 
             eg4hit += temp_tpchit->getEnergy();
             //            ecollectedhits += temp_tpchit->getEnergy();
-//            ncollectedhits++;
+            //            ncollectedhits++;
           }
 
           // find or add this hit to the node tree
@@ -1398,7 +1537,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
     {
       std::cout << "PHG4TpcElectronDrift: Forcing final dump of temp_hitsetcontainer" << std::endl;
     }
-    
+
     for (TrkrHitSetContainer::ConstIterator temp_hitset_iter = temp_hitset_range_final.first;
          temp_hitset_iter != temp_hitset_range_final.second;
          ++temp_hitset_iter)
@@ -1407,10 +1546,10 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
       const unsigned int layer = TrkrDefs::getLayer(node_hitsetkey);
       const int sector = TpcDefs::getSectorId(node_hitsetkey);
       const int side = TpcDefs::getSide(node_hitsetkey);
-      
+
       if (Verbosity() > 50)
       {
-        std::cout << "PHG4TpcElectronDrift: final dump - temp_hitset with key: " << node_hitsetkey 
+        std::cout << "PHG4TpcElectronDrift: final dump - temp_hitset with key: " << node_hitsetkey
                   << " in layer " << layer << " with sector " << sector << " side " << side << std::endl;
       }
 
@@ -1442,6 +1581,42 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
 
     // erase all entries in the temp hitsetcontainer
     temp_hitsetcontainer->Reset();
+  }
+
+  if (m_truth_intersection_hits)
+  {
+    for (const auto &entry : truth_layer_intersections)
+    {
+      const auto &point = entry.second;
+      auto *intersection_hit = new PHG4Hitv1();
+      intersection_hit->set_trkid(point.track_id);
+      intersection_hit->set_layer(point.layer);
+      intersection_hit->set_x(0, point.x);
+      intersection_hit->set_y(0, point.y);
+      intersection_hit->set_z(0, point.z);
+      intersection_hit->set_t(0, point.t);
+      intersection_hit->set_x(1, point.x);
+      intersection_hit->set_y(1, point.y);
+      intersection_hit->set_z(1, point.z);
+      intersection_hit->set_t(1, point.t);
+      // Optional direction/energy metadata intentionally omitted.
+      // intersection_hit->set_px(0, point.dirx);
+      // intersection_hit->set_py(0, point.diry);
+      // intersection_hit->set_pz(0, point.dirz);
+      // intersection_hit->set_px(1, point.dirx);
+      // intersection_hit->set_py(1, point.diry);
+      // intersection_hit->set_pz(1, point.dirz);
+      // intersection_hit->set_edep(point.edep);
+      // intersection_hit->set_eion(point.eion);
+      intersection_hit->set_path_length(point.path);
+      m_truth_intersection_hits->AddHit(point.layer, intersection_hit);
+    }
+
+    if (Verbosity() > 1)
+    {
+      std::cout << Name() << ": wrote " << truth_layer_intersections.size()
+                << " truth layer intersections to " << kTpcTruthIntersectionNodeName << std::endl;
+    }
   }
 
   if (m_avg_x_enabled && m_avgXResidualTree)
@@ -1539,7 +1714,10 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
   if (Verbosity() > 20)
   {
     int evtseq = -1;
-    if (auto* eh = findNode::getClass<EventHeader>(topNode, "EventHeader")) { evtseq = eh->get_EvtSequence(); }
+    if (auto *eh = findNode::getClass<EventHeader>(topNode, "EventHeader"))
+    {
+      evtseq = eh->get_EvtSequence();
+    }
     std::cout << "From PHG4TpcElectronDrift: hitsetcontainer printout at end: evt=" << evtseq << std::endl;
     // We want all hitsets for the Tpc
     TrkrHitSetContainer::ConstRange hitset_range = hitsetcontainer->getHitSets(TrkrDefs::TrkrId::tpcId);
@@ -1550,10 +1728,10 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
       // we have an itrator to one TrkrHitSet for the Tpc from the trkrHitSetContainer
       TrkrDefs::hitsetkey hitsetkey = hitset_iter->first;
       const unsigned int layer = TrkrDefs::getLayer(hitsetkey);
-     //if (layer != print_layer)
+      // if (layer != print_layer)
       //{
-       // continue;
-     // }
+      //  continue;
+      // }
       const int sector = TpcDefs::getSectorId(hitsetkey);
       const int side = TpcDefs::getSide(hitsetkey);
 
@@ -1563,7 +1741,6 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
       TrkrHitSet *hitset = hitset_iter->second;
       TrkrHitSet::ConstRange hit_range = hitset->getHits();
 
-      
       for (TrkrHitSet::ConstIterator hit_iter = hit_range.first;
            hit_iter != hit_range.second;
            ++hit_iter)
@@ -1731,16 +1908,16 @@ void PHG4TpcElectronDrift::set_seed(const unsigned int seed)
 
 void PHG4TpcElectronDrift::SetDefaultParameters()
 {
-  //longitudinal diffusion for 50:50 Ne:CF4 is 0.012, transverse is 0.004, drift velocity is 0.008
-  //longitudinal diffusion for 60:40 Ar:CF4 is 0.012, transverse is 0.004, drift velocity is 0.008 (chosen to be the same at 50/50 Ne:CF4)
-  //longitudinal diffusion for 65:25:10 Ar:CF4:N2 is 0.013613, transverse is 0.005487, drift velocity is 0.006965
-  //longitudinal diffusion for 75:20:05 Ar:CF4:i-C4H10 is 0.014596, transverse is 0.005313, drift velocity is 0.007550
+  // longitudinal diffusion for 50:50 Ne:CF4 is 0.012, transverse is 0.004, drift velocity is 0.008
+  // longitudinal diffusion for 60:40 Ar:CF4 is 0.012, transverse is 0.004, drift velocity is 0.008 (chosen to be the same at 50/50 Ne:CF4)
+  // longitudinal diffusion for 65:25:10 Ar:CF4:N2 is 0.013613, transverse is 0.005487, drift velocity is 0.006965
+  // longitudinal diffusion for 75:20:05 Ar:CF4:i-C4H10 is 0.014596, transverse is 0.005313, drift velocity is 0.007550
 
   set_default_double_param("diffusion_long", 0.014596);   // cm/SQRT(cm)
   set_default_double_param("diffusion_trans", 0.005313);  // cm/SQRT(cm)
-  set_default_double_param("drift_velocity", 0.00755);  // cm/ns
-  set_default_double_param("Ne_frac", 0.00); 
-  set_default_double_param("Ar_frac", 0.75); 
+  set_default_double_param("drift_velocity", 0.00755);    // cm/ns
+  set_default_double_param("Ne_frac", 0.00);
+  set_default_double_param("Ar_frac", 0.75);
   set_default_double_param("CF4_frac", 0.20);
   set_default_double_param("N2_frac", 0.00);
   set_default_double_param("isobutane_frac", 0.05);
@@ -1751,8 +1928,8 @@ void PHG4TpcElectronDrift::SetDefaultParameters()
 
   // These are purely fudge factors, used to increase the resolution to 150 microns and 500 microns, respectively
   // override them from the macro to get a different resolution
-  set_default_double_param("added_smear_trans", 0.0);  // cm (used to be 0.085 before sims got better)
-  set_default_double_param("added_smear_long", 0.0);   // cm (used to be 0.105 before sims got better)
+  set_default_double_param("added_smear_trans", 0.0);             // cm (used to be 0.085 before sims got better)
+  set_default_double_param("added_smear_long", 0.0);              // cm (used to be 0.105 before sims got better)
   set_default_double_param("force_min_trans_drift_length", 0.0);  // cm
   set_default_int_param("density_layer", -1);
   set_default_double_param("density_bin_width_cm", 0.05);

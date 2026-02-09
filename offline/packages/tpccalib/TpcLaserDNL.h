@@ -12,7 +12,7 @@
 
 class SvtxTrackMap;
 class TrkrHitSetContainer;
-class PHG4TpcCylinderGeomContainer;
+class PHG4TpcGeomContainer;
 class ActsGeometry;
 class TrkrClusterContainer;
 class TrkrCluster;
@@ -59,7 +59,7 @@ private:
 // nodes
   SvtxTrackMap* m_track_map{nullptr};
   TrkrHitSetContainer* m_hitsets{nullptr};
-  PHG4TpcCylinderGeomContainer* m_geom{nullptr};
+  PHG4TpcGeomContainer* m_geom{nullptr};
   ActsGeometry* m_acts{nullptr};
   TrkrClusterContainer* m_clusters{nullptr};
 

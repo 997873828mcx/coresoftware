@@ -107,7 +107,15 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   TrkrClusterContainer *truthclustercontainer{nullptr};  // the TrkrClusterContainer for truth clusters
   ActsGeometry *m_tGeometry{nullptr};
   PHG4TpcGeomContainer *seggeo{nullptr};
+  PHG4HitContainer *m_truth_intersection_hits{nullptr};
   SvtxTrackMap *m_track_map{nullptr};
+
+  struct TpcLayerRadius
+  {
+    unsigned int layer{0};
+    double radius{0.0};
+  };
+  std::vector<TpcLayerRadius> m_tpc_layer_radii;
 
   TNtuple *nt{nullptr};
   TNtuple *nthit{nullptr};
