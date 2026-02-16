@@ -16,7 +16,9 @@ class PHG4TpcGeomContainer;
 class ActsGeometry;
 class TrkrClusterContainer;
 class TrkrCluster;
+class TrkrClusterHitAssoc;
 class TrkrTruthTrackContainer;
+class TrkrHitTruthAssoc;
 class PHG4HitContainer;
 class TFile;
 class TTree;
@@ -54,6 +56,8 @@ void set_max_dz(double v) { m_max_dz = v; }
   void set_include_fallback_intersections(bool v) { m_include_fallback_intersections = v; }
   // enable/disable fitted-layer-44 residual calculation
   void set_enable_fit_layer44_residuals(bool v) { m_enable_fit_layer44_residuals = v; }
+  // when true, only use reco hits/clusters that are truth-associated to primary tracks
+  void set_primary_hits_only(bool v) { m_primary_hits_only = v; }
 
 private:
 // nodes
@@ -83,6 +87,7 @@ double m_max_dz{1.0}; // cm
   unsigned int m_display_hit_subsamples{0};
   bool m_include_fallback_intersections{false};
   bool m_enable_fit_layer44_residuals{true};
+  bool m_primary_hits_only{true};
 
   struct LayerPoint
   {
@@ -158,6 +163,9 @@ static double wrap_dphi(double d);
   void build_truth_seeds(std::vector<TrackSeed>& seeds) const;
 
   TrkrTruthTrackContainer* m_truth_tracks{nullptr};
+  TrkrHitTruthAssoc* m_hittruthassoc{nullptr};
+  TrkrClusterHitAssoc* m_cluster_hit_assoc{nullptr};
+  PHG4HitContainer* m_g4hits_tpc{nullptr};
   PHG4HitContainer* m_g4hits{nullptr};
 
   struct DisplayIntersection

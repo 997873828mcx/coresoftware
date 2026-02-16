@@ -6,6 +6,8 @@
 #include <trackbase/TrkrHit.h>
 #include <trackbase/TrkrClusterContainer.h>
 #include <trackbase/TrkrCluster.h>
+#include <trackbase/TrkrClusterHitAssoc.h>
+#include <trackbase/TrkrHitTruthAssoc.h>
 #include <trackbase/TrkrDefs.h>
 #include <trackbase/TpcDefs.h>
 #include <trackbase/ActsGeometry.h>
@@ -20,14 +22,10 @@
 #include <g4main/PHG4Hit.h>
 
 #include <phool/getClass.h>
-#include <phool/PHIODataNode.h>
-#include <phool/PHObject.h>
 #include <fun4all/Fun4AllReturnCodes.h>
 
 #include <TFile.h>
 #include <TTree.h>
-#include <TMath.h>
-
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -41,6 +39,11 @@
 
 // For EventHeader event sequence tagging
 #include <ffaobjects/EventHeader.h>
+
+namespace
+{
+  constexpr const char* kTpcTrueClusterNodeName = "G4HIT_TPC_TRUECLUSTER";
+}
 
 TpcLaserDNL::TpcLaserDNL(const std::string& name)
 : SubsysReco(name)
@@ -140,7 +143,16 @@ int TpcLaserDNL::InitRun(PHCompositeNode* topNode)
   m_geom = findNode::getClass<PHG4TpcGeomContainer>(topNode,"TPCGEOMCONTAINER");
   m_acts = findNode::getClass<ActsGeometry>(topNode,"ActsGeometry");
   m_truth_tracks = findNode::getClass<TrkrTruthTrackContainer>(topNode, "TRKR_TRUTHTRACKCONTAINER");
-  m_g4hits = findNode::getClass<PHG4HitContainer>(topNode, "G4HIT_TPC");
+  m_g4hits = findNode::getClass<PHG4HitContainer>(topNode, kTpcTrueClusterNodeName);
+  if(m_primary_hits_only)
+  {
+    m_hittruthassoc = findNode::getClass<TrkrHitTruthAssoc>(topNode, "TRKR_HITTRUTHASSOC");
+    m_g4hits_tpc = findNode::getClass<PHG4HitContainer>(topNode, "G4HIT_TPC");
+    if(m_use_clusters)
+    {
+      m_cluster_hit_assoc = findNode::getClass<TrkrClusterHitAssoc>(topNode, "TRKR_CLUSTERHITASSOC");
+    }
+  }
   if(m_use_clusters)
   {
     m_clusters = findNode::getClass<TrkrClusterContainer>(topNode, "TRKR_CLUSTER");
@@ -152,7 +164,7 @@ int TpcLaserDNL::InitRun(PHCompositeNode* topNode)
     std::cout << Name() << ": missing track sources. SvtxTrackMap="
               << (m_track_map!=nullptr)
               << " TRKR_TRUTHTRACKCONTAINER=" << (m_truth_tracks!=nullptr)
-              << " G4HIT_TPC=" << (m_g4hits!=nullptr)
+              << " " << kTpcTrueClusterNodeName << "=" << (m_g4hits!=nullptr)
               << std::endl;
     return -1;
   }
@@ -172,6 +184,23 @@ int TpcLaserDNL::InitRun(PHCompositeNode* topNode)
   {
     std::cout << Name() << ": missing TRKR_CLUSTER node." << std::endl;
     return -1;
+  }
+  if(m_primary_hits_only)
+  {
+    if(!m_truth_tracks || !m_hittruthassoc || !m_g4hits_tpc)
+    {
+      std::cout << Name() << ": missing node(s) required for primary-hit filtering. "
+                << "TRKR_TRUTHTRACKCONTAINER=" << (m_truth_tracks!=nullptr)
+                << " TRKR_HITTRUTHASSOC=" << (m_hittruthassoc!=nullptr)
+                << " G4HIT_TPC=" << (m_g4hits_tpc!=nullptr)
+                << std::endl;
+      return -1;
+    }
+    if(m_use_clusters && !m_cluster_hit_assoc)
+    {
+      std::cout << Name() << ": missing TRKR_CLUSTERHITASSOC node required for primary-hit filtering in cluster mode." << std::endl;
+      return -1;
+    }
   }
   std::cout << Name() << ": InitRun OK. mode="
             << (m_use_clusters? "clusters" : "hits")
@@ -326,10 +355,13 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
     auto hr = m_hitsets->getHitSets(TrkrDefs::TrkrId::tpcId);
     for(auto it = hr.first; it != hr.second; ++it) ++tpc_hitset_count;
   }
-  std::cout << Name() << ": process_event evt=" << m_event
-            << " tpc_hitsets=" << tpc_hitset_count
-            << " use_clusters=" << (m_use_clusters?1:0)
-            << std::endl;
+  if(Verbosity() > 0)
+  {
+    std::cout << Name() << ": process_event evt=" << m_event
+              << " tpc_hitsets=" << tpc_hitset_count
+              << " use_clusters=" << (m_use_clusters?1:0)
+              << std::endl;
+  }
 
   std::vector<TrackSeed> seeds;
   if(m_use_reco_seeds && m_track_map && !m_track_map->empty())
@@ -340,20 +372,65 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
   {
     build_truth_seeds(seeds);
   }
-  // fallback: if no seeds from truth and a track map exists, try reco seeds even if disabled
-  if(seeds.empty() && m_track_map && !m_track_map->empty())
-  {
-    build_reco_seeds(seeds);
-  }
-
   if(seeds.empty())
   {
     std::cout << Name() << ": evt " << m_event << " has no truth track seeds (truth container present="
               << (m_truth_tracks!=nullptr)
-              << ", g4hits present=" << (m_g4hits!=nullptr)
+              << ", " << kTpcTrueClusterNodeName << " present=" << (m_g4hits!=nullptr)
               << ")" << std::endl;
     return Fun4AllReturnCodes::EVENT_OK;
   }
+
+  std::unordered_set<int> primary_track_ids;
+  if(m_primary_hits_only && m_truth_tracks)
+  {
+    const auto truth_range = m_truth_tracks->getTruthTrackRange();
+    primary_track_ids.reserve(std::distance(truth_range.first, truth_range.second));
+    for(auto it = truth_range.first; it != truth_range.second; ++it)
+    {
+      const auto* truth = it->second;
+      if(!truth) continue;
+      primary_track_ids.insert(static_cast<int>(truth->getTrackid()));
+    }
+  }
+
+  const auto hit_has_primary_truth = [&](const TrkrDefs::hitsetkey hitsetkey, const TrkrDefs::hitkey hitkey)
+  {
+    if(!m_primary_hits_only) return true;
+    if(!m_hittruthassoc || !m_g4hits_tpc) return false;
+
+    TrkrHitTruthAssoc::MMap g4hit_map;
+    m_hittruthassoc->getG4Hits(hitsetkey, static_cast<unsigned int>(hitkey), g4hit_map);
+    if(g4hit_map.empty()) return false;
+
+    for(const auto& assoc : g4hit_map)
+    {
+      PHG4Hit* g4hit = m_g4hits_tpc->findHit(assoc.second.second);
+      if(!g4hit) continue;
+      if(primary_track_ids.find(g4hit->get_trkid()) != primary_track_ids.end())
+      {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  const auto cluster_has_primary_truth = [&](const TrkrDefs::cluskey ckey, const TrkrDefs::hitsetkey hitsetkey)
+  {
+    if(!m_primary_hits_only) return true;
+    if(!m_cluster_hit_assoc) return false;
+
+    const auto hit_range = m_cluster_hit_assoc->getHits(ckey);
+    for(auto hitit = hit_range.first; hitit != hit_range.second; ++hitit)
+    {
+      if(hit_has_primary_truth(hitsetkey, hitit->second))
+      {
+        return true;
+      }
+    }
+    return false;
+  };
 
   for(const auto& seed : seeds)
   {
@@ -485,6 +562,34 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
       std::vector<double> hit_charge;
       std::set<unsigned int> unique_tbins;
 
+      const auto pass_line_cuts = [&](const double xh, const double yh, const double zh)
+      {
+        const double ox = xh - x0;
+        const double oy = yh - y0;
+        const double oz = zh - z0;
+        const double tproj = (vx*ox + vy*oy + vz*oz) / v2;
+        const double px = x0 + tproj*vx;
+        const double py = y0 + tproj*vy;
+        const double pz = z0 + tproj*vz;
+        const double dca = std::sqrt(sqr(xh-px) + sqr(yh-py) + sqr(zh-pz));
+        if(dca > m_max_dca) return false;
+        const double dzline = zh - z0;
+        if(std::abs(dzline) > m_max_dz) return false;
+        return true;
+      };
+
+      const auto accumulate_weighted_point = [&](const double weight, const double xh, const double yh, const double zh)
+      {
+        wx += weight * xh;
+        wy += weight * yh;
+        wz += weight * zh;
+        wsum += weight;
+        result.adcsum += weight;
+        result.nused++;
+        result.total_charge_layer += weight;
+        if (weight > result.max_charge_layer) result.max_charge_layer = weight;
+      };
+
       if(!m_use_clusters)
       {
         if(!m_hitsets) continue;
@@ -504,6 +609,7 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
             const auto hitkey = hitit->first;
             TrkrHit* hit = hitit->second;
             if(!hit) continue;
+            if(!hit_has_primary_truth(hsk, hitkey)) continue;
             ++result.nhit_scanned;
 
             double weight = m_weight_by_adc ? static_cast<double>(hit->getAdc())
@@ -523,26 +629,8 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
             double zh = tdriftmax * vdrift - zdriftlen;
             if(side == 0) zh = -zh;
 
-            const double ox = xh - x0;
-            const double oy = yh - y0;
-            const double oz = zh - z0;
-            const double tproj = (vx*ox + vy*oy + vz*oz) / v2;
-            const double px = x0 + tproj*vx;
-            const double py = y0 + tproj*vy;
-            const double pz = z0 + tproj*vz;
-            const double dca = std::sqrt(sqr(xh-px)+sqr(yh-py)+sqr(zh-pz));
-
-            const double dzline = zh - z0;
-
-            if(dca > m_max_dca) continue;
-            if(std::abs(dzline) > m_max_dz) continue;
-
-            wx += weight * xh;
-            wy += weight * yh;
-            wz += weight * zh;
-            wsum += weight;
-            result.adcsum += weight;
-            result.nused++;
+            if(!pass_line_cuts(xh, yh, zh)) continue;
+            accumulate_weighted_point(weight, xh, yh, zh);
 
             hitkeys.push_back(static_cast<ULong64_t>(hitkey));
             hitsetkeys_vec.push_back(static_cast<ULong64_t>(hsk));
@@ -550,8 +638,6 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
             tbin_vec.push_back(static_cast<unsigned int>(tbin));
             hit_charge.push_back(weight);
             unique_tbins.insert(static_cast<unsigned int>(tbin));
-            result.total_charge_layer += weight;
-            if (weight > result.max_charge_layer) result.max_charge_layer = weight;
             padWeights[iphi] += weight;
           }
         }
@@ -571,35 +657,15 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
             const auto ckey = cit->first;
             TrkrCluster* clus = cit->second;
             if(!clus) continue;
+            if(!cluster_has_primary_truth(ckey, hsk)) continue;
 
             double weight = static_cast<double>(clus->getAdc());
             if(weight < m_min_adc) continue;
 
-            Acts::Vector3 g = m_acts->getGlobalPosition(ckey, clus);
-
-            const double ox = g.x() - x0;
-            const double oy = g.y() - y0;
-            const double oz = g.z() - z0;
-            const double tproj = (vx*ox + vy*oy + vz*oz) / v2;
-            const double px = x0 + tproj*vx;
-            const double py = y0 + tproj*vy;
-            const double pz = z0 + tproj*vz;
-            const double dca = std::sqrt(sqr(g.x()-px)+sqr(g.y()-py)+sqr(g.z()-pz));
-
-            const double dzline = g.z() - z0;
-
-            if(dca > m_max_dca) continue;
-            if(std::abs(dzline) > m_max_dz) continue;
-
-            wx += weight * g.x();
-            wy += weight * g.y();
-            wz += weight * g.z();
-            wsum += weight;
-            result.adcsum += weight;
-            result.nused++;
+            const Acts::Vector3 g = m_acts->getGlobalPosition(ckey, clus);
+            if(!pass_line_cuts(g.x(), g.y(), g.z())) continue;
+            accumulate_weighted_point(weight, g.x(), g.y(), g.z());
             hit_charge.push_back(weight);
-            result.total_charge_layer += weight;
-            if (weight > result.max_charge_layer) result.max_charge_layer = weight;
           }
         }
       }
@@ -890,8 +956,9 @@ void TpcLaserDNL::build_reco_seeds(std::vector<TrackSeed>& seeds) const
       lp.diry = vy;
       lp.dirz = vz;
       lp.side = (zi > 0) ? 1 : 0;
-      lp.path = std::sqrt(v2);
-      lp.from_g4hit = true;
+      // Keep path in geometric units, consistent with truth intersections.
+      lp.path = tR * std::sqrt(v2);
+      lp.from_g4hit = false;
       seed.layers.push_back(lp);
     }
 
@@ -940,22 +1007,7 @@ void TpcLaserDNL::build_truth_seeds(std::vector<TrackSeed>& seeds) const
 
   if(seeds.empty()) return;
 
-  std::vector<unsigned int> geometry_layers;
-  {
-    auto lr = m_geom->get_begin_end();
-    for(auto it = lr.first; it != lr.second; ++it)
-    {
-      if(it->second)
-      {
-        geometry_layers.push_back(static_cast<unsigned int>(it->second->get_layer()));
-      }
-    }
-  }
-
   std::unordered_map<unsigned int, std::map<unsigned int, LayerPoint>> layer_cache;
-  const double axial_threshold = 1e-9;
-  const double param_tolerance = 1e-6;
-  const double radial_tolerance = 5e-3;
   PHG4HitContainer::ConstRange hitrange = m_g4hits->getHits();
   for(auto hitit = hitrange.first; hitit != hitrange.second; ++hitit)
   {
@@ -966,135 +1018,58 @@ void TpcLaserDNL::build_truth_seeds(std::vector<TrackSeed>& seeds) const
     if(trkid < 0) continue;
 
     auto idxIt = index_by_id.find(static_cast<unsigned int>(trkid));
-    if(idxIt == index_by_id.end())
-    {
-      // fallback: create a seed directly from the first G4 hit we see for this trkid
-      TrackSeed seed;
-      seed.id = trkid;
-      seed.origin[0] = hit->get_x(0);
-      seed.origin[1] = hit->get_y(0);
-      seed.origin[2] = hit->get_z(0);
-      const double vx = hit->get_x(1) - hit->get_x(0);
-      const double vy = hit->get_y(1) - hit->get_y(0);
-      const double vz = hit->get_z(1) - hit->get_z(0);
-      const double v2 = vx*vx + vy*vy + vz*vz;
-      if(v2 > 0)
-      {
-        const double vmag = std::sqrt(v2);
-        seed.dir[0] = vx / vmag;
-        seed.dir[1] = vy / vmag;
-        seed.dir[2] = vz / vmag;
-        seed.dir_valid = true;
-      }
-      index_by_id[static_cast<unsigned int>(trkid)] = seeds.size();
-      seeds.push_back(std::move(seed));
-      idxIt = index_by_id.find(static_cast<unsigned int>(trkid));
-    }
+    if(idxIt == index_by_id.end()) continue;
 
     unsigned int layer = hit->get_layer();
     if(layer == std::numeric_limits<unsigned int>::max()) continue;
+    auto* layergeom = m_geom->GetLayerCellGeom(static_cast<int>(layer));
+    if(!layergeom) continue;
 
-    // Optimization: Check layers in the vicinity [layer-2, layer+2]
-    // TPC layers are typically 7 to 54 (or similar range depending on geometry)
-    // We clamp the range to avoid invalid lookups
-    const int layer_center = static_cast<int>(layer);
-    const int layer_min = std::max(0, layer_center - 2);
-    const int layer_max = layer_center + 2;
-
-    for(int ilayer = layer_min; ilayer <= layer_max; ++ilayer)
+    const TrackSeed& seed = seeds[idxIt->second];
+    LayerPoint point;
+    point.layer = layer;
+    point.radius = layergeom->get_radius();
+    point.x = hit->get_x(0);
+    point.y = hit->get_y(0);
+    point.z = hit->get_z(0);
+    if(!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z))
     {
-      auto* layergeom = m_geom->GetLayerCellGeom(ilayer);
-      if(!layergeom) continue;
+      continue;
+    }
+    point.side = (point.z > 0) ? 1 : 0;
+    point.path = hit->get_path_length();
+    if(!std::isfinite(point.path))
+    {
+      point.path = std::numeric_limits<double>::infinity();
+    }
+    point.from_g4hit = true;
 
-      const double x0 = hit->get_x(0);
-      const double y0 = hit->get_y(0);
-      const double z0 = hit->get_z(0);
-      const double x1 = hit->get_x(1);
-      const double y1 = hit->get_y(1);
-      const double z1 = hit->get_z(1);
-
-      const double dx = x1 - x0;
-      const double dy = y1 - y0;
-      const double dz = z1 - z0;
-      const double path = std::sqrt(dx*dx + dy*dy + dz*dz);
-      if(path < 1e-6) continue;
-
-      const double R = layergeom->get_radius();
-      const double a = dx*dx + dy*dy;
-      const double b = 2.0*(dx*x0 + dy*y0);
-      const double c = x0*x0 + y0*y0 - R*R;
-
-      LayerPoint candidate;
-      bool have_candidate = false;
-      double best_residual = std::numeric_limits<double>::max();
-
-      auto try_record = [&](double t)
+    if(seed.dir_valid)
+    {
+      point.dirx = seed.dir[0];
+      point.diry = seed.dir[1];
+      point.dirz = seed.dir[2];
+    }
+    else
+    {
+      const double dx = hit->get_x(1) - hit->get_x(0);
+      const double dy = hit->get_y(1) - hit->get_y(0);
+      const double dz = hit->get_z(1) - hit->get_z(0);
+      const double vmag = std::sqrt(dx*dx + dy*dy + dz*dz);
+      if(vmag > 0)
       {
-        const double xi = x0 + t*dx;
-        const double yi = y0 + t*dy;
-        const double zi = z0 + t*dz;
-        const double radial_residual = std::abs(std::sqrt(xi*xi + yi*yi) - R);
-        if(radial_residual > radial_tolerance) return;
-        if(!have_candidate || radial_residual < best_residual)
-        {
-          candidate.layer = static_cast<unsigned int>(ilayer);
-          candidate.radius = R;
-          candidate.x = xi;
-          candidate.y = yi;
-          candidate.z = zi;
-          candidate.dirx = dx;
-          candidate.diry = dy;
-          candidate.dirz = dz;
-          candidate.side = (zi > 0) ? 1 : 0;
-          candidate.path = path;
-          candidate.from_g4hit = true;
-          best_residual = radial_residual;
-          have_candidate = true;
-        }
-      };
-
-      if(a < axial_threshold)
-      {
-        const double r0 = std::sqrt(x0*x0 + y0*y0);
-        const double r1 = std::sqrt(x1*x1 + y1*y1);
-        const double res0 = std::abs(r0 - R);
-        const double res1 = std::abs(r1 - R);
-        if(res0 <= radial_tolerance || res1 <= radial_tolerance)
-        {
-          const double t = (res0 <= res1) ? 0.0 : 1.0;
-          try_record(t);
-        }
+        point.dirx = dx / vmag;
+        point.diry = dy / vmag;
+        point.dirz = dz / vmag;
       }
-      else
-      {
-        double disc = b*b - 4.0*a*c;
-        if(disc >= -1e-12)
-        {
-          disc = std::max(0.0, disc);
-          const double sqrt_disc = std::sqrt(disc);
-          const double t_candidates[2] = {
-              (-b - sqrt_disc) / (2.0*a),
-              (-b + sqrt_disc) / (2.0*a)};
+    }
 
-          for(double t_candidate : t_candidates)
-          {
-            if(t_candidate < -param_tolerance || t_candidate > 1.0 + param_tolerance) continue;
-            double t_clamped = t_candidate;
-            if(t_clamped < 0.0) t_clamped = 0.0;
-            if(t_clamped > 1.0) t_clamped = 1.0;
-            try_record(t_clamped);
-          }
-        }
-      }
-
-      if(!have_candidate) continue;
-
-      auto& layer_map = layer_cache[static_cast<unsigned int>(trkid)];
-      auto layer_it = layer_map.find(static_cast<unsigned int>(ilayer));
-      if(layer_it == layer_map.end() || candidate.path > layer_it->second.path)
-      {
-        layer_map[static_cast<unsigned int>(ilayer)] = candidate;
-      }
+    auto& layer_map = layer_cache[static_cast<unsigned int>(trkid)];
+    auto layer_it = layer_map.find(layer);
+    const bool prefer_this = (layer_it == layer_map.end()) || (point.path < layer_it->second.path);
+    if(prefer_this)
+    {
+      layer_map[layer] = point;
     }
   }
 
@@ -1104,93 +1079,12 @@ void TpcLaserDNL::build_truth_seeds(std::vector<TrackSeed>& seeds) const
   {
     auto cache_it = layer_cache.find(static_cast<unsigned int>(seed.id));
     if(cache_it == layer_cache.end()) continue;
-    std::map<unsigned int, LayerPoint> completed = cache_it->second;
-
-    if(seed.dir_valid)
-    {
-      const double ox = seed.origin[0];
-      const double oy = seed.origin[1];
-      const double oz = seed.origin[2];
-      const double dx = seed.dir[0];
-      const double dy = seed.dir[1];
-      const double dz = seed.dir[2];
-      const double dir_norm = std::sqrt(dx*dx + dy*dy + dz*dz);
-
-      if(dir_norm > 1e-9)
-      {
-        const double a = dx*dx + dy*dy;
-
-        for(const auto layer_id : geometry_layers)
-        {
-          if(completed.find(layer_id) != completed.end()) continue;
-          auto* layergeom = m_geom->GetLayerCellGeom(static_cast<int>(layer_id));
-          if(!layergeom) continue;
-          const double R = layergeom->get_radius();
-
-          const double b = 2.0 * (ox*dx + oy*dy);
-          const double c = ox*ox + oy*oy - R*R;
-
-          if(std::abs(a) < 1e-12)
-          {
-            continue;
-          }
-          const double disc = b*b - 4.0*a*c;
-          if(disc < 0) continue;
-          const double sqrt_disc = std::sqrt(disc);
-          const double t_candidates[2] = {
-              (-b - sqrt_disc) / (2.0*a),
-              (-b + sqrt_disc) / (2.0*a)};
-
-          double t_selected = std::numeric_limits<double>::infinity();
-          for(double tval : t_candidates)
-          {
-            if(tval > 1e-6 && tval < t_selected)
-            {
-              t_selected = tval;
-            }
-          }
-          if(!std::isfinite(t_selected)) continue;
-
-          if(m_include_fallback_intersections)
-          {
-            LayerPoint fallback;
-            fallback.layer = layer_id;
-            fallback.radius = R;
-            fallback.x = ox + dx * t_selected;
-            fallback.y = oy + dy * t_selected;
-            fallback.z = oz + dz * t_selected;
-            fallback.dirx = dx;
-            fallback.diry = dy;
-            fallback.dirz = dz;
-            fallback.side = (fallback.z > 0) ? 1 : 0;
-            fallback.path = t_selected * dir_norm;
-            fallback.from_g4hit = false;
-            completed[layer_id] = fallback;
-          }
-        }
-      }
-    }
-
+    const std::map<unsigned int, LayerPoint>& completed = cache_it->second;
     if(completed.empty())
     {
       std::cout << Name() << ": track " << seed.id
-                << " has no intersections recorded in layer cache" << std::endl;
+                << " has no intersections recorded in " << kTpcTrueClusterNodeName << std::endl;
       continue;
-    }
-    if(completed.size() < geometry_layers.size())
-    {
-      std::cout << Name() << ": track " << seed.id
-                << " intersections " << completed.size()
-                << " < expected " << geometry_layers.size()
-                << ". Missing layers:";
-      for(const auto layer_id : geometry_layers)
-      {
-        if(completed.find(layer_id) == completed.end())
-        {
-          std::cout << " " << layer_id;
-        }
-      }
-      std::cout << std::endl;
     }
 
     seed.layers.clear();
@@ -1200,8 +1094,6 @@ void TpcLaserDNL::build_truth_seeds(std::vector<TrackSeed>& seeds) const
       seed.layers.push_back(kv.second);
     }
 
-    std::sort(seed.layers.begin(), seed.layers.end(),
-              [](const LayerPoint& a, const LayerPoint& b){ return a.layer < b.layer; });
     filtered.push_back(std::move(seed));
   }
   seeds.swap(filtered);
