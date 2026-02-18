@@ -621,7 +621,11 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
     deltarnodiff = new TH2F("deltarnodiff", "Delta r (no diffusion, only SC distortion); r (cm);#Delta r (cm)", 580, 20, 78, 1000, -2, 5);
     deltarnodist = new TH2F("deltarnodist", "Delta r (no SC distortion, only diffusion); r (cm);#Delta r (cm)", 580, 20, 78, 1000, -2, 5);
     ratioElectronsRR = new TH1F("ratioElectronsRR", "Ratio of electrons reach readout vs all in acceptance", 1561, -0.0325, 1.0465);
-    driftXY = new TNtuple("driftXY", "Electron start/end positions", "xs:ys:xf:yf");
+    driftXY = new TTree("driftXY", "Electron start/end positions");
+    driftXY->Branch("start_x", &m_drift_start_x, "start_x/F");
+    driftXY->Branch("start_y", &m_drift_start_y, "start_y/F");
+    driftXY->Branch("end_x", &m_drift_end_x, "end_x/F");
+    driftXY->Branch("end_y", &m_drift_end_y, "end_y/F");
   }
 
   if (m_avg_x_enabled)
@@ -750,8 +754,42 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
   }
   PHG4TruthInfoContainer *truthinfo =
       findNode::getClass<PHG4TruthInfoContainer>(topNode, "G4TruthInfo");
-
   PHG4HitContainer::ConstRange hit_begin_end = g4hit->getHits();
+  bool event_has_tpc_secondaries = false;
+  auto is_secondary_track = [&](const int track_id) -> bool
+  {
+    if (track_id < 0)
+    {
+      return true;
+    }
+
+    /* if (truthinfo)
+    {
+      if (const auto *particle = truthinfo->GetParticle(track_id))
+      {
+        return !truthinfo->is_primary(particle);
+      }
+    } */
+
+    return false;
+  };
+
+  if (m_qa_write_only_with_secondaries)
+  {
+    for (auto hiter = hit_begin_end.first; hiter != hit_begin_end.second; ++hiter)
+    {
+      if (is_secondary_track(hiter->second->get_trkid()))
+      {
+        event_has_tpc_secondaries = true;
+        m_seen_event_with_secondaries = true;
+        break;
+      }
+    }
+  }
+  const bool fill_qa_hists_this_event =
+      do_ElectronDriftQAHistos &&
+      (!m_qa_write_only_with_secondaries || event_has_tpc_secondaries);
+
   if (m_truth_intersection_hits)
   {
     m_truth_intersection_hits->Reset();
@@ -1019,7 +1057,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
       }
     }
 
-    if (do_ElectronDriftQAHistos)
+    if (fill_qa_hists_this_event)
     {
       if (poissonMean)
       {
@@ -1214,7 +1252,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
           }
         }
 
-        if (do_ElectronDriftQAHistos)
+        if (fill_qa_hists_this_event)
         {
           if (diffDistance)
           {
@@ -1309,7 +1347,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
           //	if(i < 1)
           //{std::cout << " electron " << i << " r_distortion " << r_distortion << " phi_distortion " << phi_distortion << " rad_final " << rad_final << " phi_final " << phi_final << " r*dphi distortion " << rad_final * phi_distortion << " z_distortion " << z_distortion << std::endl;}
 
-          if (do_ElectronDriftQAHistos)
+          if (fill_qa_hists_this_event)
           {
             const double phi_final_nodiff = phistart + phi_distortion;
             const double rad_final_nodiff = radstart + r_distortion;
@@ -1317,21 +1355,28 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
             deltaphinodiff->Fill(phistart, phi_final_nodiff - phistart);  // delta phi no diffusion, just distortion
             deltaphivsRnodiff->Fill(radstart, phi_final_nodiff - phistart);
             deltaRphinodiff->Fill(radstart, rad_final_nodiff * phi_final_nodiff - radstart * phistart);
-
-            // Fill Diagnostic plots, written into ElectronDriftQA.root
-            hitmapstart->Fill(x_start, y_start);  // G4Hit starting positions
-            hitmapend->Fill(x_final, y_final);    // INcludes diffusion and distortion
-            hitmapstart_z->Fill(z_start, radstart);
-            hitmapend_z->Fill(z_final, rad_final);
             deltar->Fill(radstart, rad_final - radstart);    // total delta r
             deltaphi->Fill(phistart, phi_final - phistart);  // total delta phi
             deltaz->Fill(z_start, z_distortion);             // map of distortion in Z (time)
           }
         }
 
-        if (do_ElectronDriftQAHistos && driftXY)
+        if (fill_qa_hists_this_event)
         {
-          driftXY->Fill(x_start, y_start, x_final, y_final);
+          // Fill start/end maps regardless of whether distortion maps are enabled.
+          hitmapstart->Fill(x_start, y_start);
+          hitmapend->Fill(x_final, y_final);
+          hitmapstart_z->Fill(z_start, radstart);
+          hitmapend_z->Fill(z_final, rad_final);
+        }
+
+        if (fill_qa_hists_this_event && driftXY)
+        {
+          m_drift_start_x = static_cast<float>(x_start);
+          m_drift_start_y = static_cast<float>(y_start);
+          m_drift_end_x = static_cast<float>(x_final);
+          m_drift_end_y = static_cast<float>(y_final);
+          driftXY->Fill();
         }
 
         if (m_density_enabled && electronDensityProfile)
@@ -1391,7 +1436,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
 
     m_track_path_offset[track_id] = track_segment_start + step_length;
 
-    if (do_ElectronDriftQAHistos)
+    if (fill_qa_hists_this_event)
     {
       ratioElectronsRR->Fill((double) (n_electrons - notReachingReadout) / n_electrons);
     }
@@ -1797,96 +1842,107 @@ int PHG4TpcElectronDrift::End(PHCompositeNode * /*topNode*/)
   }
   if (do_ElectronDriftQAHistos)
   {
-    EDrift_outf.reset(new TFile(m_qa_output_file.c_str(), "recreate"));
-    EDrift_outf->cd();
-    deltar->Write();
-    deltaphi->Write();
-    deltaz->Write();
-    deltarnodist->Write();
-    deltaphinodist->Write();
-    deltarnodiff->Write();
-    deltaphinodiff->Write();
-    deltaRphinodiff->Write();
-    deltaphivsRnodiff->Write();
-    hitmapstart->Write();
-    hitmapend->Write();
-    hitmapstart_z->Write();
-    hitmapend_z->Write();
-    z_startmap->Write();
-    ratioElectronsRR->Write();
-    if (diffDistance)
+    if (m_qa_write_only_with_secondaries && !m_seen_event_with_secondaries)
     {
-      diffDistance->Write();
+      if (Verbosity() > 0)
+      {
+        std::cout << Name() << ": skip writing " << m_qa_output_file
+                  << " (no secondary TPC g4hits found)." << std::endl;
+      }
     }
-    if (diffDX)
+    else
     {
-      diffDX->Write();
+      EDrift_outf.reset(new TFile(m_qa_output_file.c_str(), "recreate"));
+      EDrift_outf->cd();
+      deltar->Write();
+      deltaphi->Write();
+      deltaz->Write();
+      deltarnodist->Write();
+      deltaphinodist->Write();
+      deltarnodiff->Write();
+      deltaphinodiff->Write();
+      deltaRphinodiff->Write();
+      deltaphivsRnodiff->Write();
+      hitmapstart->Write();
+      hitmapend->Write();
+      hitmapstart_z->Write();
+      hitmapend_z->Write();
+      z_startmap->Write();
+      ratioElectronsRR->Write();
+      if (diffDistance)
+      {
+        diffDistance->Write();
+      }
+      if (diffDX)
+      {
+        diffDX->Write();
+      }
+      if (diffDY)
+      {
+        diffDY->Write();
+      }
+      if (diffPerSqrtL)
+      {
+        diffPerSqrtL->Write();
+      }
+      if (nElectronsPerCm)
+      {
+        nElectronsPerCm->Write();
+      }
+      if (diffDXPerSqrtL)
+      {
+        diffDXPerSqrtL->Write();
+      }
+      if (diffDYPerSqrtL)
+      {
+        diffDYPerSqrtL->Write();
+      }
+      if (nElectrons)
+      {
+        nElectrons->Write();
+      }
+      if (poissonMean)
+      {
+        poissonMean->Write();
+      }
+      if (nElectronsVsMean)
+      {
+        nElectronsVsMean->Write();
+      }
+      if (diffVsDrift)
+      {
+        diffVsDrift->Write();
+      }
+      if (diffPerSqrtLVsDrift)
+      {
+        diffPerSqrtLVsDrift->Write();
+      }
+      if (diffDXVsDrift)
+      {
+        diffDXVsDrift->Write();
+      }
+      if (diffDYVsDrift)
+      {
+        diffDYVsDrift->Write();
+      }
+      if (diffDXPerSqrtLVsDrift)
+      {
+        diffDXPerSqrtLVsDrift->Write();
+      }
+      if (diffDYPerSqrtLVsDrift)
+      {
+        diffDYPerSqrtLVsDrift->Write();
+      }
+      if (driftXY)
+      {
+        driftXY->Write();
+      }
+      if (electronDensityProfile)
+      {
+        electronDensityProfile->Write();
+      }
+      EDrift_outf->Close();
     }
-    if (diffDY)
-    {
-      diffDY->Write();
-    }
-    if (diffPerSqrtL)
-    {
-      diffPerSqrtL->Write();
-    }
-    if (nElectronsPerCm)
-    {
-      nElectronsPerCm->Write();
-    }
-    if (diffDXPerSqrtL)
-    {
-      diffDXPerSqrtL->Write();
-    }
-    if (diffDYPerSqrtL)
-    {
-      diffDYPerSqrtL->Write();
-    }
-    if (nElectrons)
-    {
-      nElectrons->Write();
-    }
-    if (poissonMean)
-    {
-      poissonMean->Write();
-    }
-    if (nElectronsVsMean)
-    {
-      nElectronsVsMean->Write();
-    }
-    if (diffVsDrift)
-    {
-      diffVsDrift->Write();
-    }
-    if (diffPerSqrtLVsDrift)
-    {
-      diffPerSqrtLVsDrift->Write();
-    }
-    if (diffDXVsDrift)
-    {
-      diffDXVsDrift->Write();
-    }
-    if (diffDYVsDrift)
-    {
-      diffDYVsDrift->Write();
-    }
-    if (diffDXPerSqrtLVsDrift)
-    {
-      diffDXPerSqrtLVsDrift->Write();
-    }
-    if (diffDYPerSqrtLVsDrift)
-    {
-      diffDYPerSqrtLVsDrift->Write();
-    }
-    if (driftXY)
-    {
-      driftXY->Write();
-    }
-    if (electronDensityProfile)
-    {
-      electronDensityProfile->Write();
-    }
-    EDrift_outf->Close();
   }
   if (m_avgOutf && m_avgXResidualTree)
   {

@@ -15,9 +15,6 @@
 #include <g4detectors/PHG4TpcGeom.h>
 #include <g4detectors/PHG4TpcGeomContainer.h>
 
-#include <g4tracking/TrkrTruthTrackContainer.h>
-#include <g4tracking/TrkrTruthTrack.h>
-
 #include <g4main/PHG4HitContainer.h>
 #include <g4main/PHG4Hit.h>
 
@@ -142,7 +139,6 @@ int TpcLaserDNL::InitRun(PHCompositeNode* topNode)
   m_hitsets = findNode::getClass<TrkrHitSetContainer>(topNode,"TRKR_HITSET");
   m_geom = findNode::getClass<PHG4TpcGeomContainer>(topNode,"TPCGEOMCONTAINER");
   m_acts = findNode::getClass<ActsGeometry>(topNode,"ActsGeometry");
-  m_truth_tracks = findNode::getClass<TrkrTruthTrackContainer>(topNode, "TRKR_TRUTHTRACKCONTAINER");
   m_g4hits = findNode::getClass<PHG4HitContainer>(topNode, kTpcTrueClusterNodeName);
   if(m_primary_hits_only)
   {
@@ -158,12 +154,11 @@ int TpcLaserDNL::InitRun(PHCompositeNode* topNode)
     m_clusters = findNode::getClass<TrkrClusterContainer>(topNode, "TRKR_CLUSTER");
   }
   const bool have_reco_tracks = (m_use_reco_seeds && m_track_map && !m_track_map->empty());
-  const bool have_truth_tracks = (m_truth_tracks != nullptr && m_g4hits != nullptr);
-  if(!have_reco_tracks && !have_truth_tracks)
+  const bool have_truth_intersections = (m_g4hits != nullptr);
+  if(!have_reco_tracks && !have_truth_intersections)
   {
     std::cout << Name() << ": missing track sources. SvtxTrackMap="
               << (m_track_map!=nullptr)
-              << " TRKR_TRUTHTRACKCONTAINER=" << (m_truth_tracks!=nullptr)
               << " " << kTpcTrueClusterNodeName << "=" << (m_g4hits!=nullptr)
               << std::endl;
     return -1;
@@ -187,11 +182,10 @@ int TpcLaserDNL::InitRun(PHCompositeNode* topNode)
   }
   if(m_primary_hits_only)
   {
-    if(!m_truth_tracks || !m_hittruthassoc || !m_g4hits_tpc)
+    if(!m_hittruthassoc || !m_g4hits_tpc)
     {
       std::cout << Name() << ": missing node(s) required for primary-hit filtering. "
-                << "TRKR_TRUTHTRACKCONTAINER=" << (m_truth_tracks!=nullptr)
-                << " TRKR_HITTRUTHASSOC=" << (m_hittruthassoc!=nullptr)
+                << "TRKR_HITTRUTHASSOC=" << (m_hittruthassoc!=nullptr)
                 << " G4HIT_TPC=" << (m_g4hits_tpc!=nullptr)
                 << std::endl;
       return -1;
@@ -205,7 +199,7 @@ int TpcLaserDNL::InitRun(PHCompositeNode* topNode)
   std::cout << Name() << ": InitRun OK. mode="
             << (m_use_clusters? "clusters" : "hits")
             << ", has_reco=" << have_reco_tracks
-            << ", has_truth=" << have_truth_tracks
+            << ", has_truth_intersections=" << have_truth_intersections
             << ", vdrift=" << m_acts->get_drift_velocity() << " cm/ns" << std::endl;
   return 0;
 }
@@ -364,9 +358,11 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
   }
 
   std::vector<TrackSeed> seeds;
+  bool seeds_from_reco = false;
   if(m_use_reco_seeds && m_track_map && !m_track_map->empty())
   {
     build_reco_seeds(seeds);
+    if(!seeds.empty()) seeds_from_reco = true;
   }
   if(seeds.empty())
   {
@@ -374,27 +370,15 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
   }
   if(seeds.empty())
   {
-    std::cout << Name() << ": evt " << m_event << " has no truth track seeds (truth container present="
-              << (m_truth_tracks!=nullptr)
-              << ", " << kTpcTrueClusterNodeName << " present=" << (m_g4hits!=nullptr)
+    std::cout << Name() << ": evt " << m_event << " has no truth seeds ("
+              << kTpcTrueClusterNodeName << " present=" << (m_g4hits!=nullptr)
               << ")" << std::endl;
     return Fun4AllReturnCodes::EVENT_OK;
   }
 
-  std::unordered_set<int> primary_track_ids;
-  if(m_primary_hits_only && m_truth_tracks)
-  {
-    const auto truth_range = m_truth_tracks->getTruthTrackRange();
-    primary_track_ids.reserve(std::distance(truth_range.first, truth_range.second));
-    for(auto it = truth_range.first; it != truth_range.second; ++it)
-    {
-      const auto* truth = it->second;
-      if(!truth) continue;
-      primary_track_ids.insert(static_cast<int>(truth->getTrackid()));
-    }
-  }
-
-  const auto hit_has_primary_truth = [&](const TrkrDefs::hitsetkey hitsetkey, const TrkrDefs::hitkey hitkey)
+  const auto hit_passes_truth_filter = [&](const TrkrDefs::hitsetkey hitsetkey,
+                                           const TrkrDefs::hitkey hitkey,
+                                           const int seed_track_id)
   {
     if(!m_primary_hits_only) return true;
     if(!m_hittruthassoc || !m_g4hits_tpc) return false;
@@ -403,20 +387,37 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
     m_hittruthassoc->getG4Hits(hitsetkey, static_cast<unsigned int>(hitkey), g4hit_map);
     if(g4hit_map.empty()) return false;
 
+    bool has_positive_truth = false;
+    bool has_seed_truth = false;
     for(const auto& assoc : g4hit_map)
     {
       PHG4Hit* g4hit = m_g4hits_tpc->findHit(assoc.second.second);
       if(!g4hit) continue;
-      if(primary_track_ids.find(g4hit->get_trkid()) != primary_track_ids.end())
+      const int trkid = g4hit->get_trkid();
+      if(trkid > 0)
       {
-        return true;
+        has_positive_truth = true;
+      }
+      if(trkid == seed_track_id)
+      {
+        has_seed_truth = true;
       }
     }
 
-    return false;
+    // In truth-seed mode, require the hit to be associated to the same truth track.
+    // This suppresses contamination from secondary tracks in phi_reco.
+    if(!seeds_from_reco)
+    {
+      return has_seed_truth;
+    }
+
+    // In reco-seed mode, track id is a reco id, so require only primary truth.
+    return has_positive_truth;
   };
 
-  const auto cluster_has_primary_truth = [&](const TrkrDefs::cluskey ckey, const TrkrDefs::hitsetkey hitsetkey)
+  const auto cluster_passes_truth_filter = [&](const TrkrDefs::cluskey ckey,
+                                               const TrkrDefs::hitsetkey hitsetkey,
+                                               const int seed_track_id)
   {
     if(!m_primary_hits_only) return true;
     if(!m_cluster_hit_assoc) return false;
@@ -424,7 +425,7 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
     const auto hit_range = m_cluster_hit_assoc->getHits(ckey);
     for(auto hitit = hit_range.first; hitit != hit_range.second; ++hitit)
     {
-      if(hit_has_primary_truth(hitsetkey, hitit->second))
+      if(hit_passes_truth_filter(hitsetkey, hitit->second, seed_track_id))
       {
         return true;
       }
@@ -492,11 +493,6 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
       const double x0 = layerPoint.x;
       const double y0 = layerPoint.y;
       const double z0 = layerPoint.z;
-      const double vx = layerPoint.dirx;
-      const double vy = layerPoint.diry;
-      const double vz = layerPoint.dirz;
-      const double v2 = vx*vx + vy*vy + vz*vz;
-      if(v2 == 0) continue;
 
       const unsigned int layer = layerPoint.layer;
       const int side = layerPoint.side;
@@ -564,17 +560,10 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
 
       const auto pass_line_cuts = [&](const double xh, const double yh, const double zh)
       {
-        const double ox = xh - x0;
-        const double oy = yh - y0;
-        const double oz = zh - z0;
-        const double tproj = (vx*ox + vy*oy + vz*oz) / v2;
-        const double px = x0 + tproj*vx;
-        const double py = y0 + tproj*vy;
-        const double pz = z0 + tproj*vz;
-        const double dca = std::sqrt(sqr(xh-px) + sqr(yh-py) + sqr(zh-pz));
-        if(dca > m_max_dca) return false;
-        const double dzline = zh - z0;
-        if(std::abs(dzline) > m_max_dz) return false;
+        const double dxy = std::hypot(xh - x0, yh - y0);
+        if(dxy > m_max_dca) return false;
+        const double dzline = std::abs(zh - z0);
+        if(dzline > m_max_dz) return false;
         return true;
       };
 
@@ -609,7 +598,7 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
             const auto hitkey = hitit->first;
             TrkrHit* hit = hitit->second;
             if(!hit) continue;
-            if(!hit_has_primary_truth(hsk, hitkey)) continue;
+            if(!hit_passes_truth_filter(hsk, hitkey, seed.id)) continue;
             ++result.nhit_scanned;
 
             double weight = m_weight_by_adc ? static_cast<double>(hit->getAdc())
@@ -657,7 +646,7 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
             const auto ckey = cit->first;
             TrkrCluster* clus = cit->second;
             if(!clus) continue;
-            if(!cluster_has_primary_truth(ckey, hsk)) continue;
+            if(!cluster_passes_truth_filter(ckey, hsk, seed.id)) continue;
 
             double weight = static_cast<double>(clus->getAdc());
             if(weight < m_min_adc) continue;
@@ -973,39 +962,7 @@ void TpcLaserDNL::build_reco_seeds(std::vector<TrackSeed>& seeds) const
 
 void TpcLaserDNL::build_truth_seeds(std::vector<TrackSeed>& seeds) const
 {
-  if(!m_truth_tracks || !m_geom || !m_g4hits) return;
-
-  TrkrTruthTrackContainer::ConstRange range = m_truth_tracks->getTruthTrackRange();
-  std::unordered_map<unsigned int, std::size_t> index_by_id;
-  seeds.reserve(std::distance(range.first, range.second));
-  for(auto it = range.first; it != range.second; ++it)
-  {
-    TrkrTruthTrack* truth = it->second;
-    if(!truth) continue;
-    TrackSeed seed;
-    seed.id = static_cast<int>(truth->getTrackid());
-    seed.origin[0] = truth->getX0();
-    seed.origin[1] = truth->getY0();
-    seed.origin[2] = truth->getZ0();
-    const double pt = truth->getPt();
-    const double phi = truth->getPhi();
-    const double eta = truth->getPseudoRapidity();
-    const double px = pt * std::cos(phi);
-    const double py = pt * std::sin(phi);
-    const double pz = pt * std::sinh(eta);
-    const double pmag = std::sqrt(px*px + py*py + pz*pz);
-    if(pmag > 0)
-    {
-      seed.dir[0] = px / pmag;
-      seed.dir[1] = py / pmag;
-      seed.dir[2] = pz / pmag;
-      seed.dir_valid = true;
-    }
-    index_by_id[truth->getTrackid()] = seeds.size();
-    seeds.push_back(std::move(seed));
-  }
-
-  if(seeds.empty()) return;
+  if(!m_geom || !m_g4hits) return;
 
   std::unordered_map<unsigned int, std::map<unsigned int, LayerPoint>> layer_cache;
   PHG4HitContainer::ConstRange hitrange = m_g4hits->getHits();
@@ -1015,17 +972,13 @@ void TpcLaserDNL::build_truth_seeds(std::vector<TrackSeed>& seeds) const
     if(!hit) continue;
 
     const int trkid = hit->get_trkid();
-    if(trkid < 0) continue;
-
-    auto idxIt = index_by_id.find(static_cast<unsigned int>(trkid));
-    if(idxIt == index_by_id.end()) continue;
+    if(trkid <= 0) continue;
 
     unsigned int layer = hit->get_layer();
     if(layer == std::numeric_limits<unsigned int>::max()) continue;
     auto* layergeom = m_geom->GetLayerCellGeom(static_cast<int>(layer));
     if(!layergeom) continue;
 
-    const TrackSeed& seed = seeds[idxIt->second];
     LayerPoint point;
     point.layer = layer;
     point.radius = layergeom->get_radius();
@@ -1043,25 +996,15 @@ void TpcLaserDNL::build_truth_seeds(std::vector<TrackSeed>& seeds) const
       point.path = std::numeric_limits<double>::infinity();
     }
     point.from_g4hit = true;
-
-    if(seed.dir_valid)
+    const double px = hit->get_px(0);
+    const double py = hit->get_py(0);
+    const double pz = hit->get_pz(0);
+    const double pmag = std::sqrt(px*px + py*py + pz*pz);
+    if(pmag > 0)
     {
-      point.dirx = seed.dir[0];
-      point.diry = seed.dir[1];
-      point.dirz = seed.dir[2];
-    }
-    else
-    {
-      const double dx = hit->get_x(1) - hit->get_x(0);
-      const double dy = hit->get_y(1) - hit->get_y(0);
-      const double dz = hit->get_z(1) - hit->get_z(0);
-      const double vmag = std::sqrt(dx*dx + dy*dy + dz*dz);
-      if(vmag > 0)
-      {
-        point.dirx = dx / vmag;
-        point.diry = dy / vmag;
-        point.dirz = dz / vmag;
-      }
+      point.dirx = px / pmag;
+      point.diry = py / pmag;
+      point.dirz = pz / pmag;
     }
 
     auto& layer_map = layer_cache[static_cast<unsigned int>(trkid)];
@@ -1073,30 +1016,89 @@ void TpcLaserDNL::build_truth_seeds(std::vector<TrackSeed>& seeds) const
     }
   }
 
-  std::vector<TrackSeed> filtered;
-  filtered.reserve(seeds.size());
-  for(auto& seed : seeds)
+  seeds.clear();
+  seeds.reserve(layer_cache.size());
+  for(auto& cache_entry : layer_cache)
   {
-    auto cache_it = layer_cache.find(static_cast<unsigned int>(seed.id));
-    if(cache_it == layer_cache.end()) continue;
-    const std::map<unsigned int, LayerPoint>& completed = cache_it->second;
+    TrackSeed seed;
+    seed.id = static_cast<int>(cache_entry.first);
+
+    const std::map<unsigned int, LayerPoint>& completed = cache_entry.second;
     if(completed.empty())
     {
-      std::cout << Name() << ": track " << seed.id
-                << " has no intersections recorded in " << kTpcTrueClusterNodeName << std::endl;
       continue;
     }
 
-    seed.layers.clear();
     seed.layers.reserve(completed.size());
     for(const auto& kv : completed)
     {
       seed.layers.push_back(kv.second);
     }
 
-    filtered.push_back(std::move(seed));
+    // Origin is currently not consumed in truth-seed mode. Keep a stable placeholder.
+    seed.origin[0] = seed.layers.front().x;
+    seed.origin[1] = seed.layers.front().y;
+    seed.origin[2] = seed.layers.front().z;
+
+    // Direction inference/backfill is intentionally disabled for now.
+    // Current hit selection is point-based (distance to intersection) and does not use direction.
+    // Keep the old block below for future line-based selection studies.
+    /*
+    // direction from first available non-zero layer direction or from endpoints
+    bool have_dir = false;
+    for(const auto& lp : seed.layers)
+    {
+      const double norm = std::sqrt(lp.dirx*lp.dirx + lp.diry*lp.diry + lp.dirz*lp.dirz);
+      if(norm > 0)
+      {
+        seed.dir[0] = lp.dirx;
+        seed.dir[1] = lp.diry;
+        seed.dir[2] = lp.dirz;
+        seed.dir_valid = true;
+        have_dir = true;
+        break;
+      }
+    }
+
+    if(!have_dir && seed.layers.size() >= 2)
+    {
+      const LayerPoint& first = seed.layers.front();
+      const LayerPoint& last = seed.layers.back();
+      const double dx = last.x - first.x;
+      const double dy = last.y - first.y;
+      const double dz = last.z - first.z;
+      const double norm = std::sqrt(dx*dx + dy*dy + dz*dz);
+      if(norm > 0)
+      {
+        seed.dir[0] = dx / norm;
+        seed.dir[1] = dy / norm;
+        seed.dir[2] = dz / norm;
+        seed.dir_valid = true;
+      }
+    }
+
+    if(seed.dir_valid)
+    {
+      for(auto& lp : seed.layers)
+      {
+        const double norm = std::sqrt(lp.dirx*lp.dirx + lp.diry*lp.diry + lp.dirz*lp.dirz);
+        if(norm == 0)
+        {
+          lp.dirx = seed.dir[0];
+          lp.diry = seed.dir[1];
+          lp.dirz = seed.dir[2];
+        }
+      }
+    }
+    */
+
+    seeds.push_back(std::move(seed));
   }
-  seeds.swap(filtered);
+
+  std::sort(
+    seeds.begin(),
+    seeds.end(),
+    [](const TrackSeed& a, const TrackSeed& b){ return a.id < b.id; });
 }
 
 int TpcLaserDNL::End(PHCompositeNode*)

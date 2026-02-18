@@ -95,6 +95,7 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   }
   void set_enable_laser_clustering(bool b) { m_enable_laser_clustering = b; }
   void set_qa_output_file(const std::string &f) { m_qa_output_file = f; }
+  void set_qa_write_only_with_secondaries(bool b) { m_qa_write_only_with_secondaries = b; }
   void set_avg_output_file(const std::string &f) { m_avg_output_file = f; }
   void set_do_ElectronDriftQAHistos(bool b) { do_ElectronDriftQAHistos = b; }
   ClusHitsVerbosev1 *mClusHitsVerbose{nullptr};
@@ -180,7 +181,11 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   TH2 *diffDYVsDrift{nullptr};
   TH2 *diffDXPerSqrtLVsDrift{nullptr};
   TH2 *diffDYPerSqrtLVsDrift{nullptr};
-  TNtuple *driftXY{nullptr};
+  TTree *driftXY{nullptr};
+  float m_drift_start_x{0.F};
+  float m_drift_start_y{0.F};
+  float m_drift_end_x{0.F};
+  float m_drift_end_y{0.F};
   //@}
 
   int event_num{0};
@@ -248,6 +253,8 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   bool m_enable_laser_clustering{false};
   std::string m_qa_output_file{"ElectronDriftQA.root"};
   std::string m_avg_output_file{"avgXResidual.root"};
+  bool m_qa_write_only_with_secondaries{false};
+  bool m_seen_event_with_secondaries{false};
 
   bool record_ClusHitsVerbose{false};
   bool do_ElectronDriftQAHistos{true};

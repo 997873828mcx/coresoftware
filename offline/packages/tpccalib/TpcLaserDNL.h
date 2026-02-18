@@ -17,7 +17,6 @@ class ActsGeometry;
 class TrkrClusterContainer;
 class TrkrCluster;
 class TrkrClusterHitAssoc;
-class TrkrTruthTrackContainer;
 class TrkrHitTruthAssoc;
 class PHG4HitContainer;
 class TFile;
@@ -56,7 +55,8 @@ void set_max_dz(double v) { m_max_dz = v; }
   void set_include_fallback_intersections(bool v) { m_include_fallback_intersections = v; }
   // enable/disable fitted-layer-44 residual calculation
   void set_enable_fit_layer44_residuals(bool v) { m_enable_fit_layer44_residuals = v; }
-  // when true, only use reco hits/clusters that are truth-associated to primary tracks
+  // when true, only use reco hits/clusters that are truth-associated to
+  // positive truth-track IDs (trkid > 0)
   void set_primary_hits_only(bool v) { m_primary_hits_only = v; }
 
 private:
@@ -162,7 +162,6 @@ static double wrap_dphi(double d);
   void build_reco_seeds(std::vector<TrackSeed>& seeds) const;
   void build_truth_seeds(std::vector<TrackSeed>& seeds) const;
 
-  TrkrTruthTrackContainer* m_truth_tracks{nullptr};
   TrkrHitTruthAssoc* m_hittruthassoc{nullptr};
   TrkrClusterHitAssoc* m_cluster_hit_assoc{nullptr};
   PHG4HitContainer* m_g4hits_tpc{nullptr};
