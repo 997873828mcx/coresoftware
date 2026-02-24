@@ -381,7 +381,7 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
   // http://skipper.physics.sunysb.edu/~prakhar/tpc/HTML_Gases/split.html
 
   double Ne_dEdx = 1.56;  // keV/cm
-  double Ne_NTotal = 43;  // Number/cm
+  double Ne_NTotal = 43;  // Primary ionization clusters/cm
   double Ne_frac = tpcparam->get_double_param("Ne_frac");
 
   double Ar_dEdx = 2.44;  // keV/cm
@@ -393,7 +393,7 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
   double CF4_frac = tpcparam->get_double_param("CF4_frac");
 
   double N2_dEdx = 2.127;  // keV/cm https://pdg.lbl.gov/2024/AtomicNuclearProperties/HTML/nitrogen_gas.html
-  double N2_NTotal = 25;   // Number/cm (probably not right but has a very small impact)
+  double N2_NTotal = 25;   // Primary ionization clusters/cm (approximate, small impact here)
   double N2_frac = tpcparam->get_double_param("N2_frac");
 
   double isobutane_dEdx = 5.93;  // keV/cm
@@ -416,9 +416,11 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
 
   double Tpc_dEdx = (Ne_dEdx * Ne_frac) + (Ar_dEdx * Ar_frac) + (CF4_dEdx * CF4_frac) + (N2_dEdx * N2_frac) + (isobutane_dEdx * isobutane_frac);
 
-  electrons_per_gev = (Tpc_NTot / Tpc_dEdx) * 1e6;
+  primary_clusters_per_cm = Tpc_NTot;
+  electrons_per_gev = (primary_clusters_per_cm / Tpc_dEdx) * 1e6;
 
-  std::cout << "PHG4TpcElectronDrift::InitRun - electrons per GeV = " << electrons_per_gev << std::endl;
+  std::cout << "PHG4TpcElectronDrift::InitRun - primary clusters/cm = " << primary_clusters_per_cm
+            << ", primary clusters/GeV (from dE/dx) = " << electrons_per_gev << std::endl;
 
   // Initialize cluster size CDF for sPHENIX Ar/CF4/iC4H10 mixture.
   constexpr int kClusterSizeCutoff = 384;
@@ -565,9 +567,9 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
   {
     std::cout << Name() << " gas mixture fractions (Ne/Ar/CF4/N2/iC4H10): "
               << Ne_frac << "/" << Ar_frac << "/" << CF4_frac << "/" << N2_frac << "/" << isobutane_frac << std::endl;
-    std::cout << Name() << " primary ionization summary: electrons per cm " << Tpc_NTot
+    std::cout << Name() << " primary ionization summary: primary clusters per cm " << primary_clusters_per_cm
               << ", dE/dx (keV/cm) " << Tpc_dEdx
-              << ", electrons per GeV " << electrons_per_gev << std::endl;
+              << ", primary clusters per GeV " << electrons_per_gev << std::endl;
     std::cout << Name() << " diffusion sigmas (long/trans) [cm^0.5]: " << diffusion_long << "/" << diffusion_trans
               << " with additional smearing (long/trans): " << added_smear_sigma_long << "/" << added_smear_sigma_trans << std::endl;
     std::cout << Name() << " drift window [min,max] (ns): " << min_time << ", " << max_time << std::endl;
@@ -626,6 +628,16 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
     driftXY->Branch("start_y", &m_drift_start_y, "start_y/F");
     driftXY->Branch("end_x", &m_drift_end_x, "end_x/F");
     driftXY->Branch("end_y", &m_drift_end_y, "end_y/F");
+    driftStepQA = new TTree("driftStepQA", "Per-step energy loss and dE/dx");
+    driftStepQA->Branch("event", &m_stepqa_event, "event/I");
+    driftStepQA->Branch("track_id", &m_stepqa_track_id, "track_id/I");
+    driftStepQA->Branch("step_length_cm", &m_stepqa_step_length_cm, "step_length_cm/F");
+    driftStepQA->Branch("edep_kev", &m_stepqa_edep_kev, "edep_kev/F");
+    driftStepQA->Branch("eion_kev", &m_stepqa_eion_kev, "eion_kev/F");
+    driftStepQA->Branch("dedx_kev_per_cm", &m_stepqa_dedx_kev_per_cm, "dedx_kev_per_cm/F");
+    driftStepQA->Branch("deiondx_kev_per_cm", &m_stepqa_deiondx_kev_per_cm, "deiondx_kev_per_cm/F");
+    driftStepQA->Branch("mean_primary_clusters", &m_stepqa_mean_primary_clusters, "mean_primary_clusters/F");
+    driftStepQA->Branch("n_primary_clusters", &m_stepqa_n_primary_clusters, "n_primary_clusters/I");
   }
 
   if (m_avg_x_enabled)
@@ -923,25 +935,44 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
     // Instead, use a temporary map to accumulate the charge from all
     // drifted electrons, then copy to the node tree later
 
-    double eion = hiter->second->get_eion();
-    const double poisson_mean = eion * electrons_per_gev;
-    unsigned int n_electrons = 0;
-    if (m_uniform_density_test)
-    {
-      n_electrons = (poisson_mean > 0.) ? static_cast<unsigned int>(std::lround(poisson_mean)) : 0;
-    }
-    else
-    {
-      n_electrons = gsl_ran_poisson(RandomGenerator.get(), poisson_mean);
-    }
-    //    count_electrons += n_electrons;
-
     const double dx_hit = hiter->second->get_x(1) - hiter->second->get_x(0);
     const double dy_hit = hiter->second->get_y(1) - hiter->second->get_y(0);
     const double dz_hit = hiter->second->get_z(1) - hiter->second->get_z(0);
     const double step_length = std::sqrt(square(dx_hit) + square(dy_hit) + square(dz_hit));
     const int track_id = hiter->second->get_trkid();
     double track_segment_start = m_track_path_offset[track_id];
+
+    const double eion = hiter->second->get_eion();
+    const double edep = hiter->second->get_edep();
+    const double poisson_mean = std::max(0.0, primary_clusters_per_cm * step_length);
+    unsigned int n_primary_clusters = 0;
+    if (m_uniform_density_test)
+    {
+      n_primary_clusters = (poisson_mean > 0.) ? static_cast<unsigned int>(std::lround(poisson_mean)) : 0;
+    }
+    else
+    {
+      n_primary_clusters = gsl_ran_poisson(RandomGenerator.get(), poisson_mean);
+    }
+    //    count_electrons += n_primary_clusters;
+
+    if (fill_qa_hists_this_event && driftStepQA)
+    {
+      const double nan = std::numeric_limits<double>::quiet_NaN();
+      const double dedx_kev_per_cm = (step_length > 0.) ? (edep * 1e6 / step_length) : nan;
+      const double deiondx_kev_per_cm = (step_length > 0.) ? (eion * 1e6 / step_length) : nan;
+
+      m_stepqa_event = event_num;
+      m_stepqa_track_id = track_id;
+      m_stepqa_step_length_cm = static_cast<float>(step_length);
+      m_stepqa_edep_kev = static_cast<float>(edep * 1e6);
+      m_stepqa_eion_kev = static_cast<float>(eion * 1e6);
+      m_stepqa_dedx_kev_per_cm = static_cast<float>(dedx_kev_per_cm);
+      m_stepqa_deiondx_kev_per_cm = static_cast<float>(deiondx_kev_per_cm);
+      m_stepqa_mean_primary_clusters = static_cast<float>(poisson_mean);
+      m_stepqa_n_primary_clusters = static_cast<int>(n_primary_clusters);
+      driftStepQA->Fill();
+    }
     if (m_avg_x_enabled)
     {
       auto &layer_data = m_track_layer_data[trkid_new];
@@ -1065,23 +1096,24 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
       }
       if (nElectrons)
       {
-        nElectrons->Fill(static_cast<double>(n_electrons));
+        nElectrons->Fill(static_cast<double>(n_primary_clusters));
       }
       if (nElectronsPerCm && step_length > 0.)
       {
-        nElectronsPerCm->Fill(static_cast<double>(n_electrons) / step_length);
+        nElectronsPerCm->Fill(static_cast<double>(n_primary_clusters) / step_length);
       }
       if (nElectronsVsMean)
       {
-        nElectronsVsMean->Fill(poisson_mean, static_cast<double>(n_electrons));
+        nElectronsVsMean->Fill(poisson_mean, static_cast<double>(n_primary_clusters));
       }
     }
 
     if (Verbosity() > 100)
     {
       std::cout << "  new hit with t0, " << t0 << " g4hitid " << hiter->first
-                << " eion " << eion << " poisson mean " << poisson_mean
-                << " n_electrons " << n_electrons
+                << " eion " << eion << " step length " << step_length
+                << " poisson mean " << poisson_mean
+                << " n_primary_clusters " << n_primary_clusters
                 << " entry z " << hiter->second->get_z(0) << " exit z "
                 << hiter->second->get_z(1) << " avg z"
                 << (hiter->second->get_z(0) + hiter->second->get_z(1)) / 2.0
@@ -1092,15 +1124,16 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
     {
       std::cout << Name() << " hit " << count_g4hits
                 << " eion " << eion
+                << " step length " << step_length
                 << " poisson mean " << poisson_mean
-                << " sampled electrons " << n_electrons
+                << " sampled primary clusters " << n_primary_clusters
                 << " track dz " << hiter->second->get_z(1) - hiter->second->get_z(0)
                 << " entry radius " << std::sqrt(square(hiter->second->get_x(0)) + square(hiter->second->get_y(0)))
                 << " exit radius " << std::sqrt(square(hiter->second->get_x(1)) + square(hiter->second->get_y(1)))
                 << std::endl;
     }
 
-    if (n_electrons == 0)
+    if (n_primary_clusters == 0)
     {
       m_track_path_offset[track_id] += step_length;
       continue;
@@ -1109,8 +1142,9 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
     if (Verbosity() > 100)
     {
       std::cout << std::endl
-                << "electron drift: g4hit " << hiter->first << " created electrons: "
-                << n_electrons << " from " << eion * 1000000 << " keV" << std::endl;
+                << "electron drift: g4hit " << hiter->first << " created primary clusters: "
+                << n_primary_clusters << " over step length " << step_length << " cm"
+                << " (eion " << eion * 1000000 << " keV)" << std::endl;
       std::cout << " entry x,y,z = " << hiter->second->get_x(0) << "  "
                 << hiter->second->get_y(0) << "  " << hiter->second->get_z(0)
                 << " radius " << sqrt(pow(hiter->second->get_x(0), 2) + pow(hiter->second->get_y(0), 2)) << std::endl;
@@ -1120,15 +1154,15 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
     }
 
     int notReachingReadout = 0;
+    int n_secondary_electrons = 0;
     //    int notInAcceptance = 0;
 
-    // Loop over primary electrons (clusters)
-    for (unsigned int i = 0; i < n_electrons; i++)
+    // Loop over primary ionization clusters
+    for (unsigned int i = 0; i < n_primary_clusters; i++)
     {
       // Sample cluster size
-      // Sample cluster size
       int cluster_size = 1;
-      if (m_enable_laser_clustering)
+      if (m_enable_cluster_size_fluctuations)
       {
         double p = gsl_ran_flat(RandomGenerator.get(), 0.0, 1.0);
         auto it = std::lower_bound(cluster_size_cdf.begin(), cluster_size_cdf.end(), p);
@@ -1143,9 +1177,9 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
       // the distance along the path betwen entry and exit points, it has
       // values between 0 and 1
       double f = gsl_ran_flat(RandomGenerator.get(), 0.0, 1.0);
-      if (m_uniform_density_test && n_electrons > 0)
+      if (m_uniform_density_test && n_primary_clusters > 0)
       {
-        f = (static_cast<double>(i) + 0.5) / static_cast<double>(n_electrons);
+        f = (static_cast<double>(i) + 0.5) / static_cast<double>(n_primary_clusters);
         if (f >= 1.0)
         {
           f = std::nextafter(1.0, 0.0);
@@ -1155,6 +1189,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
       // Loop over secondary electrons in the cluster
       for (int j = 0; j < cluster_size; ++j)
       {
+        ++n_secondary_electrons;
         const double x_start = hiter->second->get_x(0) + f * (hiter->second->get_x(1) - hiter->second->get_x(0));
         const double y_start = hiter->second->get_y(0) + f * (hiter->second->get_y(1) - hiter->second->get_y(0));
         const double z_start = hiter->second->get_z(0) + f * (hiter->second->get_z(1) - hiter->second->get_z(0));
@@ -1436,9 +1471,9 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
 
     m_track_path_offset[track_id] = track_segment_start + step_length;
 
-    if (fill_qa_hists_this_event)
+    if (fill_qa_hists_this_event && n_secondary_electrons > 0)
     {
-      ratioElectronsRR->Fill((double) (n_electrons - notReachingReadout) / n_electrons);
+      ratioElectronsRR->Fill(static_cast<double>(n_secondary_electrons - notReachingReadout) / static_cast<double>(n_secondary_electrons));
     }
 
     TrkrHitSetContainer::ConstRange single_hitset_range = single_hitsetcontainer->getHitSets(TrkrDefs::TrkrId::tpcId);
@@ -1936,6 +1971,10 @@ int PHG4TpcElectronDrift::End(PHCompositeNode * /*topNode*/)
       if (driftXY)
       {
         driftXY->Write();
+      }
+      if (driftStepQA)
+      {
+        driftStepQA->Write();
       }
       if (electronDensityProfile)
       {

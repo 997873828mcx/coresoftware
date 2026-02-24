@@ -45,6 +45,8 @@ void set_max_dz(double v) { m_max_dz = v; }
   void set_weight_by_adc(bool v) { m_weight_by_adc = v; }
   // choose source: false = use hits (default), true = use clusters
   void set_use_clusters(bool v) { m_use_clusters = v; }
+  // when true, enforce single-hitset (single-sector) contribution per layer result
+  void set_restrict_to_single_hitset(bool v) { m_restrict_to_single_hitset = v; }
   // allow disabling use of SvtxTrackMap seeds
   void set_use_reco_seeds(bool v) { m_use_reco_seeds = v; }
   // enable dumping intersection/hit info in event-display format
@@ -82,6 +84,7 @@ double m_max_dz{1.0}; // cm
   bool m_use_pedestal{true};
   bool m_weight_by_adc{true};
   bool m_use_clusters{false};
+  bool m_restrict_to_single_hitset{false};
   bool m_use_reco_seeds{true};
   bool m_write_display_ntuple{false};
   unsigned int m_display_hit_subsamples{0};
@@ -107,6 +110,7 @@ double m_max_dz{1.0}; // cm
   struct TrackSeed
   {
     int id{0};
+    double pt{std::numeric_limits<double>::quiet_NaN()};
     double origin[3]{0., 0., 0.};
     double dir[3]{0., 0., 0.};
     bool dir_valid{false};
@@ -116,8 +120,10 @@ double m_max_dz{1.0}; // cm
 // tree vars
 int m_event{0};
 int m_trkid{0};
+double m_pt{std::numeric_limits<double>::quiet_NaN()};
 unsigned int m_layer{0};
 int m_side{0};
+int m_sector{-1};
 double m_r{0};
 double m_phi_true{0};
 double m_phi_reco{0};

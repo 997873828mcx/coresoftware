@@ -93,7 +93,9 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
     force_min_trans_drift_length = (length > 0.) ? length : 0.;
     set_double_param("force_min_trans_drift_length", force_min_trans_drift_length);
   }
-  void set_enable_laser_clustering(bool b) { m_enable_laser_clustering = b; }
+  void set_enable_cluster_size_fluctuations(bool b) { m_enable_cluster_size_fluctuations = b; }
+  // Backward-compatible alias; use set_enable_cluster_size_fluctuations instead.
+  void set_enable_laser_clustering(bool b) { set_enable_cluster_size_fluctuations(b); }
   void set_qa_output_file(const std::string &f) { m_qa_output_file = f; }
   void set_qa_write_only_with_secondaries(bool b) { m_qa_write_only_with_secondaries = b; }
   void set_avg_output_file(const std::string &f) { m_avg_output_file = f; }
@@ -182,10 +184,20 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   TH2 *diffDXPerSqrtLVsDrift{nullptr};
   TH2 *diffDYPerSqrtLVsDrift{nullptr};
   TTree *driftXY{nullptr};
+  TTree *driftStepQA{nullptr};
   float m_drift_start_x{0.F};
   float m_drift_start_y{0.F};
   float m_drift_end_x{0.F};
   float m_drift_end_y{0.F};
+  int m_stepqa_event{0};
+  int m_stepqa_track_id{0};
+  float m_stepqa_step_length_cm{0.F};
+  float m_stepqa_edep_kev{0.F};
+  float m_stepqa_eion_kev{0.F};
+  float m_stepqa_dedx_kev_per_cm{0.F};
+  float m_stepqa_deiondx_kev_per_cm{0.F};
+  float m_stepqa_mean_primary_clusters{0.F};
+  int m_stepqa_n_primary_clusters{0};
   //@}
 
   int event_num{0};
@@ -200,6 +212,7 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   double drift_velocity = std::numeric_limits<double>::signaling_NaN();
   double tpc_length = std::numeric_limits<double>::signaling_NaN();
   double electrons_per_gev = std::numeric_limits<double>::signaling_NaN();
+  double primary_clusters_per_cm = std::numeric_limits<double>::signaling_NaN();
   double min_active_radius = std::numeric_limits<double>::signaling_NaN();
   double max_active_radius = std::numeric_limits<double>::signaling_NaN();
   double min_time = std::numeric_limits<double>::signaling_NaN();
@@ -250,7 +263,7 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   std::unordered_map<int, TrackLayerData> m_track_layer_data;
   bool m_uniform_density_test{false};
   std::vector<double> cluster_size_cdf;
-  bool m_enable_laser_clustering{false};
+  bool m_enable_cluster_size_fluctuations{false};
   std::string m_qa_output_file{"ElectronDriftQA.root"};
   std::string m_avg_output_file{"avgXResidual.root"};
   bool m_qa_write_only_with_secondaries{false};

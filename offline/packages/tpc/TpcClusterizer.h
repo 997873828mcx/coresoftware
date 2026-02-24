@@ -4,10 +4,13 @@
 #include <fun4all/SubsysReco.h>
 #include <trackbase/ActsGeometry.h>
 #include <trackbase/TrkrCluster.h>
+#include <trackbase/TrkrDefs.h>
 
 #include <map>
 #include <string>
-#include <vector>
+#include <unordered_set>
+
+typedef std::map<TrkrDefs::hitsetkey, std::unordered_set<TrkrDefs::hitkey>> hitMaskTpcSet;
 
 class ClusHitsVerbosev1;
 class PHCompositeNode;
@@ -16,8 +19,8 @@ class TrkrHitSetContainer;
 class TrkrClusterContainer;
 class TrkrClusterHitAssoc;
 class TrainingHitsContainer;
-class PHG4TpcCylinderGeom;
-class PHG4TpcCylinderGeomContainer;
+class PHG4TpcGeom;
+class PHG4TpcGeomContainer;
 class RawHitSetContainer;
 class RawHitSet;
 class TpcClusterizer : public SubsysReco
@@ -69,12 +72,30 @@ public:
     set_max_cluster_half_size_z(20);
     set_fixed_window(3);
   };
-  void set_sampa_tbias(double value ) { m_sampa_tbias = value; }
+
   ClusHitsVerbosev1 *mClusHitsVerbose{nullptr};
 
+  void SetMaskChannelsFromFile() 
+  {
+    m_maskFromFile = true;
+  }
+
+  void SetDeadChannelMapName(const std::string& dcmap) 
+  {
+    m_maskDeadChannels = true;
+    m_deadChannelMapName = dcmap;
+  }
+  void SetHotChannelMapName(const std::string& hmap) 
+  {
+    m_maskHotChannels = true;
+    m_hotChannelMapName = hmap;
+  }
+
  private:
-  bool is_in_sector_boundary(int phibin, int sector, PHG4TpcCylinderGeom *layergeom) const;
+  bool is_in_sector_boundary(int phibin, int sector, PHG4TpcGeom *layergeom) const;
   bool record_ClusHitsVerbose{false};
+
+  void makeChannelMask(hitMaskTpcSet& aMask, const std::string& dbName, const std::string& totalChannelsToMask);
 
   TrkrHitSetContainer *m_hits = nullptr;
   RawHitSetContainer *m_rawhits = nullptr;
@@ -106,11 +127,16 @@ public:
   double AdcClockPeriod = 53.0;  // ns
   double NZBinsSide = 249;
 
-  // TPC shaping offset correction parameter
-  // From Tony Frawley July 5, 2022
-  double m_sampa_tbias = 39.6;  // ns
-
   TrainingHitsContainer *m_training;
+
+  hitMaskTpcSet m_deadChannelMap;
+  hitMaskTpcSet m_hotChannelMap; 
+
+  bool m_maskDeadChannels {false};
+  bool m_maskHotChannels {false};
+  bool m_maskFromFile {false};
+  std::string m_deadChannelMapName; 
+  std::string m_hotChannelMapName;
 };
 
 #endif
