@@ -57,6 +57,8 @@ void set_max_dz(double v) { m_max_dz = v; }
   void set_include_fallback_intersections(bool v) { m_include_fallback_intersections = v; }
   // enable/disable fitted-layer-44 residual calculation
   void set_enable_fit_layer44_residuals(bool v) { m_enable_fit_layer44_residuals = v; }
+  // write one debug row per seed-layer with cutflow/drop reason counters
+  void set_write_layer_debug(bool v) { m_write_layer_debug = v; }
   // when true, only use reco hits/clusters that are truth-associated to
   // positive truth-track IDs (trkid > 0)
   void set_primary_hits_only(bool v) { m_primary_hits_only = v; }
@@ -75,6 +77,7 @@ std::unique_ptr<TFile> m_tf;
 TTree* m_tt{nullptr};
 TTree* m_tt_display_intersections{nullptr};
 TTree* m_tt_display_g4hits{nullptr};
+  TTree* m_tt_layer_debug{nullptr};
 
 // cuts
 double m_max_dca{0.3}; // cm
@@ -90,6 +93,7 @@ double m_max_dz{1.0}; // cm
   unsigned int m_display_hit_subsamples{0};
   bool m_include_fallback_intersections{false};
   bool m_enable_fit_layer44_residuals{true};
+  bool m_write_layer_debug{false};
   bool m_primary_hits_only{true};
 
   struct LayerPoint
@@ -157,6 +161,24 @@ std::vector<ULong64_t> m_hitsetkeys;
   std::vector<double> m_hit_charge;
   double m_total_charge_layer{0.0};
   double m_max_charge_layer{0.0};
+
+  // Per-layer cutflow debug (one row per seed/layer point)
+  int m_dbg_event{0};
+  int m_dbg_trkid{0};
+  double m_dbg_pt{std::numeric_limits<double>::quiet_NaN()};
+  unsigned int m_dbg_layer{0};
+  int m_dbg_side{0};
+  int m_dbg_sector{-1};
+  int m_dbg_source_is_cluster{0};
+  int m_dbg_nobj_total{0};
+  int m_dbg_nfail_truth{0};
+  int m_dbg_nfail_min_adc{0};
+  int m_dbg_nfail_geom{0};
+  int m_dbg_naccepted{0};
+  int m_dbg_layer_filled{0};
+  int m_dbg_drop_reason{0};
+  double m_dbg_weight_sum{0.0};
+  double m_dbg_adcsum{0.0};
 
 // helpers
 static bool cylinder_intersection(double x0,double y0,double z0,

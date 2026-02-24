@@ -95,6 +95,27 @@ int TpcLaserDNL::Init(PHCompositeNode*)
   m_tt->Branch("iphi", &m_iphi);
   m_tt->Branch("tbin", &m_tbin);
 
+  if (m_write_layer_debug)
+  {
+    m_tt_layer_debug = new TTree("dnl_layer_debug", "Per-layer DNL cutflow/drop reason");
+    m_tt_layer_debug->Branch("event", &m_dbg_event, "event/I");
+    m_tt_layer_debug->Branch("trkid", &m_dbg_trkid, "trkid/I");
+    m_tt_layer_debug->Branch("pt", &m_dbg_pt, "pt/D");
+    m_tt_layer_debug->Branch("layer", &m_dbg_layer, "layer/i");
+    m_tt_layer_debug->Branch("side", &m_dbg_side, "side/I");
+    m_tt_layer_debug->Branch("sector", &m_dbg_sector, "sector/I");
+    m_tt_layer_debug->Branch("source_is_cluster", &m_dbg_source_is_cluster, "source_is_cluster/I");
+    m_tt_layer_debug->Branch("nobj_total", &m_dbg_nobj_total, "nobj_total/I");
+    m_tt_layer_debug->Branch("nfail_truth", &m_dbg_nfail_truth, "nfail_truth/I");
+    m_tt_layer_debug->Branch("nfail_min_adc", &m_dbg_nfail_min_adc, "nfail_min_adc/I");
+    m_tt_layer_debug->Branch("nfail_geom", &m_dbg_nfail_geom, "nfail_geom/I");
+    m_tt_layer_debug->Branch("naccepted", &m_dbg_naccepted, "naccepted/I");
+    m_tt_layer_debug->Branch("layer_filled", &m_dbg_layer_filled, "layer_filled/I");
+    m_tt_layer_debug->Branch("drop_reason", &m_dbg_drop_reason, "drop_reason/I");
+    m_tt_layer_debug->Branch("weight_sum", &m_dbg_weight_sum, "weight_sum/D");
+    m_tt_layer_debug->Branch("adcsum", &m_dbg_adcsum, "adcsum/D");
+  }
+
   if (m_write_display_ntuple)
   {
     m_tt_display_intersections = new TTree("truth_intersections", "truth track-cylinder intersections");
@@ -204,6 +225,7 @@ int TpcLaserDNL::InitRun(PHCompositeNode* topNode)
             << ", has_reco=" << have_reco_tracks
             << ", has_truth_intersections=" << have_truth_intersections
             << ", single_hitset=" << (m_restrict_to_single_hitset ? 1 : 0)
+            << ", layer_debug=" << (m_write_layer_debug ? 1 : 0)
             << ", vdrift=" << m_acts->get_drift_velocity() << " cm/ns" << std::endl;
   return 0;
 }
@@ -378,6 +400,13 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
               << ")" << std::endl;
     return Fun4AllReturnCodes::EVENT_OK;
   }
+
+  constexpr int kDropFilled = 0;
+  constexpr int kDropNoObjects = 1;
+  constexpr int kDropTruthRejected = 2;
+  constexpr int kDropMinAdcRejected = 3;
+  constexpr int kDropGeomRejected = 4;
+  constexpr int kDropMixedOther = 5;
 
   const auto hit_passes_truth_filter = [&](const TrkrDefs::hitsetkey hitsetkey,
                                            const TrkrDefs::hitkey hitkey,
@@ -562,6 +591,11 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
       std::vector<double> hit_charge;
       std::set<unsigned int> unique_tbins;
       std::map<int, double> sector_weights;
+      int dbg_nobj_total = 0;
+      int dbg_nfail_truth = 0;
+      int dbg_nfail_min_adc = 0;
+      int dbg_nfail_geom = 0;
+      int dbg_naccepted = 0;
 
       const auto pass_line_cuts = [&](const double xh, const double yh, const double zh)
       {
@@ -608,13 +642,22 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
               const auto hitkey = hitit->first;
               TrkrHit* hit = hitit->second;
               if (!hit) continue;
-              if (!hit_passes_truth_filter(hsk, hitkey, seed.id)) continue;
+              ++dbg_nobj_total;
+              if (!hit_passes_truth_filter(hsk, hitkey, seed.id))
+              {
+                ++dbg_nfail_truth;
+                continue;
+              }
               ++result.nhit_scanned;
 
               double weight = m_weight_by_adc ? static_cast<double>(hit->getAdc())
                                               : static_cast<double>(hit->getEnergy());
               if (m_weight_by_adc && m_use_pedestal) weight -= m_pedestal;
-              if (weight < m_min_adc) continue;
+              if (weight < m_min_adc)
+              {
+                ++dbg_nfail_min_adc;
+                continue;
+              }
 
               const unsigned short iphi = TpcDefs::getPad(hitkey);
               const unsigned short tbin = TpcDefs::getTBin(hitkey);
@@ -628,8 +671,13 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
               double zh = tdriftmax * vdrift - zdriftlen;
               if (side == 0) zh = -zh;
 
-              if (!pass_line_cuts(xh, yh, zh)) continue;
+              if (!pass_line_cuts(xh, yh, zh))
+              {
+                ++dbg_nfail_geom;
+                continue;
+              }
               accumulate_weighted_point(weight, xh, yh, zh);
+              ++dbg_naccepted;
               sector_weights[sector_id] += weight;
 
               hitkeys.push_back(static_cast<ULong64_t>(hitkey));
@@ -660,14 +708,28 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
               const auto ckey = cit->first;
               TrkrCluster* clus = cit->second;
               if (!clus) continue;
-              if (!cluster_passes_truth_filter(ckey, hsk, seed.id)) continue;
+              ++dbg_nobj_total;
+              if (!cluster_passes_truth_filter(ckey, hsk, seed.id))
+              {
+                ++dbg_nfail_truth;
+                continue;
+              }
 
               double weight = static_cast<double>(clus->getAdc());
-              if (weight < m_min_adc) continue;
+              if (weight < m_min_adc)
+              {
+                ++dbg_nfail_min_adc;
+                continue;
+              }
 
               const Acts::Vector3 g = m_acts->getGlobalPosition(ckey, clus);
-              if (!pass_line_cuts(g.x(), g.y(), g.z())) continue;
+              if (!pass_line_cuts(g.x(), g.y(), g.z()))
+              {
+                ++dbg_nfail_geom;
+                continue;
+              }
               accumulate_weighted_point(weight, g.x(), g.y(), g.z());
+              ++dbg_naccepted;
               sector_weights[sector_id] += weight;
               hit_charge.push_back(weight);
             }
@@ -703,8 +765,69 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
         hit_charge.clear();
         unique_tbins.clear();
         sector_weights.clear();
+        dbg_nobj_total = 0;
+        dbg_nfail_truth = 0;
+        dbg_nfail_min_adc = 0;
+        dbg_nfail_geom = 0;
+        dbg_naccepted = 0;
 
         accumulate_from_hitsets(dominant_sector);
+      }
+
+      int debug_sector = -1;
+      if (!sector_weights.empty())
+      {
+        const auto best_it = std::max_element(
+            sector_weights.begin(),
+            sector_weights.end(),
+            [](const auto& lhs, const auto& rhs)
+            { return lhs.second < rhs.second; });
+        debug_sector = best_it->first;
+      }
+      const int debug_layer_filled = (wsum > 0.) ? 1 : 0;
+      int debug_drop_reason = kDropFilled;
+      if (!debug_layer_filled)
+      {
+        if (dbg_nobj_total == 0)
+        {
+          debug_drop_reason = kDropNoObjects;
+        }
+        else if (dbg_nfail_truth == dbg_nobj_total)
+        {
+          debug_drop_reason = kDropTruthRejected;
+        }
+        else if ((dbg_nfail_truth + dbg_nfail_min_adc) == dbg_nobj_total)
+        {
+          debug_drop_reason = kDropMinAdcRejected;
+        }
+        else if ((dbg_nfail_truth + dbg_nfail_min_adc + dbg_nfail_geom) == dbg_nobj_total)
+        {
+          debug_drop_reason = kDropGeomRejected;
+        }
+        else
+        {
+          debug_drop_reason = kDropMixedOther;
+        }
+      }
+      if (m_write_layer_debug && m_tt_layer_debug)
+      {
+        m_dbg_event = m_event;
+        m_dbg_trkid = seed.id;
+        m_dbg_pt = seed.pt;
+        m_dbg_layer = layer;
+        m_dbg_side = side;
+        m_dbg_sector = debug_sector;
+        m_dbg_source_is_cluster = m_use_clusters ? 1 : 0;
+        m_dbg_nobj_total = dbg_nobj_total;
+        m_dbg_nfail_truth = dbg_nfail_truth;
+        m_dbg_nfail_min_adc = dbg_nfail_min_adc;
+        m_dbg_nfail_geom = dbg_nfail_geom;
+        m_dbg_naccepted = dbg_naccepted;
+        m_dbg_layer_filled = debug_layer_filled;
+        m_dbg_drop_reason = debug_drop_reason;
+        m_dbg_weight_sum = wsum;
+        m_dbg_adcsum = result.adcsum;
+        m_tt_layer_debug->Fill();
       }
 
       if (wsum > 0)
@@ -1183,6 +1306,7 @@ int TpcLaserDNL::End(PHCompositeNode*)
   {
     m_tf->cd();
     if (m_tt) m_tt->Write();
+    if (m_tt_layer_debug) m_tt_layer_debug->Write();
     if (m_tt_display_intersections) m_tt_display_intersections->Write();
     if (m_tt_display_g4hits) m_tt_display_g4hits->Write();
     m_tf->Close();
