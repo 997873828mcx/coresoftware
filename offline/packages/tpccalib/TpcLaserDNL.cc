@@ -106,6 +106,9 @@ int TpcLaserDNL::Init(PHCompositeNode*)
     m_tt_layer_debug->Branch("sector", &m_dbg_sector, "sector/I");
     m_tt_layer_debug->Branch("source_is_cluster", &m_dbg_source_is_cluster, "source_is_cluster/I");
     m_tt_layer_debug->Branch("nobj_total", &m_dbg_nobj_total, "nobj_total/I");
+    m_tt_layer_debug->Branch("nobj_any_side", &m_dbg_nobj_any_side, "nobj_any_side/I");
+    m_tt_layer_debug->Branch("nobj_opposite_side", &m_dbg_nobj_opposite_side, "nobj_opposite_side/I");
+    m_tt_layer_debug->Branch("nobj_sector_rejected", &m_dbg_nobj_sector_rejected, "nobj_sector_rejected/I");
     m_tt_layer_debug->Branch("nfail_truth", &m_dbg_nfail_truth, "nfail_truth/I");
     m_tt_layer_debug->Branch("nfail_min_adc", &m_dbg_nfail_min_adc, "nfail_min_adc/I");
     m_tt_layer_debug->Branch("nfail_geom", &m_dbg_nfail_geom, "nfail_geom/I");
@@ -407,6 +410,8 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
   constexpr int kDropMinAdcRejected = 3;
   constexpr int kDropGeomRejected = 4;
   constexpr int kDropMixedOther = 5;
+  constexpr int kDropOppositeSideOnly = 6;
+  constexpr int kDropSectorFilteredOnly = 7;
 
   const auto hit_passes_truth_filter = [&](const TrkrDefs::hitsetkey hitsetkey,
                                            const TrkrDefs::hitkey hitkey,
@@ -592,6 +597,9 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
       std::set<unsigned int> unique_tbins;
       std::map<int, double> sector_weights;
       int dbg_nobj_total = 0;
+      int dbg_nobj_any_side = 0;
+      int dbg_nobj_opposite_side = 0;
+      int dbg_nobj_sector_rejected = 0;
       int dbg_nfail_truth = 0;
       int dbg_nfail_min_adc = 0;
       int dbg_nfail_geom = 0;
@@ -628,20 +636,43 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
           {
             const TrkrDefs::hitsetkey& hsk = hsit->first;
             if (TrkrDefs::getLayer(hsk) != layer) continue;
-            if (TpcDefs::getSide(hsk) != static_cast<unsigned int>(side)) continue;
-
-            const int sector_id = static_cast<int>(TpcDefs::getSectorId(hsk));
-            if (sector_filter >= 0 && sector_id != sector_filter) continue;
 
             TrkrHitSet* hitset = hsit->second;
             if (!hitset) continue;
 
+            const bool side_matches = (TpcDefs::getSide(hsk) == static_cast<unsigned int>(side));
+            const int sector_id = static_cast<int>(TpcDefs::getSectorId(hsk));
+            const bool sector_matches = (sector_filter < 0 || sector_id == sector_filter);
+
             TrkrHitSet::ConstRange hits = hitset->getHits();
+            if (!side_matches || !sector_matches)
+            {
+              if (m_write_layer_debug)
+              {
+                for (auto hitit = hits.first; hitit != hits.second; ++hitit)
+                {
+                  TrkrHit* hit = hitit->second;
+                  if (!hit) continue;
+                  ++dbg_nobj_any_side;
+                  if (!side_matches)
+                  {
+                    ++dbg_nobj_opposite_side;
+                  }
+                  else
+                  {
+                    ++dbg_nobj_sector_rejected;
+                  }
+                }
+              }
+              continue;
+            }
+
             for (auto hitit = hits.first; hitit != hits.second; ++hitit)
             {
               const auto hitkey = hitit->first;
               TrkrHit* hit = hitit->second;
               if (!hit) continue;
+              ++dbg_nobj_any_side;
               ++dbg_nobj_total;
               if (!hit_passes_truth_filter(hsk, hitkey, seed.id))
               {
@@ -697,17 +728,40 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
           for (const auto& hsk : hitsetkeys)
           {
             if (TrkrDefs::getLayer(hsk) != layer) continue;
-            if (TpcDefs::getSide(hsk) != static_cast<unsigned int>(side)) continue;
 
             const int sector_id = static_cast<int>(TpcDefs::getSectorId(hsk));
-            if (sector_filter >= 0 && sector_id != sector_filter) continue;
+            const bool side_matches = (TpcDefs::getSide(hsk) == static_cast<unsigned int>(side));
+            const bool sector_matches = (sector_filter < 0 || sector_id == sector_filter);
 
             auto crange = m_clusters->getClusters(hsk);
+            if (!side_matches || !sector_matches)
+            {
+              if (m_write_layer_debug)
+              {
+                for (auto cit = crange.first; cit != crange.second; ++cit)
+                {
+                  TrkrCluster* clus = cit->second;
+                  if (!clus) continue;
+                  ++dbg_nobj_any_side;
+                  if (!side_matches)
+                  {
+                    ++dbg_nobj_opposite_side;
+                  }
+                  else
+                  {
+                    ++dbg_nobj_sector_rejected;
+                  }
+                }
+              }
+              continue;
+            }
+
             for (auto cit = crange.first; cit != crange.second; ++cit)
             {
               const auto ckey = cit->first;
               TrkrCluster* clus = cit->second;
               if (!clus) continue;
+              ++dbg_nobj_any_side;
               ++dbg_nobj_total;
               if (!cluster_passes_truth_filter(ckey, hsk, seed.id))
               {
@@ -766,6 +820,9 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
         unique_tbins.clear();
         sector_weights.clear();
         dbg_nobj_total = 0;
+        dbg_nobj_any_side = 0;
+        dbg_nobj_opposite_side = 0;
+        dbg_nobj_sector_rejected = 0;
         dbg_nfail_truth = 0;
         dbg_nfail_min_adc = 0;
         dbg_nfail_geom = 0;
@@ -790,7 +847,18 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
       {
         if (dbg_nobj_total == 0)
         {
-          debug_drop_reason = kDropNoObjects;
+          if (dbg_nobj_opposite_side > 0 && dbg_nobj_sector_rejected == 0)
+          {
+            debug_drop_reason = kDropOppositeSideOnly;
+          }
+          else if (dbg_nobj_sector_rejected > 0 && dbg_nobj_opposite_side == 0)
+          {
+            debug_drop_reason = kDropSectorFilteredOnly;
+          }
+          else
+          {
+            debug_drop_reason = kDropNoObjects;
+          }
         }
         else if (dbg_nfail_truth == dbg_nobj_total)
         {
@@ -819,6 +887,9 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
         m_dbg_sector = debug_sector;
         m_dbg_source_is_cluster = m_use_clusters ? 1 : 0;
         m_dbg_nobj_total = dbg_nobj_total;
+        m_dbg_nobj_any_side = dbg_nobj_any_side;
+        m_dbg_nobj_opposite_side = dbg_nobj_opposite_side;
+        m_dbg_nobj_sector_rejected = dbg_nobj_sector_rejected;
         m_dbg_nfail_truth = dbg_nfail_truth;
         m_dbg_nfail_min_adc = dbg_nfail_min_adc;
         m_dbg_nfail_geom = dbg_nfail_geom;

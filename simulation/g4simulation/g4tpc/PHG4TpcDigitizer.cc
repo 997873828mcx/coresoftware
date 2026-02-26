@@ -60,8 +60,6 @@ PHG4TpcDigitizer::~PHG4TpcDigitizer()
 
 int PHG4TpcDigitizer::InitRun(PHCompositeNode *topNode)
 {
-  ADCThreshold += Pedestal;
-
   // Factor that converts the charge in each z bin into a voltage in each z bin
   // ChargeToPeakVolts relates TOTAL charge collected to peak voltage, while the cell maker actually distributes the signal
   // GEM output charge in Z bins using the shaper time response. For 80 ns shaping, the scaleup factor of 2.4 gets the peak voltage right.
@@ -69,7 +67,8 @@ int PHG4TpcDigitizer::InitRun(PHCompositeNode *topNode)
   // The noise is by definition the RMS noise width voltage divided by ChargeToPeakVolts
   ADCNoiseConversionGain = ChargeToPeakVolts * 1.60e-04;  // 20 (or 30) mV/fC * fC/electron
 
-  ADCThreshold_mV = ADCThreshold * ADCNoiseConversionGain;
+  const float threshold_electrons = ADCThreshold + (no_noise ? 0.0f : Pedestal);
+  ADCThreshold_mV = threshold_electrons * ADCNoiseConversionGain;
 
   //-------------
   // Add Hit Node
@@ -94,6 +93,10 @@ int PHG4TpcDigitizer::InitRun(PHCompositeNode *topNode)
   if (Verbosity() > 0)
   {
     std::cout << "====================== PHG4TpcDigitizer::InitRun() =====================" << std::endl;
+    std::cout << " skip_noise=" << skip_noise
+              << " no_noise=" << no_noise
+              << " ADCThreshold_mV=" << ADCThreshold_mV
+              << std::endl;
     for (auto &tpiter : _max_adc)
     {
       std::cout << " Max ADC in Layer #" << tpiter.first << " = " << tpiter.second << std::endl;
@@ -455,7 +458,7 @@ void PHG4TpcDigitizer::DigitizeCylinderCells(PHCompositeNode *topNode)
               {
                 std::cout << std::endl
                           << "Hit above threshold of "
-                          << ADCThreshold * ADCNoiseConversionGain << " for phibin " << iphi
+                          << ADCThreshold_mV << " for phibin " << iphi
                           << " it " << it << " with adc_input " << adc_input[it]
                           << " digitize this and 4 following bins: " << std::endl;
               }
@@ -495,7 +498,7 @@ void PHG4TpcDigitizer::DigitizeCylinderCells(PHCompositeNode *topNode)
                               << " adc_hitid " << adc_hitid[it + itup]
                               << " is_populated " << is_populated[it + itup]
                               << "  adc_input " << adc_input[it + itup]
-                              << " ADCThreshold " << ADCThreshold * ADCNoiseConversionGain
+                              << " ADCThreshold " << ADCThreshold_mV
                               << " adc_output " << adc_output
                               << " hitkey " << hitkey
                               << " side " << side
@@ -695,9 +698,12 @@ void PHG4TpcDigitizer::DigitizeCylinderCells(PHCompositeNode *topNode)
 float PHG4TpcDigitizer::add_noise_to_bin(float signal)
 {
   // add noise to the signal and return adc input voltage
-  float adc_input_voltage = signal * ADCSignalConversionGain;                 // mV, see comments above
-  float noise_voltage = (Pedestal + added_noise()) * ADCNoiseConversionGain;  // mV - from definition of noise charge and pedestal charge
-  adc_input_voltage += noise_voltage;
+  float adc_input_voltage = signal * ADCSignalConversionGain;  // mV, see comments above
+  if (!no_noise)
+  {
+    float noise_voltage = (Pedestal + added_noise()) * ADCNoiseConversionGain;  // mV - from definition of noise charge and pedestal charge
+    adc_input_voltage += noise_voltage;
+  }
 
   return adc_input_voltage;
 }

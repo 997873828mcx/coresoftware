@@ -9,6 +9,7 @@
 #include <gsl/gsl_rng.h>
 
 #include <array>
+#include <cstdint>
 #include <climits>
 #include <cmath>
 #include <string>  // for string
@@ -33,6 +34,8 @@ class PHG4TpcPadPlaneReadout : public PHG4TpcPadPlane
   ~PHG4TpcPadPlaneReadout() override;
 
   int InitRun(PHCompositeNode *topNode) override;
+  void BeginEvent(unsigned int event) override;
+  void EndEvent(unsigned int event) override;
 
   void UseGain(const int flagToUseGain);
   void SetUseModuleGainWeights(const int flag) {m_use_module_gain_weights = flag;}
@@ -87,6 +90,7 @@ void SetMaskChannelsFromFile()
                                       double grid_step = -1.0);
   void SetVisualizationDumpFile(const std::string &file);
   void SetVisualizeAllClouds(bool enable);
+  void EnableSideLayerDebug(bool enable) { m_enable_side_layer_debug = enable; }
 
   protected: 
   double Ts = 80.0; // SAMPA peaking time
@@ -281,6 +285,19 @@ double max_radii_module[3]={399.85222874031024, 569.695373910603, 753.6667758418
   std::vector<DebugSample> m_visualization_aggregate_samples;
   std::vector<VisualizationCircle> m_visualization_circles;
   std::map<int, DebugPadContribution> m_visualization_pad_union;
+
+  struct SideLayerDebugCounters
+  {
+    std::uint64_t cloud_calls{0};
+    std::uint64_t cloud_no_hits{0};
+    std::uint64_t pad_contributors{0};
+    std::uint64_t bins_written{0};
+    double neff_sum{0.0};
+  };
+  bool m_enable_side_layer_debug{false};
+  int m_side_layer_debug_event{-1};
+  std::array<std::uint64_t, NSides> m_side_layer_no_layer{{0, 0}};
+  std::map<std::pair<unsigned int, unsigned int>, SideLayerDebugCounters> m_side_layer_debug_counters;
 
 
 };

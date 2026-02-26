@@ -733,6 +733,8 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
 
 int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
 {
+  padplane->BeginEvent(event_num);
+
   truth_track = nullptr;  // track to which truth clusters are built
 
   m_tGeometry = findNode::getClass<ActsGeometry>(topNode, "ActsGeometry");
@@ -1841,6 +1843,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
     hittruthassoc->identify();
   }
 
+  padplane->EndEvent(event_num);
   ++event_num;  // if doing more than one event, event_num will be incremented.
 
   if (Verbosity() > 500)

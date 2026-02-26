@@ -337,6 +337,68 @@ int PHG4TpcPadPlaneReadout::InitRun(PHCompositeNode *topNode)
   return Fun4AllReturnCodes::EVENT_OK;
 }
 
+void PHG4TpcPadPlaneReadout::BeginEvent(unsigned int event)
+{
+  if (!m_enable_side_layer_debug)
+  {
+    return;
+  }
+
+  m_side_layer_debug_event = static_cast<int>(event);
+  m_side_layer_no_layer = {{0, 0}};
+  m_side_layer_debug_counters.clear();
+}
+
+void PHG4TpcPadPlaneReadout::EndEvent(unsigned int event)
+{
+  if (!m_enable_side_layer_debug)
+  {
+    return;
+  }
+
+  if (m_side_layer_debug_event < 0)
+  {
+    m_side_layer_debug_event = static_cast<int>(event);
+  }
+
+  std::uint64_t total_clouds = 0;
+  std::uint64_t total_bins = 0;
+  for (const auto &[key, cnt] : m_side_layer_debug_counters)
+  {
+    (void) key;
+    total_clouds += cnt.cloud_calls;
+    total_bins += cnt.bins_written;
+  }
+  if (total_clouds == 0 && m_side_layer_no_layer[0] == 0 && m_side_layer_no_layer[1] == 0)
+  {
+    return;
+  }
+
+  std::cout << Name() << ": PadPlane side/layer summary evt=" << m_side_layer_debug_event
+            << " clouds=" << total_clouds
+            << " bins_written=" << total_bins
+            << " no_layer(side0/side1)=" << m_side_layer_no_layer[0] << "/" << m_side_layer_no_layer[1]
+            << std::endl;
+
+  for (const auto &[key, cnt] : m_side_layer_debug_counters)
+  {
+    const unsigned int side = key.first;
+    const unsigned int layer = key.second;
+    if (cnt.cloud_calls == 0)
+    {
+      continue;
+    }
+    std::cout << "  side=" << side
+              << " layer=" << layer
+              << " clouds=" << cnt.cloud_calls
+              << " cloud_no_hits=" << cnt.cloud_no_hits
+              << " pad_contributors=" << cnt.pad_contributors
+              << " bins_written=" << cnt.bins_written
+              << " neff_sum=" << cnt.neff_sum
+              << std::endl;
+  }
+}
+
   
 const std::vector<std::string>
   PHG4TpcPadPlaneReadout::brdMaps_ = {
@@ -770,7 +832,20 @@ void PHG4TpcPadPlaneReadout::MapToPadPlane(
 
   if (layernum == 0)
   {
+    if (m_enable_side_layer_debug && side < static_cast<unsigned int>(NSides))
+    {
+      ++m_side_layer_no_layer[side];
+    }
     return;
+  }
+
+  SideLayerDebugCounters *debug_counter = nullptr;
+  std::uint64_t bins_written_this_cloud = 0;
+  if (m_enable_side_layer_debug && side < static_cast<unsigned int>(NSides))
+  {
+    auto &counter = m_side_layer_debug_counters[{side, layernum}];
+    counter.cloud_calls++;
+    debug_counter = &counter;
   }
 
   // store phi bins and tbins upfront to avoid repetitive checks on the phi methods
@@ -1016,6 +1091,10 @@ norm1 = 0.0;
         const int pad_num = pad_phibin[i];
         const double pad_fraction = pad_mass[i] / total_mass; // fraction of total mass
         if (pad_fraction <= 0) continue;
+        if (debug_counter)
+        {
+          ++debug_counter->pad_contributors;
+        }
 
         const unsigned int sector = (pad_num >= 0) ? (static_cast<unsigned>(pad_num) / pads_per_sector) : 0;
         TrkrDefs::hitsetkey hitsetkey = TpcDefs::genHitSetKey(layer_cand, sector, side);
@@ -1062,6 +1141,12 @@ norm1 = 0.0;
           phi_integral += phicenter * neffelectrons_bin;
           t_integral   += tcenter   * neffelectrons_bin;
           weight       += neffelectrons_bin;
+          if (debug_counter)
+          {
+            ++debug_counter->bins_written;
+            debug_counter->neff_sum += neffelectrons_bin;
+            ++bins_written_this_cloud;
+          }
         }
       }
     }
@@ -1129,6 +1214,10 @@ norm1 = 0.0;
         const double pshare_phi = pad_share_phi[i] / norm_phi;
         const double pad_fraction = (radw / total_radw) * pshare_phi;
         if (pad_fraction <= 0) continue;
+        if (debug_counter)
+        {
+          ++debug_counter->pad_contributors;
+        }
 
         const unsigned int sector = (pad_num >= 0) ? (static_cast<unsigned>(pad_num) / pads_per_sector) : 0;
         TrkrDefs::hitsetkey hitsetkey = TpcDefs::genHitSetKey(layer_cand, sector, side);
@@ -1193,6 +1282,12 @@ if (m_maskHotChannels)
           phi_integral += phicenter * neffelectrons_bin;
           t_integral   += tcenter   * neffelectrons_bin;
           weight       += neffelectrons_bin;
+          if (debug_counter)
+          {
+            ++debug_counter->bins_written;
+            debug_counter->neff_sum += neffelectrons_bin;
+            ++bins_written_this_cloud;
+          }
         }
       }
     }
@@ -1215,6 +1310,11 @@ if (m_maskHotChannels)
     std::cout << " hit " << m_NHits << " quick centroid for this electron " << std::endl;
     std::cout << "      phi centroid = " << phi_integral / weight << " phi in " << phi << " phi diff " << phi_integral / weight - phi << std::endl;
     std::cout << "      t centroid = " << t_integral / weight << " t in " << t_gem << " t diff " << t_integral / weight - t_gem << std::endl;
+  }
+
+  if (debug_counter && bins_written_this_cloud == 0)
+  {
+    ++debug_counter->cloud_no_hits;
   }
 
   m_NHits++;
@@ -1427,18 +1527,18 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
   if (m_visualization_target_side >= 0 &&
       static_cast<int>(side) != m_visualization_target_side) return;
 
-  if (samples.empty()) return;
-
   double xmin = std::numeric_limits<double>::max();
   double xmax = std::numeric_limits<double>::lowest();
   double ymin = std::numeric_limits<double>::max();
   double ymax = std::numeric_limits<double>::lowest();
+  bool have_bounds = false;
   for (const auto &sample : samples)
   {
     xmin = std::min(xmin, sample.x);
     xmax = std::max(xmax, sample.x);
     ymin = std::min(ymin, sample.y);
     ymax = std::max(ymax, sample.y);
+    have_bounds = true;
   }
 
   double max_circle_radius = 0.0;
@@ -1451,6 +1551,7 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
       xmax = std::max(xmax, v.x);
       ymin = std::min(ymin, v.y);
       ymax = std::max(ymax, v.y);
+      have_bounds = true;
     }
   }
   for (const auto &circle : circles)
@@ -1459,6 +1560,16 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
     xmax = std::max(xmax, circle.x + circle.radius);
     ymin = std::min(ymin, circle.y - circle.radius);
     ymax = std::max(ymax, circle.y + circle.radius);
+    have_bounds = true;
+  }
+
+  if (!have_bounds)
+  {
+    const double fallback = std::max(3.0 * cloud_sig_rp, 0.2);
+    xmin = x_center - fallback;
+    xmax = x_center + fallback;
+    ymin = y_center - fallback;
+    ymax = y_center + fallback;
   }
 
   const double margin = std::max(max_circle_radius * 0.1, 0.1);
@@ -1486,7 +1597,6 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
   hist->GetYaxis()->SetTitle("sector frame y [cm]");
   hist->SetStats(false);
 
-  assert(!samples.empty());
   for (const auto &sample : samples)
   {
     hist->Fill(sample.x, sample.y, sample.density);
@@ -1530,7 +1640,8 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
   {
     std::cout << "test_1_PHG4TpcPadPlaneReadout: histogram summary for visualization "
               << "(side " << side << ", layer " << layernum << "): total mass = "
-              << total_mass << ", non-zero bins = " << nonzero_bins;
+              << total_mass << ", non-zero bins = " << nonzero_bins
+              << ", sampled_points = " << samples.size();
     if (nonzero_bins > 0)
     {
       std::cout << ", min(bin) = " << min_positive << ", max(bin) = " << max_bin;
@@ -1734,6 +1845,17 @@ void PHG4TpcPadPlaneReadout::SERF_zigzag_phibins(const unsigned int side, const 
     debug_samples_storage.reserve(7000);
     debug_samples = &debug_samples_storage;
   }
+  if (capture_debug && Verbosity() > 0)
+  {
+    std::cout << "PHG4TpcPadPlaneReadout::SERF debug cloud: side=" << side
+              << " layer=" << layernum
+              << " sector=" << sector1
+              << " phi=" << phi
+              << " r=" << rad_gem
+              << " xy=(" << x << "," << y << ")"
+              << " rotated=(" << xNew << "," << yNew << ")"
+              << std::endl;
+  }
 /* int phi_bin = LayerGeom->get_phibin(phi, side);
  int sector = 0;
  for (int i=0;i<12;i++)
@@ -1804,12 +1926,16 @@ void PHG4TpcPadPlaneReadout::SERF_zigzag_phibins(const unsigned int side, const 
       pad_now -= phibins;
     }
    
-    int look_pad =  pad_now ;
-  //  int n = ntpc_phibins_sector[tpc_module];
-    //look_pad = ( n - ( (look_pad % n) + n ) % n ) % n ;
-   look_pad = ((look_pad % ntpc_phibins_sector[tpc_module]) + ntpc_phibins_sector[tpc_module]) % ntpc_phibins_sector[tpc_module];
-
-    look_pad = ntpc_phibins_sector[tpc_module] - look_pad -1;
+    int look_pad = pad_now;
+    const int nlocal = ntpc_phibins_sector[tpc_module];
+    // Convert global pad index to sector-local index.
+    look_pad = ((look_pad % nlocal) + nlocal) % nlocal;
+    // Side 0 uses the same local ordering as polygon pad indices.
+    // Side 1 keeps the historical reversed lookup.
+    if (side == 1)
+    {
+      look_pad = nlocal - look_pad - 1;
+    }
     
    // std::cout<<"pad now = "<<pad_now<<" look_pad = "<<look_pad<<" ntpc_phibins_sector[tpc_module] = "<<ntpc_phibins_sector[tpc_module];
 
@@ -1859,7 +1985,7 @@ void PHG4TpcPadPlaneReadout::SERF_zigzag_phibins(const unsigned int side, const 
     const double hit_x = m_use_rectangular_pad_response ? x : xNew;
     const double hit_y = m_use_rectangular_pad_response ? y : yNew;
     double charge = integratedDensityOfCircleAndPad(hit_x, hit_y, cloud_sig_rp , poly, 0.0, debug_samples);
-    if (capture_debug && charge > 0.0)
+    if (capture_debug)
     {
       DebugPadContribution dbg;
       dbg.pad_bin = pad_now;
