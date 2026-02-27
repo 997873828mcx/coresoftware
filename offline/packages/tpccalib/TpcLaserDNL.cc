@@ -167,10 +167,11 @@ int TpcLaserDNL::InitRun(PHCompositeNode* topNode)
   m_geom = findNode::getClass<PHG4TpcGeomContainer>(topNode, "TPCGEOMCONTAINER");
   m_acts = findNode::getClass<ActsGeometry>(topNode, "ActsGeometry");
   m_g4hits = findNode::getClass<PHG4HitContainer>(topNode, kTpcTrueClusterNodeName);
+  // Keep full TPC G4 hits available as the momentum source for truth-seed pt.
+  m_g4hits_tpc = findNode::getClass<PHG4HitContainer>(topNode, "G4HIT_TPC");
   if (m_primary_hits_only)
   {
     m_hittruthassoc = findNode::getClass<TrkrHitTruthAssoc>(topNode, "TRKR_HITTRUTHASSOC");
-    m_g4hits_tpc = findNode::getClass<PHG4HitContainer>(topNode, "G4HIT_TPC");
     if (m_use_clusters)
     {
       m_cluster_hit_assoc = findNode::getClass<TrkrClusterHitAssoc>(topNode, "TRKR_CLUSTERHITASSOC");
@@ -1238,15 +1239,6 @@ void TpcLaserDNL::build_truth_seeds(std::vector<TrackSeed>& seeds) const
     }
     ++n_truecluster_trkid_pos;
 
-    if (truth_pt_cache.find(static_cast<unsigned int>(trkid)) == truth_pt_cache.end())
-    {
-      const double pt = std::hypot(hit->get_px(0), hit->get_py(0));
-      if (std::isfinite(pt))
-      {
-        truth_pt_cache.emplace(static_cast<unsigned int>(trkid), pt);
-      }
-    }
-
     unsigned int layer = hit->get_layer();
     if (layer == std::numeric_limits<unsigned int>::max()) continue;
     auto* layergeom = m_geom->GetLayerCellGeom(static_cast<int>(layer));
@@ -1286,6 +1278,33 @@ void TpcLaserDNL::build_truth_seeds(std::vector<TrackSeed>& seeds) const
     if (prefer_this)
     {
       layer_map[layer] = point;
+    }
+  }
+
+  // Use full TPC G4 hits as the truth-track momentum source (TRUECLUSTER carries intersections).
+  if (m_g4hits_tpc)
+  {
+    PHG4HitContainer::ConstRange hitrange_tpc = m_g4hits_tpc->getHits();
+    for (auto hitit = hitrange_tpc.first; hitit != hitrange_tpc.second; ++hitit)
+    {
+      PHG4Hit* hit = hitit->second;
+      if (!hit) continue;
+
+      const int trkid = hit->get_trkid();
+      if (trkid <= 0) continue;
+      const unsigned int key = static_cast<unsigned int>(trkid);
+      if (truth_pt_cache.find(key) != truth_pt_cache.end()) continue;
+
+      const double pt0 = std::hypot(hit->get_px(0), hit->get_py(0));
+      const double pt1 = std::hypot(hit->get_px(1), hit->get_py(1));
+      if (std::isfinite(pt0))
+      {
+        truth_pt_cache.emplace(key, pt0);
+      }
+      else if (std::isfinite(pt1))
+      {
+        truth_pt_cache.emplace(key, pt1);
+      }
     }
   }
 
