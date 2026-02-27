@@ -1220,14 +1220,23 @@ void TpcLaserDNL::build_truth_seeds(std::vector<TrackSeed>& seeds) const
 
   std::unordered_map<unsigned int, std::map<unsigned int, LayerPoint>> layer_cache;
   std::unordered_map<unsigned int, double> truth_pt_cache;
+  std::size_t n_truecluster_total = 0;
+  std::size_t n_truecluster_trkid_pos = 0;
+  std::size_t n_truecluster_trkid_nonpos = 0;
   PHG4HitContainer::ConstRange hitrange = m_g4hits->getHits();
   for (auto hitit = hitrange.first; hitit != hitrange.second; ++hitit)
   {
     PHG4Hit* hit = hitit->second;
     if (!hit) continue;
+    ++n_truecluster_total;
 
     const int trkid = hit->get_trkid();
-    if (trkid <= 0) continue;
+    if (trkid <= 0)
+    {
+      ++n_truecluster_trkid_nonpos;
+      continue;
+    }
+    ++n_truecluster_trkid_pos;
 
     if (truth_pt_cache.find(static_cast<unsigned int>(trkid)) == truth_pt_cache.end())
     {
@@ -1369,6 +1378,18 @@ void TpcLaserDNL::build_truth_seeds(std::vector<TrackSeed>& seeds) const
       seeds.end(),
       [](const TrackSeed& a, const TrackSeed& b)
       { return a.id < b.id; });
+
+  if (Verbosity() > 0)
+  {
+    std::cout << Name() << ": truth-seed debug evt=" << m_event
+              << " TRUECLUSTER(total/pos/nonpos)="
+              << n_truecluster_total << "/"
+              << n_truecluster_trkid_pos << "/"
+              << n_truecluster_trkid_nonpos
+              << " layer_cache_tracks=" << layer_cache.size()
+              << " seeds_built=" << seeds.size()
+              << std::endl;
+  }
 }
 
 int TpcLaserDNL::End(PHCompositeNode*)
