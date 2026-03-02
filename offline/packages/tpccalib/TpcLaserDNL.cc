@@ -87,6 +87,9 @@ int TpcLaserDNL::Init(PHCompositeNode*)
   m_tt->Branch("dRphi_fit_layer44", &m_dRphi_fit_layer44, "dRphi_fit_layer44/D");
   // additional charge bookkeeping
   m_tt->Branch("hit_charge", &m_hit_charge);
+  m_tt->Branch("hit_x", &m_hit_x);
+  m_tt->Branch("hit_y", &m_hit_y);
+  m_tt->Branch("hit_z", &m_hit_z);
   m_tt->Branch("total_charge_layer", &m_total_charge_layer, "total_charge_layer/D");
   m_tt->Branch("max_charge_layer", &m_max_charge_layer, "max_charge_layer/D");
   // debug vectors (only filled with hits that pass selection)
@@ -507,6 +510,9 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
       std::vector<unsigned int> iphi;
       std::vector<unsigned int> tbin;
       std::vector<double> hit_charge;
+      std::vector<double> hit_x;
+      std::vector<double> hit_y;
+      std::vector<double> hit_z;
       double total_charge_layer{0.};
       double max_charge_layer{0.};
       double weight_sum{0.};
@@ -595,6 +601,9 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
       std::vector<unsigned int> iphi_vec;
       std::vector<unsigned int> tbin_vec;
       std::vector<double> hit_charge;
+      std::vector<double> hit_x;
+      std::vector<double> hit_y;
+      std::vector<double> hit_z;
       std::set<unsigned int> unique_tbins;
       std::map<int, double> sector_weights;
       int dbg_nobj_total = 0;
@@ -717,6 +726,9 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
               iphi_vec.push_back(static_cast<unsigned int>(iphi));
               tbin_vec.push_back(static_cast<unsigned int>(tbin));
               hit_charge.push_back(weight);
+              hit_x.push_back(xh);
+              hit_y.push_back(yh);
+              hit_z.push_back(zh);
               unique_tbins.insert(static_cast<unsigned int>(tbin));
               padWeights[iphi] += weight;
             }
@@ -787,6 +799,9 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
               ++dbg_naccepted;
               sector_weights[sector_id] += weight;
               hit_charge.push_back(weight);
+              hit_x.push_back(g.x());
+              hit_y.push_back(g.y());
+              hit_z.push_back(g.z());
             }
           }
         }
@@ -818,6 +833,9 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
         iphi_vec.clear();
         tbin_vec.clear();
         hit_charge.clear();
+        hit_x.clear();
+        hit_y.clear();
+        hit_z.clear();
         unique_tbins.clear();
         sector_weights.clear();
         dbg_nobj_total = 0;
@@ -959,6 +977,9 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
         result.iphi = std::move(iphi_vec);
         result.tbin = std::move(tbin_vec);
         result.hit_charge = std::move(hit_charge);
+        result.hit_x = std::move(hit_x);
+        result.hit_y = std::move(hit_y);
+        result.hit_z = std::move(hit_z);
         result.ntbin_used = static_cast<int>(unique_tbins.size());
         result.nbins_used = static_cast<int>(result.hitkeys.size());
         layer_results.push_back(std::move(result));
@@ -1053,6 +1074,9 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
       m_iphi = res.iphi;
       m_tbin = res.tbin;
       m_hit_charge = res.hit_charge;
+      m_hit_x = res.hit_x;
+      m_hit_y = res.hit_y;
+      m_hit_z = res.hit_z;
       m_total_charge_layer = res.total_charge_layer;
       m_max_charge_layer = res.max_charge_layer;
       m_xfit_layer44 = res.xfit;

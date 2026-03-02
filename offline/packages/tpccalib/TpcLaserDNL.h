@@ -159,6 +159,9 @@ std::vector<ULong64_t> m_hitsetkeys;
   std::vector<unsigned int> m_iphi;
   std::vector<unsigned int> m_tbin;
   std::vector<double> m_hit_charge;
+  std::vector<double> m_hit_x;
+  std::vector<double> m_hit_y;
+  std::vector<double> m_hit_z;
   double m_total_charge_layer{0.0};
   double m_max_charge_layer{0.0};
 
