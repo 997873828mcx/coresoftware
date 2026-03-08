@@ -946,7 +946,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
 
     const double eion = hiter->second->get_eion();
     const double edep = hiter->second->get_edep();
-    const double poisson_mean = std::max(0.0, primary_clusters_per_cm * step_length);
+    const double poisson_mean = (eion > 0.) ? std::max(0.0, primary_clusters_per_cm * step_length) : 0.0;
     unsigned int n_primary_clusters = 0;
     if (m_uniform_density_test)
     {

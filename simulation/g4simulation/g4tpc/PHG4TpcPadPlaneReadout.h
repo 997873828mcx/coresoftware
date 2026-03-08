@@ -50,6 +50,8 @@ class PHG4TpcPadPlaneReadout : public PHG4TpcPadPlane
   void RequireSerfPadSharing(bool require) { m_require_serf = require; }
   // If true, also require polygons for all readout layers (partial coverage aborts)
   void RequireSerfFullCoverage(bool require) { m_require_serf_full = require; }
+  // If true, keep charge that falls into polygon gaps as loss (do not renormalize it into pads).
+  void PreservePadGapLosses(bool preserve) { m_preserve_pad_gap_losses = preserve; }
   // When using analytic sharing (no SERF polygons), choose rectangular response instead of triangular
   void UseRectangularPadResponse(bool use_rectangular) { m_use_rectangular_pad_response = use_rectangular; }
 
@@ -91,6 +93,17 @@ void SetMaskChannelsFromFile()
   void SetVisualizationDumpFile(const std::string &file);
   void SetVisualizeAllClouds(bool enable);
   void EnableSideLayerDebug(bool enable) { m_enable_side_layer_debug = enable; }
+  // Compare LayerGeom pad centers (from CDB-derived geometry) against
+  // SERF BRD polygon centers using the same side/index mapping as SERF lookup.
+  void EnablePadGeomConsistencyCheck(bool enable) { m_check_pad_geom_consistency = enable; }
+  // Optional per-pad dump for one target (layer, sector[, side]).
+  // Set side < 0 to include both sides.
+  void SetPadGeomConsistencyDumpTarget(int layer, int sector, int side = -1)
+  {
+    m_consistency_dump_layer = layer;
+    m_consistency_dump_sector = sector;
+    m_consistency_dump_side = side;
+  }
 
   protected: 
   double Ts = 80.0; // SAMPA peaking time
@@ -118,6 +131,7 @@ void makeChannelMask(hitMaskTpc& aMask, const std::string& dbName, const std::st
 
   // utility: determine sector for (x,y) and rotate to a canonical frame
   void rotatePointToSector(double x, double y, unsigned int side, int& sectorFound, double& xNew, double& yNew);
+  void runPadGeomConsistencyCheck();
 
   PHG4TpcGeomContainer *GeomContainer = nullptr;
   PHG4TpcGeom *LayerGeom = nullptr;
@@ -238,6 +252,7 @@ double max_radii_module[3]={399.85222874031024, 569.695373910603, 753.6667758418
   bool m_use_serf_padsharing = true;
   bool m_require_serf = false;
   bool m_require_serf_full = false;
+  bool m_preserve_pad_gap_losses = true;
   bool m_serf_polygons_present = false; // summarized availability after InitRun
   bool m_warned_serf_fallback = false;  // printed once if per-hit fallback occurs
   // analytic sharing option: rectangular (flat) pad response instead of triangular
@@ -295,6 +310,10 @@ double max_radii_module[3]={399.85222874031024, 569.695373910603, 753.6667758418
     double neff_sum{0.0};
   };
   bool m_enable_side_layer_debug{false};
+  bool m_check_pad_geom_consistency{false};
+  int m_consistency_dump_layer{-1};
+  int m_consistency_dump_sector{-1};
+  int m_consistency_dump_side{-1};
   int m_side_layer_debug_event{-1};
   std::array<std::uint64_t, NSides> m_side_layer_no_layer{{0, 0}};
   std::map<std::pair<unsigned int, unsigned int>, SideLayerDebugCounters> m_side_layer_debug_counters;

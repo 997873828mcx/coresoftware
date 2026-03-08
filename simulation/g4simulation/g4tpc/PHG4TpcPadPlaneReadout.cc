@@ -250,9 +250,13 @@ int PHG4TpcPadPlaneReadout::InitRun(PHCompositeNode *topNode)
     makeChannelMask(m_hotChannelMap, m_hotChannelMapName, "TotalHotChannels");
   }
     
-  loadPadPlanes();
+	  loadPadPlanes();
+	  if (m_check_pad_geom_consistency)
+	  {
+	    runPadGeomConsistencyCheck();
+	  }
 
-  // Summarize SERF polygon availability and optionally enforce requirement
+	  // Summarize SERF polygon availability and optionally enforce requirement
   {
     std::size_t poly_layers = 0;
     std::vector<unsigned int> missing_layers;
@@ -516,6 +520,402 @@ void PHG4TpcPadPlaneReadout::loadPadPlanes() {
 }
 }
 
+void PHG4TpcPadPlaneReadout::runPadGeomConsistencyCheck()
+{
+  if (!GeomContainer)
+  {
+    std::cout << Name() << ": pad-geom consistency check skipped (no GeomContainer)." << std::endl;
+    return;
+  }
+
+  constexpr unsigned int kFirstReadoutLayer = 7;
+  const bool detailed = (Verbosity() > 0);
+  const bool dump_requested = (m_consistency_dump_layer >= 0 && m_consistency_dump_sector >= 0);
+  const bool dump_sector_valid = (m_consistency_dump_sector >= 0 &&
+                                  m_consistency_dump_sector < NSectors);
+  const bool dump_enabled = dump_requested && dump_sector_valid;
+
+  auto wrap = [](double dphi) {
+    while (dphi > M_PI) dphi -= 2.0 * M_PI;
+    while (dphi < -M_PI) dphi += 2.0 * M_PI;
+    return dphi;
+  };
+
+  std::size_t layers_checked = 0;
+  std::size_t layers_missing_polygons = 0;
+  std::size_t layers_with_boundary_data = 0;
+  std::size_t side_reports = 0;
+  double global_max_abs_dphi = 0.0;
+  double global_max_abs_dr = 0.0;
+  double global_max_abs_dphi_low = 0.0;
+  double global_max_abs_dphi_high = 0.0;
+  double global_max_abs_dr_low = 0.0;
+  double global_max_abs_dr_high = 0.0;
+
+  std::cout << Name() << ": running LayerGeom/BRD pad consistency check..." << std::endl;
+  if (dump_requested && !dump_sector_valid)
+  {
+    std::cout << Name()
+              << ": per-pad consistency dump disabled due to invalid sector="
+              << m_consistency_dump_sector
+              << " (expected 0-" << (NSectors - 1) << ")." << std::endl;
+  }
+  else if (dump_enabled)
+  {
+    std::cout << Name() << ": per-pad consistency dump target layer="
+              << m_consistency_dump_layer
+              << " sector=" << m_consistency_dump_sector
+              << " side=" << m_consistency_dump_side
+              << " (side<0 means both sides)." << std::endl;
+  }
+
+  PHG4TpcGeomContainer::ConstRange layerrange = GeomContainer->get_begin_end();
+  for (auto layeriter = layerrange.first; layeriter != layerrange.second; ++layeriter)
+  {
+    auto* thisGeom = layeriter->second;
+    if (!thisGeom) continue;
+
+    const unsigned int layer = static_cast<unsigned int>(thisGeom->get_layer());
+    if (layer < kFirstReadoutLayer) continue;
+    ++layers_checked;
+
+    const int tpc_module = static_cast<int>((layer - kFirstReadoutLayer) / 16);
+    if (tpc_module < 0 || tpc_module > 2) continue;
+
+    if (layer >= Pads.size() || Pads[layer].empty())
+    {
+      ++layers_missing_polygons;
+      if (detailed)
+      {
+        std::cout << Name() << ": consistency layer=" << layer
+                  << " skipped (no BRD polygons loaded)." << std::endl;
+      }
+      continue;
+    }
+
+    const int phibins = thisGeom->get_phibins();
+    const int nlocal = ntpc_phibins_sector[tpc_module];
+    if (phibins <= 0 || nlocal <= 0) continue;
+
+    // Layer radial boundary check:
+    // Compare GeomContainer annulus [r-thickness/2, r+thickness/2]
+    // with BRD polygon radial envelope [min(vertex_r), max(vertex_r)].
+    const double geom_r_low = thisGeom->get_radius() - 0.5 * thisGeom->get_thickness();
+    const double geom_r_high = thisGeom->get_radius() + 0.5 * thisGeom->get_thickness();
+    double brd_r_low = std::numeric_limits<double>::infinity();
+    double brd_r_high = -std::numeric_limits<double>::infinity();
+    int brd_vertex_count = 0;
+    for (const auto& pad : Pads[layer])
+    {
+      for (const auto& v : pad.vertices)
+      {
+        const double rv = std::hypot(v.x, v.y);
+        if (rv < brd_r_low) brd_r_low = rv;
+        if (rv > brd_r_high) brd_r_high = rv;
+        ++brd_vertex_count;
+      }
+    }
+
+    if (brd_vertex_count > 0)
+    {
+      ++layers_with_boundary_data;
+      const double dr_low = brd_r_low - geom_r_low;
+      const double dr_high = brd_r_high - geom_r_high;
+      const double abs_dr_low = std::abs(dr_low);
+      const double abs_dr_high = std::abs(dr_high);
+      if (abs_dr_low > global_max_abs_dr_low) global_max_abs_dr_low = abs_dr_low;
+      if (abs_dr_high > global_max_abs_dr_high) global_max_abs_dr_high = abs_dr_high;
+
+      if (detailed)
+      {
+        std::cout << Name() << ": boundary layer=" << layer
+                  << " geom[r_low,r_high]=[" << geom_r_low << "," << geom_r_high << "]"
+                  << " brd[r_low,r_high]=[" << brd_r_low << "," << brd_r_high << "]"
+                  << " dR_low(brd-geom)=" << dr_low
+                  << " dR_high(brd-geom)=" << dr_high
+                  << std::endl;
+      }
+    }
+    else if (detailed)
+    {
+      std::cout << Name() << ": boundary layer=" << layer
+                << " skipped (no BRD vertices)." << std::endl;
+    }
+
+    for (unsigned int side = 0; side < static_cast<unsigned int>(NSides); ++side)
+    {
+      LayerGeom = thisGeom;
+      sector_min_Phi = LayerGeom->get_sector_min_phi();
+      sector_max_Phi = LayerGeom->get_sector_max_phi();
+
+      if (detailed)
+      {
+        const std::streamsize old_precision = std::cout.precision();
+        std::cout << std::setprecision(17);
+        std::cout << Name() << ": sector bounds layer=" << layer
+                  << " side=" << side << std::endl;
+        for (int s = 0; s < NSectors; ++s)
+        {
+          if (s >= static_cast<int>(sector_min_Phi[side].size()) ||
+              s >= static_cast<int>(sector_max_Phi[side].size()))
+          {
+            continue;
+          }
+
+          const double phi_min = sector_min_Phi[side][s];
+          const double phi_max = sector_max_Phi[side][s];
+          std::cout << Name()
+                    << ": sector bounds layer=" << layer
+                    << " side=" << side
+                    << " sector=" << s
+                    << " phi_min=" << phi_min
+                    << " phi_max=" << phi_max
+                    << " phi_span=" << (phi_max - phi_min)
+                    << std::endl;
+        }
+        std::cout << std::setprecision(old_precision);
+      }
+
+      int matched = 0;
+      int missing = 0;
+      double sum_abs_dphi = 0.0;
+      double max_abs_dphi = 0.0;
+      double sum_abs_dphi_low = 0.0;
+      double max_abs_dphi_low = 0.0;
+      double sum_abs_dphi_high = 0.0;
+      double max_abs_dphi_high = 0.0;
+      double sum_abs_dr = 0.0;
+      double max_abs_dr = 0.0;
+      int worst_global_pad = -1;
+      int worst_local_pad = -1;
+      int worst_global_pad_low = -1;
+      int worst_local_pad_low = -1;
+      int worst_global_pad_high = -1;
+      int worst_local_pad_high = -1;
+      const double half_phi = 0.5 * std::abs(thisGeom->get_phistep());
+      const double phistep_abs = std::abs(thisGeom->get_phistep());
+      const int pads_per_sector = (NSectors > 0) ? (phibins / NSectors) : 0;
+      std::array<double, NSectors> sector_max_abs_dphi_low{};
+      std::array<double, NSectors> sector_max_abs_dphi_high{};
+      std::array<int, NSectors> sector_matched{};
+      const bool dump_this_side = dump_enabled &&
+                                  static_cast<int>(layer) == m_consistency_dump_layer &&
+                                  static_cast<int>(side) == m_consistency_dump_side;
+      const bool dump_all_sides = dump_enabled &&
+                                  static_cast<int>(layer) == m_consistency_dump_layer &&
+                                  m_consistency_dump_side < 0;
+
+      for (int pad_now = 0; pad_now < phibins; ++pad_now)
+      {
+        int look_pad = ((pad_now % nlocal) + nlocal) % nlocal;
+        if (side == 1)
+        {
+          look_pad = nlocal - look_pad - 1;
+        }
+
+        if (look_pad < 0 || static_cast<std::size_t>(look_pad) >= Pads[layer].size())
+        {
+          ++missing;
+          continue;
+        }
+
+        const auto& pad = Pads[layer][look_pad];
+        if (pad.vertices.size() < 3)
+        {
+          ++missing;
+          continue;
+        }
+
+        const double r_geom = thisGeom->get_radius();
+        const double phi_geom = thisGeom->get_phicenter(pad_now, side);
+        const double x = r_geom * std::cos(phi_geom);
+        const double y = r_geom * std::sin(phi_geom);
+
+        int sector_found = -1;
+        double x_new = 0.0;
+        double y_new = 0.0;
+        rotatePointToSector(x, y, side, sector_found, x_new, y_new);
+        (void) sector_found;
+
+        const double phi_local = std::atan2(y_new, x_new);
+        const double r_local = std::hypot(x_new, y_new);
+        const double dphi = wrap(phi_local - pad.phi);
+        const double dr = r_local - pad.rad;
+
+        // Compare phi boundaries:
+        // BRD boundaries are min/max vertex phi around BRD pad center.
+        double brd_min_delta = std::numeric_limits<double>::infinity();
+        double brd_max_delta = -std::numeric_limits<double>::infinity();
+        for (const auto& v : pad.vertices)
+        {
+          const double vphi = std::atan2(v.y, v.x);
+          const double d = wrap(vphi - pad.phi);
+          if (d < brd_min_delta) brd_min_delta = d;
+          if (d > brd_max_delta) brd_max_delta = d;
+        }
+        const double brd_phi_low = pad.phi + brd_min_delta;
+        const double brd_phi_high = pad.phi + brd_max_delta;
+        const double cdb_phi_low = phi_local - half_phi;
+        const double cdb_phi_high = phi_local + half_phi;
+        const double dphi_low = wrap(cdb_phi_low - brd_phi_low);
+        const double dphi_high = wrap(cdb_phi_high - brd_phi_high);
+        const double dphi_low_over_step = (phistep_abs > 0.0) ? (dphi_low / phistep_abs) : -1.0;
+        const double dphi_high_over_step = (phistep_abs > 0.0) ? (dphi_high / phistep_abs) : -1.0;
+
+        if (pads_per_sector > 0 && (dump_this_side || dump_all_sides))
+        {
+          const int sector_idx = pad_now / pads_per_sector;
+          if (sector_idx == m_consistency_dump_sector)
+          {
+            const int local_pad = pad_now - sector_idx * pads_per_sector;
+            std::cout << Name() << ": per-pad consistency layer=" << layer
+                      << " side=" << side
+                      << " sector=" << sector_idx
+                      << " pad_global=" << pad_now
+                      << " pad_local=" << local_pad
+                      << " dphi_low/|phistep|=" << dphi_low_over_step
+                      << " dphi_high/|phistep|=" << dphi_high_over_step
+                      << std::endl;
+          }
+        }
+
+        const double abs_dphi = std::abs(dphi);
+        const double abs_dphi_low = std::abs(dphi_low);
+        const double abs_dphi_high = std::abs(dphi_high);
+        const double abs_dr = std::abs(dr);
+        sum_abs_dphi += abs_dphi;
+        sum_abs_dphi_low += abs_dphi_low;
+        sum_abs_dphi_high += abs_dphi_high;
+        sum_abs_dr += abs_dr;
+
+        if (abs_dphi > max_abs_dphi)
+        {
+          max_abs_dphi = abs_dphi;
+          worst_global_pad = pad_now;
+          worst_local_pad = look_pad;
+        }
+        if (abs_dphi_low > max_abs_dphi_low)
+        {
+          max_abs_dphi_low = abs_dphi_low;
+          worst_global_pad_low = pad_now;
+          worst_local_pad_low = look_pad;
+        }
+        if (abs_dphi_high > max_abs_dphi_high)
+        {
+          max_abs_dphi_high = abs_dphi_high;
+          worst_global_pad_high = pad_now;
+          worst_local_pad_high = look_pad;
+        }
+        if (abs_dr > max_abs_dr)
+        {
+          max_abs_dr = abs_dr;
+        }
+
+        if (pads_per_sector > 0)
+        {
+          int sector_idx = pad_now / pads_per_sector;
+          if (sector_idx < 0) sector_idx = 0;
+          if (sector_idx >= NSectors) sector_idx = NSectors - 1;
+          if (abs_dphi_low > sector_max_abs_dphi_low[sector_idx])
+          {
+            sector_max_abs_dphi_low[sector_idx] = abs_dphi_low;
+          }
+          if (abs_dphi_high > sector_max_abs_dphi_high[sector_idx])
+          {
+            sector_max_abs_dphi_high[sector_idx] = abs_dphi_high;
+          }
+          sector_matched[sector_idx]++;
+        }
+
+        ++matched;
+      }
+
+      if (matched <= 0)
+      {
+        if (detailed)
+        {
+          std::cout << Name() << ": consistency layer=" << layer
+                    << " side=" << side
+                    << " matched=0 missing=" << missing << std::endl;
+        }
+        continue;
+      }
+
+      const double mean_abs_dphi = sum_abs_dphi / static_cast<double>(matched);
+      const double mean_abs_dphi_low = sum_abs_dphi_low / static_cast<double>(matched);
+      const double mean_abs_dphi_high = sum_abs_dphi_high / static_cast<double>(matched);
+      const double mean_abs_dr = sum_abs_dr / static_cast<double>(matched);
+      const double phistep = phistep_abs;
+      const double mean_over_phistep_low = (phistep > 0.0) ? (mean_abs_dphi_low / phistep) : -1.0;
+      const double mean_over_phistep_high = (phistep > 0.0) ? (mean_abs_dphi_high / phistep) : -1.0;
+      const double max_over_phistep = (phistep > 0.0) ? (max_abs_dphi / phistep) : -1.0;
+      const double max_over_phistep_low = (phistep > 0.0) ? (max_abs_dphi_low / phistep) : -1.0;
+      const double max_over_phistep_high = (phistep > 0.0) ? (max_abs_dphi_high / phistep) : -1.0;
+
+      if (max_abs_dphi > global_max_abs_dphi) global_max_abs_dphi = max_abs_dphi;
+      if (max_abs_dphi_low > global_max_abs_dphi_low) global_max_abs_dphi_low = max_abs_dphi_low;
+      if (max_abs_dphi_high > global_max_abs_dphi_high) global_max_abs_dphi_high = max_abs_dphi_high;
+      if (max_abs_dr > global_max_abs_dr) global_max_abs_dr = max_abs_dr;
+
+      if (detailed)
+      {
+        std::cout << Name() << ": consistency layer=" << layer
+                  << " side=" << side
+                  << " matched=" << matched
+                  << " missing=" << missing
+                  << " mean|dphi|=" << mean_abs_dphi
+                  << " max|dphi|=" << max_abs_dphi
+                  << " max|dphi|/|phistep|=" << max_over_phistep
+                  << " mean|dphi_low(cdb-brd)|=" << mean_abs_dphi_low
+                  << " mean|dphi_low|/|phistep|=" << mean_over_phistep_low
+                  << " max|dphi_low(cdb-brd)|=" << max_abs_dphi_low
+                  << " max|dphi_low|/|phistep|=" << max_over_phistep_low
+                  << " mean|dphi_high(cdb-brd)|=" << mean_abs_dphi_high
+                  << " mean|dphi_high|/|phistep|=" << mean_over_phistep_high
+                  << " max|dphi_high(cdb-brd)|=" << max_abs_dphi_high
+                  << " max|dphi_high|/|phistep|=" << max_over_phistep_high
+                  << " mean|dr|=" << mean_abs_dr
+                  << " max|dr|=" << max_abs_dr
+                  << " worst(global/local)=" << worst_global_pad << "/" << worst_local_pad
+                  << " worst_low(global/local)=" << worst_global_pad_low << "/" << worst_local_pad_low
+                  << " worst_high(global/local)=" << worst_global_pad_high << "/" << worst_local_pad_high
+                  << std::endl;
+
+        if (pads_per_sector > 0)
+        {
+          for (int s = 0; s < NSectors; ++s)
+          {
+            const double sec_low_over_step = (phistep > 0.0) ? (sector_max_abs_dphi_low[s] / phistep) : -1.0;
+            const double sec_high_over_step = (phistep > 0.0) ? (sector_max_abs_dphi_high[s] / phistep) : -1.0;
+            std::cout << Name() << ": consistency-by-sector layer=" << layer
+                      << " side=" << side
+                      << " sector=" << s
+                      << " matched=" << sector_matched[s]
+                      << " max|dphi_low(cdb-brd)|=" << sector_max_abs_dphi_low[s]
+                      << " max|dphi_low|/|phistep|=" << sec_low_over_step
+                      << " max|dphi_high(cdb-brd)|=" << sector_max_abs_dphi_high[s]
+                      << " max|dphi_high|/|phistep|=" << sec_high_over_step
+                      << std::endl;
+          }
+        }
+      }
+      ++side_reports;
+    }
+  }
+
+  std::cout << Name() << ": consistency summary layers_checked=" << layers_checked
+            << " layers_missing_polygons=" << layers_missing_polygons
+            << " layers_with_boundary_data=" << layers_with_boundary_data
+            << " side_reports=" << side_reports
+            << " global_max|dphi|=" << global_max_abs_dphi
+            << " global_max|dphi_low(cdb-brd)|=" << global_max_abs_dphi_low
+            << " global_max|dphi_high(cdb-brd)|=" << global_max_abs_dphi_high
+            << " global_max|dr|=" << global_max_abs_dr
+            << " global_max|dR_low(brd-geom)|=" << global_max_abs_dr_low
+            << " global_max|dR_high(brd-geom)|=" << global_max_abs_dr_high
+            << std::endl;
+}
+
 //_________________________________________________________
 double PHG4TpcPadPlaneReadout::getSingleEGEMAmplification()
 {
@@ -527,6 +927,11 @@ double PHG4TpcPadPlaneReadout::getSingleEGEMAmplification()
   // Bob A.: I like Tom's suggestion to use the exponential distribution as a first approximation
   //         for the single electron gain distribution -
   //         and yes, the parameter you're looking for is of course the slope, which is the inverse gain.
+  if (averageGEMGain <= 0)
+  {
+    return 0.0;
+  }
+
   double nelec = gsl_ran_exponential(RandomGenerator, averageGEMGain);
   if (m_usePolya)
   { 
@@ -559,7 +964,9 @@ double PHG4TpcPadPlaneReadout::getSingleEGEMAmplification(double weight)
   // Bob A.: I like Tom's suggestion to use the exponential distribution as a first approximation
   //         for the single electron gain distribution -
   //         and yes, the parameter you're looking for is of course the slope, which is the inverse gain.
-  double q_bar = averageGEMGain * weight;
+  const double q_bar = averageGEMGain * weight;
+
+
   double nelec = gsl_ran_exponential(RandomGenerator, q_bar);
   if (m_usePolya)
   {
@@ -1065,7 +1472,29 @@ norm1 = 0.0;
       for (double v : pad_mass_tmp) total_mass += v;
     }
 
-    if (total_mass <= 1e-16) total_mass = 1.0; // avoid division by zero
+    // Normalization strategy:
+    //  - legacy: renormalize to recovered pad mass (fills polygon gaps)
+    //  - preserve gap losses: use raw SERF overlap integral directly
+    //    (no renormalization), i.e. pad_fraction = pad_mass[i].
+    double normalization_mass = total_mass;
+    if (m_preserve_pad_gap_losses)
+    {
+      normalization_mass = 1.0;
+    }
+    else if (normalization_mass <= 1e-16)
+    {
+      normalization_mass = 1.0;  // avoid division by zero
+    }
+
+    if (Verbosity() > 1)
+    {
+      std::cout << Name() << ": SERF normalization side=" << side
+                << " layer_center=" << layernum
+                << " recovered_mass=" << total_mass
+                << " norm_mass=" << normalization_mass
+                << " preserve_gap_losses=" << static_cast<int>(m_preserve_pad_gap_losses)
+                << std::endl;
+    }
 
     // Pass 2: fill hits with correct per-layer mass fraction
     for (unsigned int layer_cand : cand_layers)
@@ -1089,7 +1518,7 @@ norm1 = 0.0;
       for (size_t i = 0; i < pad_phibin.size(); ++i)
       {
         const int pad_num = pad_phibin[i];
-        const double pad_fraction = pad_mass[i] / total_mass; // fraction of total mass
+        const double pad_fraction = pad_mass[i] / normalization_mass;
         if (pad_fraction <= 0) continue;
         if (debug_counter)
         {
@@ -1683,9 +2112,45 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
   pad_graphs.reserve(pads_to_draw->size());
   const int center_color = kBlack;
   const auto faint_color = TColor::GetColor(180, 180, 190);
+  const auto geom_outline_color = TColor::GetColor(30, 144, 255);  // dodger blue
   double max_pad_charge = 0.0;
   for (const auto &pad : *pads_to_draw) max_pad_charge = std::max(max_pad_charge, pad.charge);
   std::vector<TGraph *> pad_center_markers;
+  std::vector<TGraph *> geom_pad_graphs;
+  std::vector<TEllipse *> layer_rings;
+
+  // Convert global (x,y) from LayerGeom frame into the currently visualized frame.
+  // SERF visualization uses sector-reference coordinates, while rectangular mode uses global.
+  auto to_display_point = [&](double xg, double yg) {
+    Point p{xg, yg};
+    if (!m_use_rectangular_pad_response)
+    {
+      int sector_tmp = -1;
+      rotatePointToSector(xg, yg, side, sector_tmp, p.x, p.y);
+    }
+    return p;
+  };
+
+  // Overlay layer radial boundaries from LayerGeom on top of the cloud plot.
+  if (LayerGeom)
+  {
+    const double r_center = LayerGeom->get_radius();
+    const double half_thickness = 0.5 * LayerGeom->get_thickness();
+    const double r_low = r_center - half_thickness;
+    const double r_high = r_center + half_thickness;
+    for (const double rr : {r_low, r_high})
+    {
+      if (rr <= 0.0) continue;
+      TEllipse *ring = new TEllipse(0.0, 0.0, rr, rr);
+      ring->SetFillStyle(0);
+      ring->SetLineColor(kBlue + 1);
+      ring->SetLineStyle(2);
+      ring->SetLineWidth(2);
+      ring->Draw("SAME");
+      layer_rings.push_back(ring);
+    }
+  }
+
   for (const auto &pad : *pads_to_draw)
   {
     if (pad.polygon.empty())
@@ -1711,8 +2176,9 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
       outline->SetLineWidth(1);
       // Mark the geometry-based pad center (phi from geom, radius from layer)
       const double pad_r = (pad.pad_r > 0.0) ? pad.pad_r : LayerGeom->get_radius();
-      double center_x = pad_r * std::cos(pad.pad_phi);
-      double center_y = pad_r * std::sin(pad.pad_phi);
+      const Point cdisp = to_display_point(pad_r * std::cos(pad.pad_phi), pad_r * std::sin(pad.pad_phi));
+      double center_x = cdisp.x;
+      double center_y = cdisp.y;
       TGraph *pad_center = new TGraph(1, &center_x, &center_y);
       pad_center->SetMarkerStyle(30);    // star
       pad_center->SetMarkerSize(2.0);
@@ -1728,6 +2194,43 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
     outline->SetFillStyle(0);
     outline->Draw("L SAME");
     pad_graphs.push_back(outline);
+
+    // Overlay LayerGeom pad boundaries (rectangles from r/phi binning) to compare with BRD polygons.
+    if (LayerGeom)
+    {
+      const double half_phi = 0.5 * std::abs(LayerGeom->get_phistep());
+      const double r_center = LayerGeom->get_radius();
+      const double half_thickness = 0.5 * LayerGeom->get_thickness();
+      const double r_low = r_center - half_thickness;
+      const double r_high = r_center + half_thickness;
+      const double phi_low = pad.pad_phi - half_phi;
+      const double phi_high = pad.pad_phi + half_phi;
+
+      const Point corners_global[4] = {
+          {r_low * std::cos(phi_low), r_low * std::sin(phi_low)},
+          {r_low * std::cos(phi_high), r_low * std::sin(phi_high)},
+          {r_high * std::cos(phi_high), r_high * std::sin(phi_high)},
+          {r_high * std::cos(phi_low), r_high * std::sin(phi_low)}};
+
+      double gx[5] = {0, 0, 0, 0, 0};
+      double gy[5] = {0, 0, 0, 0, 0};
+      for (int i = 0; i < 4; ++i)
+      {
+        const Point pdisp = to_display_point(corners_global[i].x, corners_global[i].y);
+        gx[i] = pdisp.x;
+        gy[i] = pdisp.y;
+      }
+      gx[4] = gx[0];
+      gy[4] = gy[0];
+
+      TGraph *ggeom = new TGraph(5, gx, gy);
+      ggeom->SetLineColor(geom_outline_color);
+      ggeom->SetLineStyle(7);
+      ggeom->SetLineWidth(1);
+      ggeom->SetFillStyle(0);
+      ggeom->Draw("L SAME");
+      geom_pad_graphs.push_back(ggeom);
+    }
   }
 
   std::vector<TGraph *> center_markers;
@@ -1807,7 +2310,9 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
 
   for (TGraph *c : center_markers) delete c;
   for (TGraph *g : pad_graphs) delete g;
+  for (TGraph *g : geom_pad_graphs) delete g;
   for (TGraph *pc : pad_center_markers) delete pc;
+  for (TEllipse *e : layer_rings) delete e;
   delete canvas;
   delete hist;
 }

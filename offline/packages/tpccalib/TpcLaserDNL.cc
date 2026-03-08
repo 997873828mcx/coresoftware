@@ -87,6 +87,7 @@ int TpcLaserDNL::Init(PHCompositeNode*)
   m_tt->Branch("dRphi_fit_layer44", &m_dRphi_fit_layer44, "dRphi_fit_layer44/D");
   // additional charge bookkeeping
   m_tt->Branch("hit_charge", &m_hit_charge);
+  m_tt->Branch("hit_energy", &m_hit_energy);
   m_tt->Branch("hit_x", &m_hit_x);
   m_tt->Branch("hit_y", &m_hit_y);
   m_tt->Branch("hit_z", &m_hit_z);
@@ -510,6 +511,7 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
       std::vector<unsigned int> iphi;
       std::vector<unsigned int> tbin;
       std::vector<double> hit_charge;
+      std::vector<double> hit_energy;
       std::vector<double> hit_x;
       std::vector<double> hit_y;
       std::vector<double> hit_z;
@@ -601,6 +603,7 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
       std::vector<unsigned int> iphi_vec;
       std::vector<unsigned int> tbin_vec;
       std::vector<double> hit_charge;
+      std::vector<double> hit_energy;
       std::vector<double> hit_x;
       std::vector<double> hit_y;
       std::vector<double> hit_z;
@@ -726,6 +729,7 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
               iphi_vec.push_back(static_cast<unsigned int>(iphi));
               tbin_vec.push_back(static_cast<unsigned int>(tbin));
               hit_charge.push_back(weight);
+              hit_energy.push_back(static_cast<double>(hit->getEnergy()));
               hit_x.push_back(xh);
               hit_y.push_back(yh);
               hit_z.push_back(zh);
@@ -799,6 +803,7 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
               ++dbg_naccepted;
               sector_weights[sector_id] += weight;
               hit_charge.push_back(weight);
+              hit_energy.push_back(std::numeric_limits<double>::quiet_NaN());
               hit_x.push_back(g.x());
               hit_y.push_back(g.y());
               hit_z.push_back(g.z());
@@ -833,6 +838,7 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
         iphi_vec.clear();
         tbin_vec.clear();
         hit_charge.clear();
+        hit_energy.clear();
         hit_x.clear();
         hit_y.clear();
         hit_z.clear();
@@ -977,6 +983,7 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
         result.iphi = std::move(iphi_vec);
         result.tbin = std::move(tbin_vec);
         result.hit_charge = std::move(hit_charge);
+        result.hit_energy = std::move(hit_energy);
         result.hit_x = std::move(hit_x);
         result.hit_y = std::move(hit_y);
         result.hit_z = std::move(hit_z);
@@ -1074,6 +1081,7 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
       m_iphi = res.iphi;
       m_tbin = res.tbin;
       m_hit_charge = res.hit_charge;
+      m_hit_energy = res.hit_energy;
       m_hit_x = res.hit_x;
       m_hit_y = res.hit_y;
       m_hit_z = res.hit_z;
