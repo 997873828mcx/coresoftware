@@ -32,6 +32,7 @@
 #include <TF1.h>
 #include <TCanvas.h>
 #include <TGraph.h>
+#include <TROOT.h>
 #include <TMarker.h>
 #include <TPad.h>
 #include <TEllipse.h>
@@ -144,6 +145,150 @@ PHG4TpcPadPlaneReadout::getGeomForLayer(unsigned int layer) const
   return nullptr;
 }
 
+double PHG4TpcPadPlaneReadout::GetAveragePadAreaForLayer(unsigned int layer) const
+{
+  if (layer >= m_average_pad_area_cm2.size() || m_pad_polygon_count_by_layer[layer] == 0)
+  {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+
+  return m_average_pad_area_cm2[layer];
+}
+
+double PHG4TpcPadPlaneReadout::polygonArea(const std::vector<Point>& vertices) const
+{
+  if (vertices.size() < 3)
+  {
+    return 0.0;
+  }
+
+  double twice_area = 0.0;
+  for (std::size_t i = 0; i < vertices.size(); ++i)
+  {
+    const auto& current = vertices[i];
+    const auto& next = vertices[(i + 1) % vertices.size()];
+    twice_area += current.x * next.y - next.x * current.y;
+  }
+
+  return 0.5 * std::abs(twice_area);
+}
+
+void PHG4TpcPadPlaneReadout::updatePadPolygonAreaSummary()
+{
+  m_average_pad_area_cm2.fill(0.0);
+  m_pad_polygon_count_by_layer.fill(0);
+
+  for (std::size_t layer = 0; layer < Pads.size(); ++layer)
+  {
+    double total_area_cm2 = 0.0;
+    unsigned int polygon_count = 0;
+
+    for (const auto& pad : Pads[layer])
+    {
+      if (pad.vertices.size() < 3)
+      {
+        continue;
+      }
+
+      total_area_cm2 += polygonArea(pad.vertices);
+      ++polygon_count;
+    }
+
+    if (polygon_count == 0)
+    {
+      continue;
+    }
+
+    m_pad_polygon_count_by_layer[layer] = polygon_count;
+    m_average_pad_area_cm2[layer] = total_area_cm2 / static_cast<double>(polygon_count);
+  }
+}
+
+void PHG4TpcPadPlaneReadout::printPadPolygonAreaSummary() const
+{
+  std::size_t layers_with_polygons = 0;
+
+  for (std::size_t layer = 0; layer < m_pad_polygon_count_by_layer.size(); ++layer)
+  {
+    const unsigned int polygon_count = m_pad_polygon_count_by_layer[layer];
+    if (polygon_count == 0)
+    {
+      continue;
+    }
+
+    ++layers_with_polygons;
+
+    const int module = (layer >= 7) ? static_cast<int>((layer - 7) / 16) : -1;
+    const int local_layer = (layer >= 7) ? static_cast<int>((layer - 7) % 16) : -1;
+    std::cout << Name() << ": pad polygon area layer=" << layer
+              << " module=" << module
+              << " local_layer=" << local_layer
+              << " pad_count=" << polygon_count
+              << " average_area_cm2=" << m_average_pad_area_cm2[layer]
+              << std::endl;
+  }
+
+  std::cout << Name() << ": pad polygon area summary layers_with_polygons="
+            << layers_with_polygons << std::endl;
+}
+
+void PHG4TpcPadPlaneReadout::plotPadPolygonAreaSummary() const
+{
+  if (m_pad_area_plot_output.empty())
+  {
+    std::cout << Name() << ": pad polygon area plot skipped (no output file configured)." << std::endl;
+    return;
+  }
+
+  std::vector<double> layer_numbers;
+  std::vector<double> average_areas;
+  layer_numbers.reserve(m_pad_polygon_count_by_layer.size());
+  average_areas.reserve(m_pad_polygon_count_by_layer.size());
+
+  for (std::size_t layer = 0; layer < m_pad_polygon_count_by_layer.size(); ++layer)
+  {
+    if (m_pad_polygon_count_by_layer[layer] == 0)
+    {
+      continue;
+    }
+
+    layer_numbers.push_back(static_cast<double>(layer));
+    average_areas.push_back(m_average_pad_area_cm2[layer]);
+  }
+
+  if (layer_numbers.empty())
+  {
+    std::cout << Name() << ": pad polygon area plot skipped (no polygon data)." << std::endl;
+    return;
+  }
+
+  const bool was_batch = gROOT->IsBatch();
+  gROOT->SetBatch(kTRUE);
+
+  const std::string canvas_name = std::string("c_pad_area_by_layer_") + Name();
+  TCanvas canvas(canvas_name.c_str(), "Average pad area by layer", 1000, 600);
+  canvas.cd();
+  canvas.SetGridx();
+  canvas.SetGridy();
+
+  TGraph graph(static_cast<int>(layer_numbers.size()), layer_numbers.data(), average_areas.data());
+  graph.SetTitle("Average TPC Pad Polygon Area by Layer;Layer Number;Average Area [cm^{2}]");
+  graph.SetMarkerStyle(20);
+  graph.SetMarkerSize(1.0);
+  graph.SetMarkerColor(kBlue + 2);
+  graph.SetLineColor(kBlue + 2);
+  graph.SetLineWidth(2);
+  graph.SetMinimum(0.0);
+  graph.Draw("ALP");
+
+  canvas.Update();
+  canvas.SaveAs(m_pad_area_plot_output.c_str());
+  gROOT->SetBatch(was_batch);
+
+  std::cout << Name() << ": saved pad polygon area plot to "
+            << m_pad_area_plot_output << std::endl;
+}
+
 //_________________________________________________________
 int PHG4TpcPadPlaneReadout::InitRun(PHCompositeNode *topNode)
 {
@@ -251,6 +396,15 @@ int PHG4TpcPadPlaneReadout::InitRun(PHCompositeNode *topNode)
   }
     
 	  loadPadPlanes();
+	  if (m_enable_pad_polygon_area_calculation)
+	  {
+	    updatePadPolygonAreaSummary();
+	  }
+	  else
+	  {
+	    m_average_pad_area_cm2.fill(0.0);
+	    m_pad_polygon_count_by_layer.fill(0);
+	  }
 	  if (m_check_pad_geom_consistency)
 	  {
 	    runPadGeomConsistencyCheck();
@@ -321,15 +475,16 @@ int PHG4TpcPadPlaneReadout::InitRun(PHCompositeNode *topNode)
           return Fun4AllReturnCodes::ABORTRUN;
         }
       }
-    }
+	  }
   }
 
-  // 3) (optional) print a summary
-    
+	  if (m_enable_pad_polygon_area_calculation)
+	  {
+	    printPadPolygonAreaSummary();
+	    plotPadPolygonAreaSummary();
+	  }
 
-
-
-  /* for (int j=0; j<7+16*3;j++){
+	  /* for (int j=0; j<7+16*3;j++){
   for(size_t i = 0; i < Pads[j].size(); i++)
   {
     std::cout<<"Module "<<(j-7)/16<<" layer = "<<j<<" pad_number "<<i<<" pad name "<<Pads[j][i].name<<" pad_bin "<<Pads[j][i].pad_bin<<" ( "<<ntpc_phibins_sector[(j-7)/16] - Pads[j][i].pad_bin -1 <<" ) "<<" cx "<<Pads[j][i].cx<<" cy "<<Pads[j][i].cy  <<" rad "<<Pads[j][i].rad<<" phi "<<Pads[j][i].phi<<" Number of verticies "<<Pads[j][i].vertices.size()<<std::endl;

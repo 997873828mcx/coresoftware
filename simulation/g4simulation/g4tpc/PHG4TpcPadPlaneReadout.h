@@ -44,6 +44,9 @@ class PHG4TpcPadPlaneReadout : public PHG4TpcPadPlane
   void SetUsePolyaGEMGain(const int flagPolya) {m_usePolya = flagPolya;}
   void SetUseLangauGEMGain(const int flagLangau) {m_useLangau = flagLangau;}
   void SetLangauParsFileName(const std::string &name) {m_tpc_langau_pars_file = name;}
+  double GetAveragePadAreaForLayer(unsigned int layer) const;
+  void EnablePadPolygonAreaCalculation(bool enable) { m_enable_pad_polygon_area_calculation = enable; }
+  void SetPadAreaPlotFile(const std::string &file) { m_pad_area_plot_output = file; }
   // Pad-sharing method selection: true → SERF polygon overlap; false → analytic triangle
   void UseSerfPadSharing(bool use_serf) { m_use_serf_padsharing = use_serf; }
   // If true and SERF polygons are unavailable, abort InitRun with an error
@@ -201,6 +204,10 @@ bool m_maskDeadChannels {false};
   bool m_maskFromFile {false};
   std::string m_deadChannelMapName; 
   std::string m_hotChannelMapName; 
+  bool m_enable_pad_polygon_area_calculation = false;
+  std::string m_pad_area_plot_output = "TPCPadAverageAreaByLayer.png";
+  std::array<double, 3 * 16 + 7> m_average_pad_area_cm2{};
+  std::array<unsigned int, 3 * 16 + 7> m_pad_polygon_count_by_layer{};
   struct Point { double x, y; };
 
   struct PadInfo {
@@ -230,6 +237,10 @@ bool m_maskDeadChannels {false};
 
 std::array<std::vector<PadInfo>,3*16+7> Pads;
 bool pointInPolygon( double x, double y,const std::vector<Point>& poly); 
+  double polygonArea(const std::vector<Point>& vertices) const;
+  void updatePadPolygonAreaSummary();
+  void printPadPolygonAreaSummary() const;
+  void plotPadPolygonAreaSummary() const;
   double integratedDensityOfCircleAndPad(double hitX,double hitY, double sigma, const std::vector<Point>& pad,double gridStep = 0.0, std::vector<DebugSample>* debug_samples = nullptr);
   // hard‑coded list of input .brd files
   static const std::vector<std::string> brdMaps_;
