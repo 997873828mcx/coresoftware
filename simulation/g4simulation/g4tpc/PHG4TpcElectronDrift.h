@@ -213,6 +213,7 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   double tpc_length = std::numeric_limits<double>::signaling_NaN();
   double electrons_per_gev = std::numeric_limits<double>::signaling_NaN();
   double primary_clusters_per_cm = std::numeric_limits<double>::signaling_NaN();
+  double fixed_primary_electrons_per_cm = -1.0;
   double min_active_radius = std::numeric_limits<double>::signaling_NaN();
   double max_active_radius = std::numeric_limits<double>::signaling_NaN();
   double min_time = std::numeric_limits<double>::signaling_NaN();

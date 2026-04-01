@@ -78,12 +78,14 @@
 #include <map>  // for _Rb_tree_cons...
 #include <unordered_map>
 #include <utility>  // for pair
+#include <vector>
 
 namespace
 {
   // Stores one track-layer truth intersection (treated as a "true cluster")
   // per event entry as a PHG4Hit.
   static constexpr const char *kTpcTruthIntersectionNodeName = "G4HIT_TPC_TRUECLUSTER";
+  static constexpr std::size_t kMaxTruthIntersectionsPerTrackLayer = 3;
 
   template <class T>
   inline constexpr T square(const T &x)
@@ -247,6 +249,7 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
   m_density_bin_width_cm = get_double_param("density_bin_width_cm");
   m_density_window_cm = get_double_param("density_window_cm");
   m_uniform_density_test = (get_int_param("uniform_density_test") != 0);
+  fixed_primary_electrons_per_cm = get_double_param("fixed_primary_electrons_per_cm");
   if (m_density_layer >= 0 && m_density_bin_width_cm > 0.0 && m_density_window_cm > 0.0)
   {
     if (auto *layer_geom = seggeo->GetLayerCellGeom(m_density_layer))
@@ -417,10 +420,19 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
   double Tpc_dEdx = (Ne_dEdx * Ne_frac) + (Ar_dEdx * Ar_frac) + (CF4_dEdx * CF4_frac) + (N2_dEdx * N2_frac) + (isobutane_dEdx * isobutane_frac);
 
   primary_clusters_per_cm = Tpc_NTot;
+  if (fixed_primary_electrons_per_cm > 0.0)
+  {
+    primary_clusters_per_cm = fixed_primary_electrons_per_cm;
+  }
   electrons_per_gev = (primary_clusters_per_cm / Tpc_dEdx) * 1e6;
 
   std::cout << "PHG4TpcElectronDrift::InitRun - primary clusters/cm = " << primary_clusters_per_cm
             << ", primary clusters/GeV (from dE/dx) = " << electrons_per_gev << std::endl;
+  if (fixed_primary_electrons_per_cm > 0.0)
+  {
+    std::cout << "PHG4TpcElectronDrift::InitRun - overriding gas-derived primary electron density with fixed_primary_electrons_per_cm = "
+              << fixed_primary_electrons_per_cm << std::endl;
+  }
 
   // Initialize cluster size CDF for sPHENIX Ar/CF4/iC4H10 mixture.
   constexpr int kClusterSizeCutoff = 384;
@@ -824,7 +836,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
     //double eion{0.0};
     //double edep{0.0};
   };
-  std::map<std::pair<int, unsigned int>, TruthLayerIntersection> truth_layer_intersections;
+  std::map<std::pair<int, unsigned int>, std::vector<TruthLayerIntersection>> truth_layer_intersections;
 
   unsigned int count_g4hits = 0;
   //  int count_electrons = 0;
@@ -1067,25 +1079,21 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
           const double ti = t0_hit + best_t * dt;
           const double path = track_segment_start + best_t * step_length;
 
+          TruthLayerIntersection intersection;
+          intersection.track_id = track_id;
+          intersection.layer = layer_info.layer;
+          intersection.x = xi;
+          intersection.y = yi;
+          intersection.z = zi;
+          intersection.t = ti;
+          // intersection.dirx = dx_hit;
+          // intersection.diry = dy_hit;
+          // intersection.dirz = dz_hit;
+          intersection.path = path;
+          // intersection.eion = hiter->second->get_eion();
+          // intersection.edep = hiter->second->get_edep();
           const std::pair<int, unsigned int> key(track_id, layer_info.layer);
-          auto cache_it = truth_layer_intersections.find(key);
-          if (cache_it == truth_layer_intersections.end() || path < cache_it->second.path)
-          {
-            TruthLayerIntersection intersection;
-            intersection.track_id = track_id;
-            intersection.layer = layer_info.layer;
-            intersection.x = xi;
-            intersection.y = yi;
-            intersection.z = zi;
-            intersection.t = ti;
-            // intersection.dirx = dx_hit;
-            // intersection.diry = dy_hit;
-            // intersection.dirz = dz_hit;
-            intersection.path = path;
-            // intersection.eion = hiter->second->get_eion();
-            // intersection.edep = hiter->second->get_edep();
-            truth_layer_intersections[key] = intersection;
-          }
+          truth_layer_intersections[key].push_back(intersection);
         }
       }
     }
@@ -1667,36 +1675,47 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
 
   if (m_truth_intersection_hits)
   {
+    std::size_t nwritten_truth_intersections = 0;
     for (const auto &entry : truth_layer_intersections)
     {
-      const auto &point = entry.second;
-      auto *intersection_hit = new PHG4Hitv1();
-      intersection_hit->set_trkid(point.track_id);
-      intersection_hit->set_layer(point.layer);
-      intersection_hit->set_x(0, point.x);
-      intersection_hit->set_y(0, point.y);
-      intersection_hit->set_z(0, point.z);
-      intersection_hit->set_t(0, point.t);
-      intersection_hit->set_x(1, point.x);
-      intersection_hit->set_y(1, point.y);
-      intersection_hit->set_z(1, point.z);
-      intersection_hit->set_t(1, point.t);
-      // Optional direction/energy metadata intentionally omitted.
-      // intersection_hit->set_px(0, point.dirx);
-      // intersection_hit->set_py(0, point.diry);
-      // intersection_hit->set_pz(0, point.dirz);
-      // intersection_hit->set_px(1, point.dirx);
-      // intersection_hit->set_py(1, point.diry);
-      // intersection_hit->set_pz(1, point.dirz);
-      // intersection_hit->set_edep(point.edep);
-      // intersection_hit->set_eion(point.eion);
-      intersection_hit->set_path_length(point.path);
-      m_truth_intersection_hits->AddHit(point.layer, intersection_hit);
+      auto points = entry.second;
+      std::sort(points.begin(), points.end(),
+                [](const TruthLayerIntersection &lhs, const TruthLayerIntersection &rhs)
+                { return lhs.path < rhs.path; });
+
+      const std::size_t n_to_write = std::min(points.size(), kMaxTruthIntersectionsPerTrackLayer);
+      for (std::size_t i = 0; i < n_to_write; ++i)
+      {
+        const auto &point = points[i];
+        auto *intersection_hit = new PHG4Hitv1();
+        intersection_hit->set_trkid(point.track_id);
+        intersection_hit->set_layer(point.layer);
+        intersection_hit->set_x(0, point.x);
+        intersection_hit->set_y(0, point.y);
+        intersection_hit->set_z(0, point.z);
+        intersection_hit->set_t(0, point.t);
+        intersection_hit->set_x(1, point.x);
+        intersection_hit->set_y(1, point.y);
+        intersection_hit->set_z(1, point.z);
+        intersection_hit->set_t(1, point.t);
+        // Optional direction/energy metadata intentionally omitted.
+        // intersection_hit->set_px(0, point.dirx);
+        // intersection_hit->set_py(0, point.diry);
+        // intersection_hit->set_pz(0, point.dirz);
+        // intersection_hit->set_px(1, point.dirx);
+        // intersection_hit->set_py(1, point.diry);
+        // intersection_hit->set_pz(1, point.dirz);
+        // intersection_hit->set_edep(point.edep);
+        // intersection_hit->set_eion(point.eion);
+        intersection_hit->set_path_length(point.path);
+        m_truth_intersection_hits->AddHit(point.layer, intersection_hit);
+        ++nwritten_truth_intersections;
+      }
     }
 
     if (Verbosity() > 1)
     {
-      std::cout << Name() << ": wrote " << truth_layer_intersections.size()
+      std::cout << Name() << ": wrote " << nwritten_truth_intersections
                 << " truth layer intersections to " << kTpcTruthIntersectionNodeName << std::endl;
     }
   }
@@ -2033,6 +2052,7 @@ void PHG4TpcElectronDrift::SetDefaultParameters()
   set_default_double_param("density_bin_width_cm", 0.05);
   set_default_double_param("density_window_cm", -1.0);
   set_default_double_param("density_radial_margin_cm", 0.2);
+  set_default_double_param("fixed_primary_electrons_per_cm", -1.0);
   set_default_int_param("uniform_density_test", 0);
   set_default_int_param("average_x_layer", -1);
 

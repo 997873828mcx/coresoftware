@@ -40,6 +40,7 @@
 namespace
 {
   constexpr const char* kTpcTrueClusterNodeName = "G4HIT_TPC_TRUECLUSTER";
+  constexpr unsigned int kMaxTruthCrossingsPerLayer = 3;
 }
 
 TpcLaserDNL::TpcLaserDNL(const std::string& name)
@@ -64,6 +65,8 @@ int TpcLaserDNL::Init(PHCompositeNode*)
   m_tt->Branch("dRphi", &m_dRphi, "dRphi/D");
   m_tt->Branch("nused", &m_nused, "nused/I");
   m_tt->Branch("nhit_scanned", &m_nhit_scanned, "nhit_scanned/I");
+  m_tt->Branch("crossing", &m_crossing, "crossing/i");
+  m_tt->Branch("path_truth", &m_truth_path, "path_truth/D");
   m_tt->Branch("adcsum", &m_adcsum, "adcsum/D");
   m_tt->Branch("xtrue", &m_xtrue, "xtrue/D");
   m_tt->Branch("ytrue", &m_ytrue, "ytrue/D");
@@ -75,6 +78,7 @@ int TpcLaserDNL::Init(PHCompositeNode*)
   m_tt->Branch("ntbin_used", &m_ntbin_used, "ntbin_used/I");
   m_tt->Branch("nbins_used", &m_nbins_used, "nbins_used/I");
   m_tt->Branch("phi_pad_max", &m_phi_pad_max, "phi_pad_max/D");
+  m_tt->Branch("phi_width", &m_phi_width, "phi_width/D");
   m_tt->Branch("phase", &m_phase, "phase/D");
   m_tt->Branch("phase_reco", &m_phase_reco, "phase_reco/D");
   m_tt->Branch("pad_phi_center", &m_pad_phi_centers);
@@ -483,9 +487,11 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
     struct LayerRecoResult
     {
       unsigned int layer{0};
+      unsigned int crossing{0};
       int side{0};
       int sector{-1};
       double r{0.};
+      double truth_path{std::numeric_limits<double>::quiet_NaN()};
       double phi_true{0.};
       double phi_reco{std::numeric_limits<double>::quiet_NaN()};
       double dphi{std::numeric_limits<double>::quiet_NaN()};
@@ -503,6 +509,7 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
       int ntbin_used{0};
       int nbins_used{0};
       double phi_pad_max{std::numeric_limits<double>::quiet_NaN()};
+      double phi_width{std::numeric_limits<double>::quiet_NaN()};
       double phase{std::numeric_limits<double>::quiet_NaN()};
       double phase_reco{std::numeric_limits<double>::quiet_NaN()};
       std::vector<double> pad_phi_centers;
@@ -544,6 +551,7 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
 
       const unsigned int layer = layerPoint.layer;
       const int side = layerPoint.side;
+      const unsigned int crossing = layerPoint.crossing;
       m_layer = layer;
       if (layerPoint.radius <= 0)
       {
@@ -579,16 +587,27 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
         m_tt_display_intersections->Fill();
       }
 
+      const double vdrift = m_acts->get_drift_velocity();
       const double AdcClockPeriod = layergeom->get_zstep();
       const unsigned short NTBins = static_cast<unsigned short>(layergeom->get_zbins());
       const double tdriftmax = AdcClockPeriod * NTBins / 2.0;
-      const double vdrift = m_acts->get_drift_velocity();
+      const double z_readout_anchor_geom = layergeom->get_max_driftlength() + layergeom->get_CM_halfwidth();
+      const double z_readout_anchor = (std::isfinite(z_readout_anchor_geom) && z_readout_anchor_geom > 0.)
+                                          ? z_readout_anchor_geom
+                                          : tdriftmax * vdrift;
+      const double side_sign = (side == 0) ? -1.0 : 1.0;
+      const double z_expected_reco = (std::isfinite(layerPoint.t) && std::isfinite(vdrift))
+                                         ? (z0 - side_sign * layerPoint.t * vdrift)
+                                         : z0;
 
       LayerRecoResult result;
       result.layer = layer;
+      result.crossing = crossing;
       result.side = side;
       result.r = radius;
+      result.truth_path = layerPoint.path;
       result.phi_true = phi_true;
+      result.phi_width = std::abs(layergeom->get_phistep());
       result.xtrue = x0;
       result.ytrue = y0;
       result.ztrue = z0;
@@ -622,9 +641,45 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
       {
         const double dxy = std::hypot(xh - x0, yh - y0);
         if (dxy > m_max_dca) return false;
-        const double dzline = std::abs(zh - z0);
+        const double dzline = std::abs(zh - z_expected_reco);
         if (dzline > m_max_dz) return false;
         return true;
+      };
+
+      std::vector<const LayerPoint*> layer_crossings;
+      layer_crossings.reserve(seed.layers.size());
+      for (const auto& candidate_crossing : seed.layers)
+      {
+        if (candidate_crossing.layer == layer)
+        {
+          layer_crossings.push_back(&candidate_crossing);
+        }
+      }
+
+      const auto belongs_to_this_crossing = [&](const double xh, const double yh, const double zh)
+      {
+        const double dca_scale = std::max(m_max_dca, 1e-9);
+        const double dz_scale = std::max(m_max_dz, 1e-9);
+        const LayerPoint* best_crossing = nullptr;
+        double best_metric = std::numeric_limits<double>::infinity();
+
+        for (const LayerPoint* crossing_point : layer_crossings)
+        {
+          if (!crossing_point) continue;
+          const double dxy = std::hypot(xh - crossing_point->x, yh - crossing_point->y);
+          if (dxy > m_max_dca) continue;
+          const double dzline = std::abs(zh - crossing_point->z);
+          if (dzline > m_max_dz) continue;
+
+          const double metric = sqr(dxy / dca_scale) + sqr(dzline / dz_scale);
+          if (metric < best_metric)
+          {
+            best_metric = metric;
+            best_crossing = crossing_point;
+          }
+        }
+
+        return best_crossing == &layerPoint;
       };
 
       const auto accumulate_weighted_point = [&](const double weight, const double xh, const double yh, const double zh)
@@ -712,10 +767,15 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
 
               const double zcenter = layergeom->get_zcenter(tbin);
               double zdriftlen = zcenter * vdrift;
-              double zh = tdriftmax * vdrift - zdriftlen;
+              double zh = z_readout_anchor - zdriftlen;
               if (side == 0) zh = -zh;
 
               if (!pass_line_cuts(xh, yh, zh))
+              {
+                ++dbg_nfail_geom;
+                continue;
+              }
+              if (!belongs_to_this_crossing(xh, yh, zh))
               {
                 ++dbg_nfail_geom;
                 continue;
@@ -795,6 +855,11 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
 
               const Acts::Vector3 g = m_acts->getGlobalPosition(ckey, clus);
               if (!pass_line_cuts(g.x(), g.y(), g.z()))
+              {
+                ++dbg_nfail_geom;
+                continue;
+              }
+              if (!belongs_to_this_crossing(g.x(), g.y(), g.z()))
               {
                 ++dbg_nfail_geom;
                 continue;
@@ -963,13 +1028,12 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
           }
           result.npad_used = static_cast<int>(padWeights.size());
 
-          const double phi_width = std::abs(layergeom->get_phistep());
-          if (phi_width > 1e-12 && std::isfinite(result.phi_pad_max))
+          if (result.phi_width > 1e-12 && std::isfinite(result.phi_pad_max))
           {
             const double dphi_phase_true = wrap_dphi(phi_true - result.phi_pad_max);
             const double dphi_phase_reco = wrap_dphi(result.phi_reco - result.phi_pad_max);
-            result.phase = dphi_phase_true / phi_width;
-            result.phase_reco = dphi_phase_reco / phi_width;
+            result.phase = dphi_phase_true / result.phi_width;
+            result.phase_reco = dphi_phase_reco / result.phi_width;
           }
           else
           {
@@ -1010,18 +1074,19 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
       Eigen::Vector3d target_cluster = Eigen::Vector3d::Zero();
       bool have_target_cluster = false;
       int target_side = -1;
+      int target_count = 0;
       for (const auto& res : layer_results)
       {
         if (res.layer == kTargetLayer)
         {
+          ++target_count;
           target_cluster = Eigen::Vector3d(res.xreco, res.yreco, res.zreco);
-          have_target_cluster = true;
           target_side = res.side;
-          break;
         }
       }
+      have_target_cluster = (target_count == 1);
 
-      have_intersection = have_fit && target_geom &&
+      have_intersection = have_fit && target_geom && have_target_cluster &&
                           select_cylinder_intersection(
                               fit_origin,
                               fit_dir,
@@ -1062,6 +1127,8 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
       m_dRphi = res.dRphi;
       m_nused = res.nused;
       m_nhit_scanned = res.nhit_scanned;
+      m_crossing = res.crossing;
+      m_truth_path = res.truth_path;
       m_adcsum = res.adcsum;
       m_xtrue = res.xtrue;
       m_ytrue = res.ytrue;
@@ -1073,6 +1140,7 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
       m_ntbin_used = res.ntbin_used;
       m_nbins_used = res.nbins_used;
       m_phi_pad_max = res.phi_pad_max;
+      m_phi_width = res.phi_width;
       m_phase = res.phase;
       m_phase_reco = res.phase_reco;
       m_pad_phi_centers = res.pad_phi_centers;
@@ -1251,7 +1319,7 @@ void TpcLaserDNL::build_truth_seeds(std::vector<TrackSeed>& seeds) const
 {
   if (!m_geom || !m_g4hits) return;
 
-  std::unordered_map<unsigned int, std::map<unsigned int, LayerPoint>> layer_cache;
+  std::unordered_map<unsigned int, std::vector<LayerPoint>> layer_cache;
   std::unordered_map<unsigned int, double> truth_pt_cache;
   std::size_t n_truecluster_total = 0;
   std::size_t n_truecluster_trkid_pos = 0;
@@ -1287,6 +1355,7 @@ void TpcLaserDNL::build_truth_seeds(std::vector<TrackSeed>& seeds) const
       continue;
     }
     point.side = (point.z > 0) ? 1 : 0;
+    point.t = hit->get_t(0);
     point.path = hit->get_path_length();
     if (!std::isfinite(point.path))
     {
@@ -1304,13 +1373,7 @@ void TpcLaserDNL::build_truth_seeds(std::vector<TrackSeed>& seeds) const
       point.dirz = pz / pmag;
     }
 
-    auto& layer_map = layer_cache[static_cast<unsigned int>(trkid)];
-    auto layer_it = layer_map.find(layer);
-    const bool prefer_this = (layer_it == layer_map.end()) || (point.path < layer_it->second.path);
-    if (prefer_this)
-    {
-      layer_map[layer] = point;
-    }
+    layer_cache[static_cast<unsigned int>(trkid)].push_back(point);
   }
 
   // Use full TPC G4 hits as the truth-track momentum source (TRUECLUSTER carries intersections).
@@ -1352,16 +1415,45 @@ void TpcLaserDNL::build_truth_seeds(std::vector<TrackSeed>& seeds) const
       seed.pt = pt_it->second;
     }
 
-    const std::map<unsigned int, LayerPoint>& completed = cache_entry.second;
+    std::vector<LayerPoint>& completed = cache_entry.second;
     if (completed.empty())
     {
       continue;
     }
 
+    std::sort(completed.begin(), completed.end(),
+              [](const LayerPoint& lhs, const LayerPoint& rhs)
+              {
+                if (lhs.layer != rhs.layer) return lhs.layer < rhs.layer;
+                if (lhs.path != rhs.path) return lhs.path < rhs.path;
+                if (lhs.side != rhs.side) return lhs.side < rhs.side;
+                if (lhs.z != rhs.z) return lhs.z < rhs.z;
+                return lhs.x < rhs.x;
+              });
+
     seed.layers.reserve(completed.size());
-    for (const auto& kv : completed)
+
+    unsigned int current_layer = std::numeric_limits<unsigned int>::max();
+    unsigned int crossing_index = 0;
+    for (auto& point : completed)
     {
-      seed.layers.push_back(kv.second);
+      if (point.layer != current_layer)
+      {
+        current_layer = point.layer;
+        crossing_index = 0;
+      }
+      else
+      {
+        ++crossing_index;
+      }
+
+      if (crossing_index >= kMaxTruthCrossingsPerLayer)
+      {
+        continue;
+      }
+
+      point.crossing = crossing_index;
+      seed.layers.push_back(point);
     }
 
     // Origin is currently not consumed in truth-seed mode. Keep a stable placeholder.

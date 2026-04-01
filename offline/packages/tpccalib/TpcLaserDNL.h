@@ -99,10 +99,12 @@ double m_max_dz{1.0}; // cm
   struct LayerPoint
   {
     unsigned int layer{0};
+    unsigned int crossing{0};
     double radius{0.};
     double x{0.};
     double y{0.};
     double z{0.};
+    double t{std::numeric_limits<double>::quiet_NaN()};
     double dirx{0.};
     double diry{0.};
     double dirz{0.};
@@ -135,6 +137,8 @@ double m_dphi{0};
 double m_dRphi{0};
 int m_nused{0};
 int m_nhit_scanned{0};
+unsigned int m_crossing{0};
+double m_truth_path{std::numeric_limits<double>::quiet_NaN()};
 double m_adcsum{0};
 double m_xtrue{0}, m_ytrue{0}, m_ztrue{0};
 double m_xreco{0}, m_yreco{0}, m_zreco{0};
@@ -142,6 +146,7 @@ int m_npad_used{0};
   int m_ntbin_used{0};
   int m_nbins_used{0};
 double m_phi_pad_max{std::numeric_limits<double>::quiet_NaN()};
+double m_phi_width{std::numeric_limits<double>::quiet_NaN()};
 double m_phase{std::numeric_limits<double>::quiet_NaN()};
 double m_phase_reco{std::numeric_limits<double>::quiet_NaN()};
 std::vector<double> m_pad_phi_centers;
