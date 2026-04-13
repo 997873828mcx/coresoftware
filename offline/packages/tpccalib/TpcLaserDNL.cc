@@ -41,6 +41,14 @@ namespace
 {
   constexpr const char* kTpcTrueClusterNodeName = "G4HIT_TPC_TRUECLUSTER";
   constexpr unsigned int kMaxTruthCrossingsPerLayer = 3;
+
+  Long64_t compose_track_uid(const int job_id, const int event_local, const int trkid)
+  {
+    const ULong64_t job_bits = static_cast<ULong64_t>(static_cast<unsigned int>(job_id));
+    const ULong64_t event_bits = static_cast<ULong64_t>(static_cast<unsigned int>(event_local));
+    const ULong64_t track_bits = static_cast<ULong64_t>(static_cast<unsigned int>(trkid));
+    return static_cast<Long64_t>((job_bits << 32) | (event_bits << 16) | (track_bits & 0xffffULL));
+  }
 }
 
 TpcLaserDNL::TpcLaserDNL(const std::string& name)
@@ -53,7 +61,11 @@ int TpcLaserDNL::Init(PHCompositeNode*)
   m_tf.reset(TFile::Open(m_outfile.c_str(), "RECREATE"));
   m_tt = new TTree("dnl", "laser dnl");
   m_tt->Branch("event", &m_event, "event/I");
+  m_tt->Branch("event_local", &m_event_local, "event_local/I");
+  m_tt->Branch("event_header", &m_event_header, "event_header/I");
+  m_tt->Branch("job_id", &m_job_id, "job_id/I");
   m_tt->Branch("trkid", &m_trkid, "trkid/I");
+  m_tt->Branch("track_uid", &m_track_uid, "track_uid/L");
   m_tt->Branch("pt", &m_pt, "pt/D");
   m_tt->Branch("layer", &m_layer, "layer/i");
   m_tt->Branch("side", &m_side, "side/I");
@@ -107,6 +119,9 @@ int TpcLaserDNL::Init(PHCompositeNode*)
   {
     m_tt_layer_debug = new TTree("dnl_layer_debug", "Per-layer DNL cutflow/drop reason");
     m_tt_layer_debug->Branch("event", &m_dbg_event, "event/I");
+    m_tt_layer_debug->Branch("event_local", &m_dbg_event_local, "event_local/I");
+    m_tt_layer_debug->Branch("event_header", &m_dbg_event_header, "event_header/I");
+    m_tt_layer_debug->Branch("job_id", &m_dbg_job_id, "job_id/I");
     m_tt_layer_debug->Branch("trkid", &m_dbg_trkid, "trkid/I");
     m_tt_layer_debug->Branch("pt", &m_dbg_pt, "pt/D");
     m_tt_layer_debug->Branch("layer", &m_dbg_layer, "layer/i");
@@ -368,16 +383,29 @@ namespace
 
 int TpcLaserDNL::process_event(PHCompositeNode* topNode)
 {
-  static int ievt = 0;
+  m_event_local = m_event_counter++;
+  m_event_header = -1;
+  bool use_event_header = false;
 
   if (auto* eh = findNode::getClass<EventHeader>(topNode, "EventHeader"))
   {
-    m_event = eh->get_EvtSequence();
+    m_event_header = eh->get_EvtSequence();
+    if (m_event_local == 0 || m_event_header != m_prev_event_header)
+    {
+      use_event_header = true;
+    }
+    else if (!m_warned_repeated_event_header)
+    {
+      std::cout << Name()
+                << ": EventHeader::get_EvtSequence() is repeating at "
+                << m_event_header
+                << ", falling back to local event counter for the event branch"
+                << std::endl;
+      m_warned_repeated_event_header = true;
+    }
+    m_prev_event_header = m_event_header;
   }
-  else
-  {
-    m_event = ievt++;
-  }
+  m_event = use_event_header ? m_event_header : m_event_local;
 
   // quick visibility of container content each event (only meaningful when using hits)
   std::size_t tpc_hitset_count = 0;
@@ -482,6 +510,7 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
   for (const auto& seed : seeds)
   {
     m_trkid = seed.id;
+    m_track_uid = compose_track_uid(m_job_id, m_event_local, m_trkid);
     m_pt = seed.pt;
 
     struct LayerRecoResult
@@ -970,6 +999,9 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
       if (m_write_layer_debug && m_tt_layer_debug)
       {
         m_dbg_event = m_event;
+        m_dbg_event_local = m_event_local;
+        m_dbg_event_header = m_event_header;
+        m_dbg_job_id = m_job_id;
         m_dbg_trkid = seed.id;
         m_dbg_pt = seed.pt;
         m_dbg_layer = layer;

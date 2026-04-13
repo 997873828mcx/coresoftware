@@ -37,6 +37,7 @@ int End(PHCompositeNode* topNode) override;
 void set_outputfile(const std::string& fn) { m_outfile = fn; }
 void set_max_dca(double v) { m_max_dca = v; }
 void set_max_dz(double v) { m_max_dz = v; }
+  void set_job_id(int v) { m_job_id = v; }
   void set_pedestal(double v) { m_pedestal = v; }
   // threshold on the chosen weight (ADC or charge)
   void set_min_adc(double v) { m_min_adc = v; }
@@ -125,7 +126,11 @@ double m_max_dz{1.0}; // cm
 
 // tree vars
 int m_event{0};
+int m_event_local{0};
+int m_event_header{-1};
+int m_job_id{-1};
 int m_trkid{0};
+Long64_t m_track_uid{0};
 double m_pt{std::numeric_limits<double>::quiet_NaN()};
 unsigned int m_layer{0};
 int m_side{0};
@@ -173,6 +178,9 @@ std::vector<ULong64_t> m_hitsetkeys;
 
   // Per-layer cutflow debug (one row per seed/layer point)
   int m_dbg_event{0};
+  int m_dbg_event_local{0};
+  int m_dbg_event_header{-1};
+  int m_dbg_job_id{-1};
   int m_dbg_trkid{0};
   double m_dbg_pt{std::numeric_limits<double>::quiet_NaN()};
   unsigned int m_dbg_layer{0};
@@ -246,6 +254,10 @@ static double wrap_dphi(double d);
 
   DisplayIntersection m_display_intersection;
   DisplayG4Hit m_display_g4hit;
+
+  int m_event_counter{0};
+  int m_prev_event_header{std::numeric_limits<int>::min()};
+  bool m_warned_repeated_event_header{false};
 };
 
 #endif
