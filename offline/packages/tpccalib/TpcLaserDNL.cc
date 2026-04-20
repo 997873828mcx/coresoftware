@@ -195,14 +195,11 @@ int TpcLaserDNL::InitRun(PHCompositeNode* topNode)
   if (m_primary_hits_only)
   {
     m_hittruthassoc = findNode::getClass<TrkrHitTruthAssoc>(topNode, "TRKR_HITTRUTHASSOC");
-    if (m_use_clusters)
-    {
-      m_cluster_hit_assoc = findNode::getClass<TrkrClusterHitAssoc>(topNode, "TRKR_CLUSTERHITASSOC");
-    }
   }
   if (m_use_clusters)
   {
     m_clusters = findNode::getClass<TrkrClusterContainer>(topNode, "TRKR_CLUSTER");
+    m_cluster_hit_assoc = findNode::getClass<TrkrClusterHitAssoc>(topNode, "TRKR_CLUSTERHITASSOC");
   }
   const bool have_reco_tracks = (m_use_reco_seeds && m_track_map && !m_track_map->empty());
   const bool have_truth_intersections = (m_g4hits != nullptr);
@@ -243,9 +240,14 @@ int TpcLaserDNL::InitRun(PHCompositeNode* topNode)
     }
     if (m_use_clusters && !m_cluster_hit_assoc)
     {
-      std::cout << Name() << ": missing TRKR_CLUSTERHITASSOC node required for primary-hit filtering in cluster mode." << std::endl;
+      std::cout << Name() << ": missing TRKR_CLUSTERHITASSOC node required in cluster mode." << std::endl;
       return -1;
     }
+  }
+  else if (m_use_clusters && !m_cluster_hit_assoc)
+  {
+    std::cout << Name() << ": missing TRKR_CLUSTERHITASSOC node required in cluster mode." << std::endl;
+    return -1;
   }
   std::cout << Name() << ": InitRun OK. mode="
             << (m_use_clusters ? "clusters" : "hits")
@@ -723,6 +725,57 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
         if (weight > result.max_charge_layer) result.max_charge_layer = weight;
       };
 
+      const auto fill_cluster_phase_observables = [&](const TrkrDefs::cluskey ckey,
+                                                      const TrkrDefs::hitsetkey hsk)
+      {
+        if (!m_cluster_hit_assoc || !m_hitsets) return;
+
+        TrkrHitSet* hitset = m_hitsets->findHitSet(hsk);
+        if (!hitset) return;
+
+        const auto hit_range = m_cluster_hit_assoc->getHits(ckey);
+        for (auto hitit = hit_range.first; hitit != hit_range.second; ++hitit)
+        {
+          const auto hitkey = static_cast<TrkrDefs::hitkey>(hitit->second);
+          TrkrHit* hit = hitset->getHit(hitkey);
+          if (!hit) continue;
+
+          if (m_primary_hits_only && !hit_passes_truth_filter(hsk, hitkey, seed.id))
+          {
+            continue;
+          }
+
+          ++result.nhit_scanned;
+
+          const double adc = static_cast<double>(hit->getAdc());
+          if (!(adc > 0.0)) continue;
+
+          const unsigned short iphi = TpcDefs::getPad(hitkey);
+          const unsigned short tbin = TpcDefs::getTBin(hitkey);
+          const double phi_c = layergeom->get_phicenter(static_cast<int>(iphi), side);
+          const double xh = radius * std::cos(phi_c);
+          const double yh = radius * std::sin(phi_c);
+
+          const double zcenter = layergeom->get_zcenter(tbin);
+          double zdriftlen = zcenter * vdrift;
+          double zh = z_readout_anchor - zdriftlen;
+          if (side == 0) zh = -zh;
+
+          hitkeys.push_back(static_cast<ULong64_t>(hitkey));
+          hitsetkeys_vec.push_back(static_cast<ULong64_t>(hsk));
+          iphi_vec.push_back(static_cast<unsigned int>(iphi));
+          tbin_vec.push_back(static_cast<unsigned int>(tbin));
+          hit_charge.push_back(adc);
+          hit_energy.push_back(static_cast<double>(hit->getEnergy()));
+          hit_x.push_back(xh);
+          hit_y.push_back(yh);
+          hit_z.push_back(zh);
+
+          unique_tbins.insert(static_cast<unsigned int>(tbin));
+          padWeights[iphi] += adc;
+        }
+      };
+
       const auto accumulate_from_hitsets = [&](const int sector_filter)
       {
         if (!m_use_clusters)
@@ -896,11 +949,7 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
               accumulate_weighted_point(weight, g.x(), g.y(), g.z());
               ++dbg_naccepted;
               sector_weights[sector_id] += weight;
-              hit_charge.push_back(weight);
-              hit_energy.push_back(std::numeric_limits<double>::quiet_NaN());
-              hit_x.push_back(g.x());
-              hit_y.push_back(g.y());
-              hit_z.push_back(g.z());
+              fill_cluster_phase_observables(ckey, hsk);
             }
           }
         }
@@ -1043,7 +1092,7 @@ int TpcLaserDNL::process_event(PHCompositeNode* topNode)
         result.dRphi = radius * result.dphi;
         result.weight_sum = wsum;
 
-        if (!m_use_clusters && !padWeights.empty())
+        if (!padWeights.empty())
         {
           double maxWeight = -std::numeric_limits<double>::infinity();
           for (const auto& entry : padWeights)

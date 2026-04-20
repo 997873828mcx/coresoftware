@@ -53,6 +53,7 @@ pkginclude_HEADERS = \
   TpcCombinedRawDataUnpackerDebug.h \
   TpcDistortionCorrection.h \
   TpcDistortionCorrectionContainer.h \
+  TpcDnlCorrection.h \
   TpcGlobalPositionWrapper.h \
   TpcLoadDistortionCorrection.h \
   TpcMap.h \
@@ -86,14 +87,15 @@ libtpc_la_SOURCES = \
   TpcClusterizer.cc \
   TpcCombinedRawDataUnpacker.cc \
   TpcCombinedRawDataUnpackerDebug.cc \
+  TpcDistortionCorrection.cc \
+  TpcDnlCorrection.cc \
   TpcGlobalPositionWrapper.cc \
   TpcLoadDistortionCorrection.cc \
   TpcMap.cc \
   TpcRawWriter.cc \
   TpcSimpleClusterizer.cc \
   TpcClusterMover.cc \
-  TpcClusterZCrossingCorrection.cc \
-  TpcDistortionCorrection.cc
+  TpcClusterZCrossingCorrection.cc
 
 libtpc_la_LIBADD = \
   libtpc_io.la \
