@@ -249,7 +249,11 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
   m_density_bin_width_cm = get_double_param("density_bin_width_cm");
   m_density_window_cm = get_double_param("density_window_cm");
   m_uniform_density_test = (get_int_param("uniform_density_test") != 0);
-  fixed_primary_electrons_per_cm = get_double_param("fixed_primary_electrons_per_cm");
+  fixed_primary_clusters_per_cm = get_double_param("fixed_primary_clusters_per_cm");
+  if (fixed_primary_clusters_per_cm <= 0.0)
+  {
+    fixed_primary_clusters_per_cm = get_double_param("fixed_primary_electrons_per_cm");
+  }
   if (m_density_layer >= 0 && m_density_bin_width_cm > 0.0 && m_density_window_cm > 0.0)
   {
     if (auto *layer_geom = seggeo->GetLayerCellGeom(m_density_layer))
@@ -384,54 +388,70 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
   // http://skipper.physics.sunysb.edu/~prakhar/tpc/HTML_Gases/split.html
 
   double Ne_dEdx = 1.56;  // keV/cm
-  double Ne_NTotal = 43;  // Primary ionization clusters/cm
+  double Ne_primary_clusters_per_cm = 13;  // Primary ionization clusters/cm
   double Ne_frac = tpcparam->get_double_param("Ne_frac");
 
   double Ar_dEdx = 2.44;  // keV/cm
-  double Ar_NTotal = 23;  // Primary electrons/cm
+  double Ar_primary_clusters_per_cm = 23;  // Primary ionization clusters/cm
+  double Ar_ionization_electrons_per_cm = 97;  // Total ionized electrons/cm for a MIP
   double Ar_frac = tpcparam->get_double_param("Ar_frac");
 
-  double CF4_dEdx = 7;     // keV/cm
-  double CF4_NTotal = 51;  // Primary electrons/cm
+  double CF4_dEdx = 6.38;     // keV/cm
+  double CF4_primary_clusters_per_cm = 51;  // Primary ionization clusters/cm
+  double CF4_ionization_electrons_per_cm = 120;  // Total ionized electrons/cm for a MIP
   double CF4_frac = tpcparam->get_double_param("CF4_frac");
 
   double N2_dEdx = 2.127;  // keV/cm https://pdg.lbl.gov/2024/AtomicNuclearProperties/HTML/nitrogen_gas.html
-  double N2_NTotal = 25;   // Primary ionization clusters/cm (approximate, small impact here)
+  double N2_primary_clusters_per_cm = 25;   // Primary ionization clusters/cm (approximate, small impact here)
   double N2_frac = tpcparam->get_double_param("N2_frac");
 
-  double isobutane_dEdx = 5.93;  // keV/cm
-  double isobutane_NTotal = 84;  // Primary electrons/cm
+  double isobutane_dEdx = 5.67;  // keV/cm
+  double isobutane_primary_clusters_per_cm = 84;  // Primary ionization clusters/cm
+  double isobutane_ionization_electrons_per_cm = 220;  // Total ionized electrons/cm for a MIP
   double isobutane_frac = tpcparam->get_double_param("isobutane_frac");
 
   if (m_use_PDG_gas_params)
   {
     Ne_dEdx = 1.446;
-    Ne_NTotal = 40;
+    Ne_primary_clusters_per_cm = 13;
 
     Ar_dEdx = 2.525;
-    Ar_NTotal = 97;
 
     CF4_dEdx = 6.382;
-    CF4_NTotal = 120;
   }
 
-  double Tpc_NTot = (Ne_NTotal * Ne_frac) + (Ar_NTotal * Ar_frac) + (CF4_NTotal * CF4_frac) + (N2_NTotal * N2_frac) + (isobutane_NTotal * isobutane_frac);
+  double Tpc_primary_clusters_per_cm = (Ne_primary_clusters_per_cm * Ne_frac) + (Ar_primary_clusters_per_cm * Ar_frac) + (CF4_primary_clusters_per_cm * CF4_frac) + (N2_primary_clusters_per_cm * N2_frac) + (isobutane_primary_clusters_per_cm * isobutane_frac);
 
-  double Tpc_dEdx = (Ne_dEdx * Ne_frac) + (Ar_dEdx * Ar_frac) + (CF4_dEdx * CF4_frac) + (N2_dEdx * N2_frac) + (isobutane_dEdx * isobutane_frac);
+  double Tpc_gas_mixture_dEdx = (Ne_dEdx * Ne_frac) + (Ar_dEdx * Ar_frac) + (CF4_dEdx * CF4_frac) + (N2_dEdx * N2_frac) + (isobutane_dEdx * isobutane_frac);
 
-  primary_clusters_per_cm = Tpc_NTot;
-  if (fixed_primary_electrons_per_cm > 0.0)
+  double Tpc_supported_ionization_gases_dEdx = (Ar_dEdx * Ar_frac) + (CF4_dEdx * CF4_frac) + (isobutane_dEdx * isobutane_frac);
+  ionization_electrons_per_cm = (Ar_ionization_electrons_per_cm * Ar_frac) + (CF4_ionization_electrons_per_cm * CF4_frac) + (isobutane_ionization_electrons_per_cm * isobutane_frac);
+  avg_ionization_energy_kev_per_electron = (ionization_electrons_per_cm > 0.0) ? (Tpc_supported_ionization_gases_dEdx / ionization_electrons_per_cm) : std::numeric_limits<double>::quiet_NaN();
+  ionization_electrons_per_gev = (Tpc_supported_ionization_gases_dEdx > 0.0) ? (ionization_electrons_per_cm / Tpc_supported_ionization_gases_dEdx) * 1e6 : std::numeric_limits<double>::quiet_NaN();
+
+  if (Ne_frac > 0.0 || N2_frac > 0.0)
   {
-    primary_clusters_per_cm = fixed_primary_electrons_per_cm;
+    std::cout << "PHG4TpcElectronDrift::InitRun - Warning: total-ionization-electron dE/dx QA uses only Ar/CF4/isobutane constants; "
+              << "Ne_frac=" << Ne_frac << " and N2_frac=" << N2_frac
+              << " are excluded from the ionization-electron energy scale." << std::endl;
   }
-  electrons_per_gev = (primary_clusters_per_cm / Tpc_dEdx) * 1e6;
+
+  primary_clusters_per_cm = Tpc_primary_clusters_per_cm;
+  if (fixed_primary_clusters_per_cm > 0.0)
+  {
+    primary_clusters_per_cm = fixed_primary_clusters_per_cm;
+  }
+  primary_clusters_per_gev = (Tpc_gas_mixture_dEdx > 0.0) ? (primary_clusters_per_cm / Tpc_gas_mixture_dEdx) * 1e6 : std::numeric_limits<double>::quiet_NaN();
 
   std::cout << "PHG4TpcElectronDrift::InitRun - primary clusters/cm = " << primary_clusters_per_cm
-            << ", primary clusters/GeV (from dE/dx) = " << electrons_per_gev << std::endl;
-  if (fixed_primary_electrons_per_cm > 0.0)
+            << ", primary clusters/GeV (from dE/dx) = " << primary_clusters_per_gev << std::endl;
+  std::cout << "PHG4TpcElectronDrift::InitRun - ionization electrons/cm = " << ionization_electrons_per_cm
+            << ", average ionization energy = " << avg_ionization_energy_kev_per_electron << " keV/electron"
+            << ", ionization electrons/GeV (from dE/dx) = " << ionization_electrons_per_gev << std::endl;
+  if (fixed_primary_clusters_per_cm > 0.0)
   {
-    std::cout << "PHG4TpcElectronDrift::InitRun - overriding gas-derived primary electron density with fixed_primary_electrons_per_cm = "
-              << fixed_primary_electrons_per_cm << std::endl;
+    std::cout << "PHG4TpcElectronDrift::InitRun - overriding gas-derived primary cluster density with fixed_primary_clusters_per_cm = "
+              << fixed_primary_clusters_per_cm << std::endl;
   }
 
   // Initialize cluster size CDF for sPHENIX Ar/CF4/iC4H10 mixture.
@@ -527,10 +547,10 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
   const auto prob_ar = build_cluster_prob(ar_cluster_prob, 20);
   const auto prob_ch4 = build_cluster_prob(ch4_cluster_prob, 20);
 
-  const double mix_primary = (Ar_frac * Ar_NTotal) + (CF4_frac * CF4_NTotal) + (isobutane_frac * isobutane_NTotal);
-  const double weight_ar = (mix_primary > 0.0) ? (Ar_frac * Ar_NTotal / mix_primary) : 0.0;
-  const double weight_cf4 = (mix_primary > 0.0) ? (CF4_frac * CF4_NTotal / mix_primary) : 0.0;
-  const double weight_iso = (mix_primary > 0.0) ? (isobutane_frac * isobutane_NTotal / mix_primary) : 0.0;
+  const double mix_primary = (Ar_frac * Ar_primary_clusters_per_cm) + (CF4_frac * CF4_primary_clusters_per_cm) + (isobutane_frac * isobutane_primary_clusters_per_cm);
+  const double weight_ar = (mix_primary > 0.0) ? (Ar_frac * Ar_primary_clusters_per_cm / mix_primary) : 0.0;
+  const double weight_cf4 = (mix_primary > 0.0) ? (CF4_frac * CF4_primary_clusters_per_cm / mix_primary) : 0.0;
+  const double weight_iso = (mix_primary > 0.0) ? (isobutane_frac * isobutane_primary_clusters_per_cm / mix_primary) : 0.0;
 
   std::vector<double> mix_prob(kClusterSizeCutoff + 1, 0.0);
   if (mix_primary > 0.0)
@@ -580,8 +600,10 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
     std::cout << Name() << " gas mixture fractions (Ne/Ar/CF4/N2/iC4H10): "
               << Ne_frac << "/" << Ar_frac << "/" << CF4_frac << "/" << N2_frac << "/" << isobutane_frac << std::endl;
     std::cout << Name() << " primary ionization summary: primary clusters per cm " << primary_clusters_per_cm
-              << ", dE/dx (keV/cm) " << Tpc_dEdx
-              << ", primary clusters per GeV " << electrons_per_gev << std::endl;
+              << ", dE/dx (keV/cm) " << Tpc_gas_mixture_dEdx
+              << ", primary clusters per GeV " << primary_clusters_per_gev
+              << ", ionization electrons per cm " << ionization_electrons_per_cm
+              << ", average ionization energy (keV/electron) " << avg_ionization_energy_kev_per_electron << std::endl;
     std::cout << Name() << " diffusion sigmas (long/trans) [cm^0.5]: " << diffusion_long << "/" << diffusion_trans
               << " with additional smearing (long/trans): " << added_smear_sigma_long << "/" << added_smear_sigma_trans << std::endl;
     std::cout << Name() << " drift window [min,max] (ns): " << min_time << ", " << max_time << std::endl;
@@ -607,13 +629,19 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
     diffDistance = new TH1F("diffDistance", "Transverse diffusion displacement;#Delta r (cm);Counts", 300, 0.0, 3.0);
     diffDX = new TH1F("diffDX", "Transverse diffusion #Delta x;#Delta x (cm);Counts", 400, -3.0, 3.0);
     diffDY = new TH1F("diffDY", "Transverse diffusion #Delta y;#Delta y (cm);Counts", 400, -3.0, 3.0);
-    nElectrons = new TH1F("nElectrons", "Sampled electrons per step;N_{e};Counts", 400, -0.5, 399.5);
-    poissonMean = new TH1F("electronMean", "Poisson mean per step;#bar{N}_{e};Counts", 400, 0.0, 200.0);
-    nElectronsVsMean = new TH2F("nElectronsVsMean", "Sampled electrons vs. mean;#bar{N}_{e};N_{e}", 200, 0.0, 200.0, 200, -0.5, 199.5);
+    nPrimaryClusters = new TH1F("nPrimaryClusters", "Sampled primary clusters per step;N_{primary clusters};Counts", 400, -0.5, 399.5);
+    primaryClusterMean = new TH1F("primaryClusterMean", "Poisson mean primary clusters per step;#bar{N}_{primary clusters};Counts", 400, 0.0, 200.0);
+    nPrimaryClustersVsMean = new TH2F("nPrimaryClustersVsMean", "Sampled primary clusters vs. mean;#bar{N}_{primary clusters};N_{primary clusters}", 200, 0.0, 200.0, 200, -0.5, 199.5);
     diffPerSqrtL = new TH1F("diffPerSqrtL", "Transverse diffusion normalized by #sqrt{L};#Delta r/#sqrt{L} (cm^{0.5});Counts", 400, 0.0, 0.2);
     diffDXPerSqrtL = new TH1F("diffDXPerSqrtL", "#Delta x normalized by #sqrt{L};#Delta x/#sqrt{L} (cm^{0.5});Counts", 400, -0.2, 0.2);
     diffDYPerSqrtL = new TH1F("diffDYPerSqrtL", "#Delta y normalized by #sqrt{L};#Delta y/#sqrt{L} (cm^{0.5});Counts", 400, -0.2, 0.2);
-    nElectronsPerCm = new TH1F("nElectronsPerCm", "Sampled electrons per cm;N_{e}/cm;Counts", 400, 0.0, 400.0);
+    nPrimaryClustersPerCm = new TH1F("nPrimaryClustersPerCm", "Sampled primary clusters per cm;N_{primary clusters}/cm;Counts", 400, 0.0, 400.0);
+    nIonizationElectrons = new TH1F("nIonizationElectrons", "Sampled ionization electrons per step;N_{e};Counts", 500, -0.5, 999.5);
+    nIonizationElectronsPerCm = new TH1F("nIonizationElectronsPerCm", "Sampled ionization electrons per cm;N_{e}/cm;Counts", 500, 0.0, 1000.0);
+    nIonizationElectronsVsPrimaryClusters = new TH2F("nIonizationElectronsVsPrimaryClusters", "Ionization electrons vs. primary clusters;N_{primary clusters};N_{e}", 200, -0.5, 199.5, 500, -0.5, 999.5);
+    g4StepDedx = new TH1F("g4StepDedx", "Geant4 step dE/dx;dE/dx (keV/cm);Counts", 500, 0.0, 50.0);
+    ionizedElectronsDedx = new TH1F("ionizedElectronsDedx", "Ionized electrons #times average ionization energy;dE/dx (keV/cm);Counts", 500, 0.0, 50.0);
+    ionizedElectronsDedxVsG4StepDedx = new TH2F("ionizedElectronsDedxVsG4StepDedx", "Ionized-electron dE/dx vs. Geant4 dE/dx;Geant4 dE/dx (keV/cm);Ionized-electron dE/dx (keV/cm)", 300, 0.0, 50.0, 300, 0.0, 50.0);
     diffVsDrift = new TH2F("diffVsDrift", "Transverse diffusion vs. drift length;Drift length L (cm);#Delta r (cm)", 200, 0.0, tpc_length / 2., 300, 0.0, 3.0);
     diffDXVsDrift = new TH2F("diffDXVsDrift", "#Delta x vs. drift length;Drift length L (cm);#Delta x (cm)", 200, 0.0, tpc_length / 2., 400, -3.0, 3.0);
     diffDYVsDrift = new TH2F("diffDYVsDrift", "#Delta y vs. drift length;Drift length L (cm);#Delta y (cm)", 200, 0.0, tpc_length / 2., 400, -3.0, 3.0);
@@ -650,6 +678,11 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
     driftStepQA->Branch("deiondx_kev_per_cm", &m_stepqa_deiondx_kev_per_cm, "deiondx_kev_per_cm/F");
     driftStepQA->Branch("mean_primary_clusters", &m_stepqa_mean_primary_clusters, "mean_primary_clusters/F");
     driftStepQA->Branch("n_primary_clusters", &m_stepqa_n_primary_clusters, "n_primary_clusters/I");
+    driftStepQA->Branch("avg_ionization_energy_kev_per_electron", &m_stepqa_avg_ionization_energy_kev_per_electron, "avg_ionization_energy_kev_per_electron/F");
+    driftStepQA->Branch("mean_ionization_electrons", &m_stepqa_mean_ionization_electrons, "mean_ionization_electrons/F");
+    driftStepQA->Branch("n_ionization_electrons", &m_stepqa_n_ionization_electrons, "n_ionization_electrons/I");
+    driftStepQA->Branch("ionized_electrons_edep_kev", &m_stepqa_ionized_electrons_edep_kev, "ionized_electrons_edep_kev/F");
+    driftStepQA->Branch("ionized_electrons_dedx_kev_per_cm", &m_stepqa_ionized_electrons_dedx_kev_per_cm, "ionized_electrons_dedx_kev_per_cm/F");
   }
 
   if (m_avg_x_enabled)
@@ -968,25 +1001,82 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
     {
       n_primary_clusters = gsl_ran_poisson(RandomGenerator.get(), poisson_mean);
     }
-    //    count_electrons += n_primary_clusters;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double dedx_kev_per_cm = (step_length > 0.) ? (edep * 1e6 / step_length) : nan;
+    const double deiondx_kev_per_cm = (step_length > 0.) ? (eion * 1e6 / step_length) : nan;
 
-    if (fill_qa_hists_this_event && driftStepQA)
+    auto fill_step_qa = [&](const int n_ionization_electrons)
     {
-      const double nan = std::numeric_limits<double>::quiet_NaN();
-      const double dedx_kev_per_cm = (step_length > 0.) ? (edep * 1e6 / step_length) : nan;
-      const double deiondx_kev_per_cm = (step_length > 0.) ? (eion * 1e6 / step_length) : nan;
+      if (!fill_qa_hists_this_event)
+      {
+        return;
+      }
 
-      m_stepqa_event = event_num;
-      m_stepqa_track_id = track_id;
-      m_stepqa_step_length_cm = static_cast<float>(step_length);
-      m_stepqa_edep_kev = static_cast<float>(edep * 1e6);
-      m_stepqa_eion_kev = static_cast<float>(eion * 1e6);
-      m_stepqa_dedx_kev_per_cm = static_cast<float>(dedx_kev_per_cm);
-      m_stepqa_deiondx_kev_per_cm = static_cast<float>(deiondx_kev_per_cm);
-      m_stepqa_mean_primary_clusters = static_cast<float>(poisson_mean);
-      m_stepqa_n_primary_clusters = static_cast<int>(n_primary_clusters);
-      driftStepQA->Fill();
-    }
+      const double mean_ionization_electrons = (eion > 0.) ? std::max(0.0, ionization_electrons_per_cm * step_length) : 0.0;
+      const double ionized_electrons_edep_kev = std::isfinite(avg_ionization_energy_kev_per_electron) ? n_ionization_electrons * avg_ionization_energy_kev_per_electron : nan;
+      const double ionized_electrons_dedx_kev_per_cm =
+          (step_length > 0. && std::isfinite(ionized_electrons_edep_kev)) ? ionized_electrons_edep_kev / step_length : nan;
+
+      if (primaryClusterMean)
+      {
+        primaryClusterMean->Fill(poisson_mean);
+      }
+      if (nPrimaryClusters)
+      {
+        nPrimaryClusters->Fill(static_cast<double>(n_primary_clusters));
+      }
+      if (nPrimaryClustersPerCm && step_length > 0.)
+      {
+        nPrimaryClustersPerCm->Fill(static_cast<double>(n_primary_clusters) / step_length);
+      }
+      if (nPrimaryClustersVsMean)
+      {
+        nPrimaryClustersVsMean->Fill(poisson_mean, static_cast<double>(n_primary_clusters));
+      }
+      if (nIonizationElectrons)
+      {
+        nIonizationElectrons->Fill(static_cast<double>(n_ionization_electrons));
+      }
+      if (nIonizationElectronsPerCm && step_length > 0.)
+      {
+        nIonizationElectronsPerCm->Fill(static_cast<double>(n_ionization_electrons) / step_length);
+      }
+      if (nIonizationElectronsVsPrimaryClusters)
+      {
+        nIonizationElectronsVsPrimaryClusters->Fill(static_cast<double>(n_primary_clusters), static_cast<double>(n_ionization_electrons));
+      }
+      if (g4StepDedx && std::isfinite(dedx_kev_per_cm))
+      {
+        g4StepDedx->Fill(dedx_kev_per_cm);
+      }
+      if (ionizedElectronsDedx && std::isfinite(ionized_electrons_dedx_kev_per_cm))
+      {
+        ionizedElectronsDedx->Fill(ionized_electrons_dedx_kev_per_cm);
+      }
+      if (ionizedElectronsDedxVsG4StepDedx && std::isfinite(dedx_kev_per_cm) && std::isfinite(ionized_electrons_dedx_kev_per_cm))
+      {
+        ionizedElectronsDedxVsG4StepDedx->Fill(dedx_kev_per_cm, ionized_electrons_dedx_kev_per_cm);
+      }
+
+      if (driftStepQA)
+      {
+        m_stepqa_event = event_num;
+        m_stepqa_track_id = track_id;
+        m_stepqa_step_length_cm = static_cast<float>(step_length);
+        m_stepqa_edep_kev = static_cast<float>(edep * 1e6);
+        m_stepqa_eion_kev = static_cast<float>(eion * 1e6);
+        m_stepqa_dedx_kev_per_cm = static_cast<float>(dedx_kev_per_cm);
+        m_stepqa_deiondx_kev_per_cm = static_cast<float>(deiondx_kev_per_cm);
+        m_stepqa_mean_primary_clusters = static_cast<float>(poisson_mean);
+        m_stepqa_n_primary_clusters = static_cast<int>(n_primary_clusters);
+        m_stepqa_avg_ionization_energy_kev_per_electron = static_cast<float>(avg_ionization_energy_kev_per_electron);
+        m_stepqa_mean_ionization_electrons = static_cast<float>(mean_ionization_electrons);
+        m_stepqa_n_ionization_electrons = n_ionization_electrons;
+        m_stepqa_ionized_electrons_edep_kev = static_cast<float>(ionized_electrons_edep_kev);
+        m_stepqa_ionized_electrons_dedx_kev_per_cm = static_cast<float>(ionized_electrons_dedx_kev_per_cm);
+        driftStepQA->Fill();
+      }
+    };
     if (m_avg_x_enabled)
     {
       auto &layer_data = m_track_layer_data[trkid_new];
@@ -1098,26 +1188,6 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
       }
     }
 
-    if (fill_qa_hists_this_event)
-    {
-      if (poissonMean)
-      {
-        poissonMean->Fill(poisson_mean);
-      }
-      if (nElectrons)
-      {
-        nElectrons->Fill(static_cast<double>(n_primary_clusters));
-      }
-      if (nElectronsPerCm && step_length > 0.)
-      {
-        nElectronsPerCm->Fill(static_cast<double>(n_primary_clusters) / step_length);
-      }
-      if (nElectronsVsMean)
-      {
-        nElectronsVsMean->Fill(poisson_mean, static_cast<double>(n_primary_clusters));
-      }
-    }
-
     if (Verbosity() > 100)
     {
       std::cout << "  new hit with t0, " << t0 << " g4hitid " << hiter->first
@@ -1145,6 +1215,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
 
     if (n_primary_clusters == 0)
     {
+      fill_step_qa(0);
       m_track_path_offset[track_id] += step_length;
       continue;
     }
@@ -1485,6 +1556,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
     {
       ratioElectronsRR->Fill(static_cast<double>(n_secondary_electrons - notReachingReadout) / static_cast<double>(n_secondary_electrons));
     }
+    fill_step_qa(n_secondary_electrons);
 
     TrkrHitSetContainer::ConstRange single_hitset_range = single_hitsetcontainer->getHitSets(TrkrDefs::TrkrId::tpcId);
     for (TrkrHitSetContainer::ConstIterator single_hitset_iter = single_hitset_range.first;
@@ -1942,9 +2014,33 @@ int PHG4TpcElectronDrift::End(PHCompositeNode * /*topNode*/)
       {
         diffPerSqrtL->Write();
       }
-      if (nElectronsPerCm)
+      if (nPrimaryClustersPerCm)
       {
-        nElectronsPerCm->Write();
+        nPrimaryClustersPerCm->Write();
+      }
+      if (nIonizationElectrons)
+      {
+        nIonizationElectrons->Write();
+      }
+      if (nIonizationElectronsPerCm)
+      {
+        nIonizationElectronsPerCm->Write();
+      }
+      if (nIonizationElectronsVsPrimaryClusters)
+      {
+        nIonizationElectronsVsPrimaryClusters->Write();
+      }
+      if (g4StepDedx)
+      {
+        g4StepDedx->Write();
+      }
+      if (ionizedElectronsDedx)
+      {
+        ionizedElectronsDedx->Write();
+      }
+      if (ionizedElectronsDedxVsG4StepDedx)
+      {
+        ionizedElectronsDedxVsG4StepDedx->Write();
       }
       if (diffDXPerSqrtL)
       {
@@ -1954,17 +2050,17 @@ int PHG4TpcElectronDrift::End(PHCompositeNode * /*topNode*/)
       {
         diffDYPerSqrtL->Write();
       }
-      if (nElectrons)
+      if (nPrimaryClusters)
       {
-        nElectrons->Write();
+        nPrimaryClusters->Write();
       }
-      if (poissonMean)
+      if (primaryClusterMean)
       {
-        poissonMean->Write();
+        primaryClusterMean->Write();
       }
-      if (nElectronsVsMean)
+      if (nPrimaryClustersVsMean)
       {
-        nElectronsVsMean->Write();
+        nPrimaryClustersVsMean->Write();
       }
       if (diffVsDrift)
       {
@@ -1994,7 +2090,7 @@ int PHG4TpcElectronDrift::End(PHCompositeNode * /*topNode*/)
       {
         driftXY->Write();
       }
-      if (driftStepQA)
+      if (driftStepQA && m_step_qa_output_file.empty())
       {
         driftStepQA->Write();
       }
@@ -2003,6 +2099,24 @@ int PHG4TpcElectronDrift::End(PHCompositeNode * /*topNode*/)
         electronDensityProfile->Write();
       }
       EDrift_outf->Close();
+    }
+  }
+  if (do_ElectronDriftQAHistos && driftStepQA && !m_step_qa_output_file.empty())
+  {
+    if (m_qa_write_only_with_secondaries && !m_seen_event_with_secondaries)
+    {
+      if (Verbosity() > 0)
+      {
+        std::cout << Name() << ": skip writing " << m_step_qa_output_file
+                  << " (no secondary TPC g4hits found)." << std::endl;
+      }
+    }
+    else
+    {
+      m_stepQAOutf.reset(new TFile(m_step_qa_output_file.c_str(), "recreate"));
+      m_stepQAOutf->cd();
+      driftStepQA->Write();
+      m_stepQAOutf->Close();
     }
   }
   if (m_avgOutf && m_avgXResidualTree)
@@ -2052,7 +2166,8 @@ void PHG4TpcElectronDrift::SetDefaultParameters()
   set_default_double_param("density_bin_width_cm", 0.05);
   set_default_double_param("density_window_cm", -1.0);
   set_default_double_param("density_radial_margin_cm", 0.2);
-  set_default_double_param("fixed_primary_electrons_per_cm", -1.0);
+  set_default_double_param("fixed_primary_clusters_per_cm", -1.0);
+  set_default_double_param("fixed_primary_electrons_per_cm", -1.0);  // backward-compatible alias
   set_default_int_param("uniform_density_test", 0);
   set_default_int_param("average_x_layer", -1);
 

@@ -35,9 +35,9 @@
 #include <TROOT.h>
 #include <TMarker.h>
 #include <TPad.h>
-#include <TEllipse.h>
-#include <TColor.h>
 #include <TNtuple.h>
+#include <TLatex.h>
+#include <TStyle.h>
 #include <TSystem.h>
 
 #include <gsl/gsl_randist.h>
@@ -2156,7 +2156,8 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
     ymax = y_center + fallback;
   }
 
-  const double margin = std::max(max_circle_radius * 0.1, 0.1);
+  const double span = std::max(xmax - xmin, ymax - ymin);
+  const double margin = std::max({0.12 * span, 0.6 * max_circle_radius, 0.15});
   xmin -= margin;
   xmax += margin;
   ymin -= margin;
@@ -2177,8 +2178,7 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
 
   const std::string hname = "h_cloud_side" + std::to_string(side) + "_layer" + std::to_string(layernum);
   TH2F *hist = new TH2F(hname.c_str(), "", nx, xmin, xmax, ny, ymin, ymax);
-  hist->GetXaxis()->SetTitle("sector frame x [cm]");
-  hist->GetYaxis()->SetTitle("sector frame y [cm]");
+  hist->SetTitle(";sector frame x [cm];sector frame y [cm];overlap density");
   hist->SetStats(false);
 
   for (const auto &sample : samples)
@@ -2205,21 +2205,6 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
     }
   }
   double floor_fill = 0.0;
-  if (nonzero_bins > 0)
-  {
-    floor_fill = std::min(min_positive * 0.5, max_bin);
-    for (int ix = 1; ix <= nx; ++ix)
-    {
-      for (int iy = 1; iy <= ny; ++iy)
-      {
-        if (hist->GetBinContent(ix, iy) <= 0.0)
-        {
-          hist->SetBinContent(ix, iy, floor_fill);
-        }
-      }
-    }
-    if (floor_fill > 0.0) min_positive = floor_fill;
-  }
   if (Verbosity() > 0)
   {
     std::cout << "test_1_PHG4TpcPadPlaneReadout: histogram summary for visualization "
@@ -2235,14 +2220,41 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
 
   const std::string cname = "c_cloud_side" + std::to_string(side) + "_layer" + std::to_string(layernum);
   TCanvas *canvas = new TCanvas(cname.c_str(), "Avalanche cloud vs zigzag pads", 900, 800);
+  canvas->SetFillColor(kWhite);
   canvas->cd();
-  gPad->SetRightMargin(0.15);
-  hist->SetTitle(("Avalanche overlap (side " + std::to_string(side) +
-                  ", layer " + std::to_string(layernum) + ")").c_str());
+  if (gStyle)
+  {
+    gStyle->SetOptTitle(0);
+    gStyle->SetOptStat(0);
+    gStyle->SetPadTickX(1);
+    gStyle->SetPadTickY(1);
+  }
+  gPad->SetFillColor(kWhite);
+  gPad->SetTicks(1, 1);
+  gPad->SetLeftMargin(0.14);
+  gPad->SetBottomMargin(0.13);
+  gPad->SetRightMargin(0.18);
   hist->SetDirectory(nullptr);
+  hist->GetXaxis()->SetTitleFont(42);
+  hist->GetYaxis()->SetTitleFont(42);
+  hist->GetZaxis()->SetTitleFont(42);
+  hist->GetXaxis()->SetLabelFont(42);
+  hist->GetYaxis()->SetLabelFont(42);
+  hist->GetZaxis()->SetLabelFont(42);
+  hist->GetXaxis()->SetTitleSize(0.050);
+  hist->GetYaxis()->SetTitleSize(0.050);
+  hist->GetZaxis()->SetTitleSize(0.032);
+  hist->GetXaxis()->SetLabelSize(0.040);
+  hist->GetYaxis()->SetLabelSize(0.040);
+  hist->GetZaxis()->SetLabelSize(0.0);
+  hist->GetXaxis()->SetTitleOffset(1.05);
+  hist->GetYaxis()->SetTitleOffset(1.25);
+  hist->GetZaxis()->SetTitleOffset(1.45);
+  hist->GetZaxis()->SetTitle("Charge-cloud density on readout pads [arb. units]");
+  hist->GetZaxis()->SetTickLength(0.0);
   if (nonzero_bins > 0)
   {
-    const double min_disp = std::max(0.8 * min_positive, 1e-9);
+    const double min_disp = std::max(0.02 * max_bin, 1e-9);
     hist->SetMinimum(min_disp);
     hist->SetMaximum(1.1 * max_bin);
   }
@@ -2265,46 +2277,8 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
 
   std::vector<TGraph *> pad_graphs;
   pad_graphs.reserve(pads_to_draw->size());
-  const int center_color = kBlack;
-  const auto faint_color = TColor::GetColor(180, 180, 190);
-  const auto geom_outline_color = TColor::GetColor(30, 144, 255);  // dodger blue
-  double max_pad_charge = 0.0;
-  for (const auto &pad : *pads_to_draw) max_pad_charge = std::max(max_pad_charge, pad.charge);
-  std::vector<TGraph *> pad_center_markers;
-  std::vector<TGraph *> geom_pad_graphs;
-  std::vector<TEllipse *> layer_rings;
-
-  // Convert global (x,y) from LayerGeom frame into the currently visualized frame.
-  // SERF visualization uses sector-reference coordinates, while rectangular mode uses global.
-  auto to_display_point = [&](double xg, double yg) {
-    Point p{xg, yg};
-    if (!m_use_rectangular_pad_response)
-    {
-      int sector_tmp = -1;
-      rotatePointToSector(xg, yg, side, sector_tmp, p.x, p.y);
-    }
-    return p;
-  };
-
-  // Overlay layer radial boundaries from LayerGeom on top of the cloud plot.
-  if (LayerGeom)
-  {
-    const double r_center = LayerGeom->get_radius();
-    const double half_thickness = 0.5 * LayerGeom->get_thickness();
-    const double r_low = r_center - half_thickness;
-    const double r_high = r_center + half_thickness;
-    for (const double rr : {r_low, r_high})
-    {
-      if (rr <= 0.0) continue;
-      TEllipse *ring = new TEllipse(0.0, 0.0, rr, rr);
-      ring->SetFillStyle(0);
-      ring->SetLineColor(kBlue + 1);
-      ring->SetLineStyle(2);
-      ring->SetLineWidth(2);
-      ring->Draw("SAME");
-      layer_rings.push_back(ring);
-    }
-  }
+  const int zigzag_colors[3] = {kRed + 1, kGray + 2, kMagenta + 2};
+  std::size_t zigzag_color_index = 0;
 
   for (const auto &pad : *pads_to_draw)
   {
@@ -2324,68 +2298,13 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
     ys[npts] = pad.polygon.front().y;
 
     TGraph *outline = new TGraph(static_cast<int>(xs.size()), xs.data(), ys.data());
-    const bool highlight = (max_pad_charge > 0.0 && std::fabs(pad.charge - max_pad_charge) < 1e-12);
-    if (highlight)
-    {
-      outline->SetLineColor(center_color);
-      outline->SetLineWidth(1);
-      // Mark the geometry-based pad center (phi from geom, radius from layer)
-      const double pad_r = (pad.pad_r > 0.0) ? pad.pad_r : LayerGeom->get_radius();
-      const Point cdisp = to_display_point(pad_r * std::cos(pad.pad_phi), pad_r * std::sin(pad.pad_phi));
-      double center_x = cdisp.x;
-      double center_y = cdisp.y;
-      TGraph *pad_center = new TGraph(1, &center_x, &center_y);
-      pad_center->SetMarkerStyle(30);    // star
-      pad_center->SetMarkerSize(2.0);
-      pad_center->SetMarkerColor(kMagenta + 2);
-      pad_center->Draw("P SAME");
-      pad_center_markers.push_back(pad_center);
-    }
-    else
-    {
-      outline->SetLineColorAlpha(faint_color, 0.35);
-      outline->SetLineWidth(1);
-    }
+    const int outline_color = zigzag_colors[zigzag_color_index % 3];
+    ++zigzag_color_index;
+    outline->SetLineColor(outline_color);
+    outline->SetLineWidth(1);
     outline->SetFillStyle(0);
     outline->Draw("L SAME");
     pad_graphs.push_back(outline);
-
-    // Overlay LayerGeom pad boundaries (rectangles from r/phi binning) to compare with BRD polygons.
-    if (LayerGeom)
-    {
-      const double half_phi = 0.5 * std::abs(LayerGeom->get_phistep());
-      const double r_center = LayerGeom->get_radius();
-      const double half_thickness = 0.5 * LayerGeom->get_thickness();
-      const double r_low = r_center - half_thickness;
-      const double r_high = r_center + half_thickness;
-      const double phi_low = pad.pad_phi - half_phi;
-      const double phi_high = pad.pad_phi + half_phi;
-
-      const Point corners_global[4] = {
-          {r_low * std::cos(phi_low), r_low * std::sin(phi_low)},
-          {r_low * std::cos(phi_high), r_low * std::sin(phi_high)},
-          {r_high * std::cos(phi_high), r_high * std::sin(phi_high)},
-          {r_high * std::cos(phi_low), r_high * std::sin(phi_low)}};
-
-      double gx[5] = {0, 0, 0, 0, 0};
-      double gy[5] = {0, 0, 0, 0, 0};
-      for (int i = 0; i < 4; ++i)
-      {
-        const Point pdisp = to_display_point(corners_global[i].x, corners_global[i].y);
-        gx[i] = pdisp.x;
-        gy[i] = pdisp.y;
-      }
-      gx[4] = gx[0];
-      gy[4] = gy[0];
-
-      TGraph *ggeom = new TGraph(5, gx, gy);
-      ggeom->SetLineColor(geom_outline_color);
-      ggeom->SetLineStyle(7);
-      ggeom->SetLineWidth(1);
-      ggeom->SetFillStyle(0);
-      ggeom->Draw("L SAME");
-      geom_pad_graphs.push_back(ggeom);
-    }
   }
 
   std::vector<TGraph *> center_markers;
@@ -2398,11 +2317,30 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
     TGraph *center = new TGraph(1, center_x, center_y);
     center->SetMarkerStyle(29);
     //center->SetMarkerSize(ic + 1 == circles.size() ? 1.8 : 1.2);
-    center->SetMarkerSize(1.6);
+    center->SetMarkerSize(0.55);
     center->SetMarkerColor(kBlack);
     center->Draw("P SAME");
     center_markers.push_back(center);
   }
+
+  TMarker *electron_label_marker = new TMarker(0.62, 0.88, 29);
+  electron_label_marker->SetNDC(kTRUE);
+  electron_label_marker->SetMarkerColor(kBlack);
+  electron_label_marker->SetMarkerSize(0.65);
+  electron_label_marker->Draw("SAME");
+
+  TLatex label;
+  label.SetNDC();
+  label.SetTextFont(42);
+  label.SetTextColor(kBlack);
+  label.SetTextAlign(13);
+  label.SetTextSize(0.038);
+  label.DrawLatex(0.18, 0.88, "#bf{#it{sPHENIX}} TPC Simulation");
+  label.SetTextSize(0.032);
+  label.DrawLatex(0.18, 0.825, "single #pi^{+}, p_{T}=10 GeV");
+  label.SetTextAlign(13);
+  label.SetTextSize(0.030);
+  label.DrawLatex(0.64, 0.88, "ionizing electrons");
 
   if (!m_visualization_dump_file.empty())
   {
@@ -2456,6 +2394,30 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
 
   canvas->Update();
   canvas->SaveAs(m_visualization_output.c_str());
+
+  std::string canvas_output = m_visualization_output;
+  const std::string::size_type dot_pos = canvas_output.find_last_of('.');
+  if (dot_pos != std::string::npos)
+  {
+    canvas_output.replace(dot_pos, std::string::npos, ".root");
+  }
+  else
+  {
+    canvas_output += ".root";
+  }
+  TFile canvasFile(canvas_output.c_str(), "RECREATE");
+  if (canvasFile.IsOpen())
+  {
+    canvasFile.cd();
+    canvas->Write();
+    canvasFile.Close();
+  }
+  else
+  {
+    std::cout << "PHG4TpcPadPlaneReadout: unable to write canvas ROOT file "
+              << canvas_output << std::endl;
+  }
+
   std::cout << "PHG4TpcPadPlaneReadout: saved single cloud visualization to "
             << m_visualization_output
             << " (side " << side << ", layer " << layernum
@@ -2465,9 +2427,7 @@ void PHG4TpcPadPlaneReadout::maybeVisualizeAvalanche(
 
   for (TGraph *c : center_markers) delete c;
   for (TGraph *g : pad_graphs) delete g;
-  for (TGraph *g : geom_pad_graphs) delete g;
-  for (TGraph *pc : pad_center_markers) delete pc;
-  for (TEllipse *e : layer_rings) delete e;
+  delete electron_label_marker;
   delete canvas;
   delete hist;
 }

@@ -97,6 +97,7 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   // Backward-compatible alias; use set_enable_cluster_size_fluctuations instead.
   void set_enable_laser_clustering(bool b) { set_enable_cluster_size_fluctuations(b); }
   void set_qa_output_file(const std::string &f) { m_qa_output_file = f; }
+  void set_step_qa_output_file(const std::string &f) { m_step_qa_output_file = f; }
   void set_qa_write_only_with_secondaries(bool b) { m_qa_write_only_with_secondaries = b; }
   void set_avg_output_file(const std::string &f) { m_avg_output_file = f; }
   void set_do_ElectronDriftQAHistos(bool b) { do_ElectronDriftQAHistos = b; }
@@ -155,12 +156,16 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   TH1 *diffDistance{nullptr};
   TH1 *diffDX{nullptr};
   TH1 *diffDY{nullptr};
-  TH1 *nElectrons{nullptr};
-  TH1 *poissonMean{nullptr};
+  TH1 *nPrimaryClusters{nullptr};
+  TH1 *primaryClusterMean{nullptr};
   TH1 *diffPerSqrtL{nullptr};
   TH1 *diffDXPerSqrtL{nullptr};
   TH1 *diffDYPerSqrtL{nullptr};
-  TH1 *nElectronsPerCm{nullptr};
+  TH1 *nPrimaryClustersPerCm{nullptr};
+  TH1 *nIonizationElectrons{nullptr};
+  TH1 *nIonizationElectronsPerCm{nullptr};
+  TH1 *g4StepDedx{nullptr};
+  TH1 *ionizedElectronsDedx{nullptr};
   TH1 *electronDensityProfile{nullptr};
   TH2 *hitmapstart{nullptr};
   TH2 *hitmapend{nullptr};
@@ -176,7 +181,9 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   TH2 *deltarnodiff{nullptr};
   TH2 *deltarnodist{nullptr};
   TH2 *deltaz{nullptr};
-  TH2 *nElectronsVsMean{nullptr};
+  TH2 *nPrimaryClustersVsMean{nullptr};
+  TH2 *nIonizationElectronsVsPrimaryClusters{nullptr};
+  TH2 *ionizedElectronsDedxVsG4StepDedx{nullptr};
   TH2 *diffVsDrift{nullptr};
   TH2 *diffPerSqrtLVsDrift{nullptr};
   TH2 *diffDXVsDrift{nullptr};
@@ -198,6 +205,11 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   float m_stepqa_deiondx_kev_per_cm{0.F};
   float m_stepqa_mean_primary_clusters{0.F};
   int m_stepqa_n_primary_clusters{0};
+  float m_stepqa_avg_ionization_energy_kev_per_electron{0.F};
+  float m_stepqa_mean_ionization_electrons{0.F};
+  int m_stepqa_n_ionization_electrons{0};
+  float m_stepqa_ionized_electrons_edep_kev{0.F};
+  float m_stepqa_ionized_electrons_dedx_kev_per_cm{0.F};
   //@}
 
   int event_num{0};
@@ -211,9 +223,12 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   double added_smear_sigma_long = std::numeric_limits<double>::signaling_NaN();
   double drift_velocity = std::numeric_limits<double>::signaling_NaN();
   double tpc_length = std::numeric_limits<double>::signaling_NaN();
-  double electrons_per_gev = std::numeric_limits<double>::signaling_NaN();
+  double primary_clusters_per_gev = std::numeric_limits<double>::signaling_NaN();
   double primary_clusters_per_cm = std::numeric_limits<double>::signaling_NaN();
-  double fixed_primary_electrons_per_cm = -1.0;
+  double ionization_electrons_per_cm = std::numeric_limits<double>::signaling_NaN();
+  double ionization_electrons_per_gev = std::numeric_limits<double>::signaling_NaN();
+  double avg_ionization_energy_kev_per_electron = std::numeric_limits<double>::signaling_NaN();
+  double fixed_primary_clusters_per_cm = -1.0;
   double min_active_radius = std::numeric_limits<double>::signaling_NaN();
   double max_active_radius = std::numeric_limits<double>::signaling_NaN();
   double min_time = std::numeric_limits<double>::signaling_NaN();
@@ -266,6 +281,7 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   std::vector<double> cluster_size_cdf;
   bool m_enable_cluster_size_fluctuations{false};
   std::string m_qa_output_file{"ElectronDriftQA.root"};
+  std::string m_step_qa_output_file;
   std::string m_avg_output_file{"avgXResidual.root"};
   bool m_qa_write_only_with_secondaries{false};
   bool m_seen_event_with_secondaries{false};
@@ -282,6 +298,7 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   std::unique_ptr<PHG4TpcDistortion> m_distortionMap;
   std::unique_ptr<TFile> m_outf;
   std::unique_ptr<TFile> EDrift_outf;
+  std::unique_ptr<TFile> m_stepQAOutf;
   std::unique_ptr<TFile> m_avgOutf;
 
   std::string detector;
