@@ -50,12 +50,16 @@
 
 #include <CLHEP/Random/Random.h>
 
+#include <algorithm>
+
 #include <G4HadronicParameters.hh>  // for G4HadronicParameters
 #include <Geant4/G4Cerenkov.hh>
 #include <Geant4/G4Element.hh>       // for G4Element
+#include <Geant4/G4EmParameters.hh>
 #include <Geant4/G4EventManager.hh>  // for G4EventManager
 #include <Geant4/G4HadronicProcessStore.hh>
 #include <Geant4/G4IonisParamMat.hh>  // for G4IonisParamMat
+#include <Geant4/G4LogicalVolume.hh>
 #include <Geant4/G4LossTableManager.hh>
 #include <Geant4/G4Material.hh>
 #include <Geant4/G4NistManager.hh>
@@ -69,6 +73,10 @@
 #include <Geant4/G4ParticleTable.hh>
 #include <Geant4/G4PhotoElectricEffect.hh>  // for G4PhotoElectricEffect
 #include <Geant4/G4ProcessManager.hh>
+#include <Geant4/G4ProductionCuts.hh>
+#include <Geant4/G4ProductionCutsTable.hh>
+#include <Geant4/G4Region.hh>
+#include <Geant4/G4RegionStore.hh>
 #include <Geant4/G4RunManager.hh>
 #include <Geant4/G4Scintillation.hh>
 #include <Geant4/G4StepLimiterPhysics.hh>
@@ -251,6 +259,16 @@ int PHG4Reco::Init(PHCompositeNode *topNode)
   }
 
   myphysicslist->RegisterPhysics(new G4StepLimiterPhysics());
+  if (m_EnableTpcPaiModel)
+  {
+    G4ProductionCutsTable::GetProductionCutsTable()->SetEnergyRange(
+        m_TpcPaiLowEnergyEV * eV,
+        m_TpcPaiHighEnergyEV * eV);
+    if (m_TpcPaiLowestElectronEnergyEV > 0.0)
+    {
+      G4EmParameters::Instance()->SetLowestElectronEnergy(m_TpcPaiLowestElectronEnergyEV * eV);
+    }
+  }
   // initialize cuts so we can ask the world region for it's default
   // cuts to propagate them to other regions in DefineRegions()
   myphysicslist->SetCutsWithDefault();
@@ -487,6 +505,10 @@ int PHG4Reco::InitRun(PHCompositeNode *topNode)
 
   // initialize
   m_RunManager->Initialize();
+  if (m_EnableTpcPaiModel && m_TpcPaiPrintDiagnostics)
+  {
+    PrintTpcPaiDiagnostics("after G4RunManager::Initialize");
+  }
 
 #if G4VERSION_NUMBER >= 1033
   G4EmSaturation *emSaturation = G4LossTableManager::Instance()->EmSaturation();
@@ -1029,21 +1051,134 @@ PMMA      -3  12.01 1.008 15.99  6.  1.  8.  1.19  3.6  5.7  1.4
 
 void PHG4Reco::DefineRegions()
 {
-  // the PAI model does not work anymore in G4 10.06
-  //   const G4RegionStore *theRegionStore = G4RegionStore::GetInstance();
-  //   G4ProductionCuts *gcuts = new G4ProductionCuts(*(theRegionStore->GetRegion("DefaultRegionForTheWorld")->GetProductionCuts()));
-  //   G4Region *tpcregion = new G4Region("REGION_TPCGAS");
-  //   tpcregion->SetProductionCuts(gcuts);
-  // #if G4VERSION_NUMBER >= 1033
-  //   // Use this from the new G4 version 10.03 on
-  //   // was commented out, crashes in 10.06 I think
-  //   // add the PAI model to the TPCGAS region
-  //   // undocumented, painfully digged out with debugger by tracing what
-  //   // is done for command "/process/em/AddPAIRegion all TPCGAS PAI"
-  // //  G4EmParameters *g4emparams = G4EmParameters::Instance();
-  // //  g4emparams->AddPAIModel("all", "REGION_TPCGAS", "PAI");
-  // #endif
+#if G4VERSION_NUMBER >= 1033
+  G4RegionStore *theRegionStore = G4RegionStore::GetInstance();
+  G4Region *tpcregion = theRegionStore->GetRegion("REGION_TPCGAS", false);
+  if (!tpcregion)
+  {
+    tpcregion = new G4Region("REGION_TPCGAS");
+  }
+
+  if (m_EnableTpcPaiModel)
+  {
+    G4ProductionCuts *cuts = tpcregion->GetProductionCuts();
+    if (!cuts)
+    {
+      cuts = new G4ProductionCuts();
+      tpcregion->SetProductionCuts(cuts);
+    }
+
+    const G4double cut = std::max(0.0, m_TpcPaiProductionCutCm) * cm;
+    cuts->SetProductionCut(cut, "gamma");
+    cuts->SetProductionCut(cut, "e-");
+    cuts->SetProductionCut(cut, "e+");
+
+    ConfigureTpcPaiModels();
+  }
+#endif
   return;
+}
+
+void PHG4Reco::ConfigureTpcPaiModels()
+{
+#if G4VERSION_NUMBER >= 1033
+  static constexpr const char *region = "REGION_TPCGAS";
+  const G4String pai_model = m_TpcPaiUsePhotonModel ? "pai_photon" : "pai";
+  G4EmParameters::Instance()->AddPAIModel("all", region, pai_model);
+
+  if (Verbosity() > 0)
+  {
+    std::cout << "PHG4Reco::ConfigureTpcPaiModels - registered "
+              << pai_model
+              << " for " << region
+              << " with production cut " << m_TpcPaiProductionCutCm << " cm"
+              << " and energy range [" << m_TpcPaiLowEnergyEV << ", " << m_TpcPaiHighEnergyEV
+              << "] eV" << std::endl;
+  }
+  if (m_TpcPaiPrintDiagnostics)
+  {
+    PrintTpcPaiDiagnostics("after AddPAIModel");
+  }
+#endif
+}
+
+void PHG4Reco::PrintTpcPaiDiagnostics(const std::string &where) const
+{
+#if G4VERSION_NUMBER >= 1033
+  if (!m_EnableTpcPaiModel)
+  {
+    return;
+  }
+
+  auto *em_parameters = G4EmParameters::Instance();
+  std::cout << "PHG4Reco::TpcPaiDiagnostics [" << where << "]"
+            << " model=" << (m_TpcPaiUsePhotonModel ? "pai_photon" : "pai")
+            << " production_cut_cm=" << m_TpcPaiProductionCutCm
+            << " cut_table_energy_range_eV=[" << m_TpcPaiLowEnergyEV << ", " << m_TpcPaiHighEnergyEV << "]"
+            << " requested_lowest_electron_energy_eV=" << m_TpcPaiLowestElectronEnergyEV
+            << " active_lowest_electron_energy_eV=" << em_parameters->LowestElectronEnergy() / eV
+            << std::endl;
+
+  const auto &pai_particles = em_parameters->ParticlesPAI();
+  const auto &pai_regions = em_parameters->RegionsPAI();
+  const auto &pai_types = em_parameters->TypesPAI();
+  std::cout << "PHG4Reco::TpcPaiDiagnostics [" << where << "] registered PAI entries:";
+  if (pai_particles.empty())
+  {
+    std::cout << " <none>";
+  }
+  for (std::size_t i = 0; i < pai_particles.size(); ++i)
+  {
+    std::cout << " (" << pai_particles[i] << ","
+              << (i < pai_regions.size() ? pai_regions[i] : G4String("<missing-region>")) << ","
+              << (i < pai_types.size() ? pai_types[i] : G4String("<missing-type>")) << ")";
+  }
+  std::cout << std::endl;
+
+  G4Region *tpcregion = G4RegionStore::GetInstance()->GetRegion("REGION_TPCGAS", false);
+  if (!tpcregion)
+  {
+    std::cout << "PHG4Reco::TpcPaiDiagnostics [" << where << "] REGION_TPCGAS is not present" << std::endl;
+    return;
+  }
+
+  std::cout << "PHG4Reco::TpcPaiDiagnostics [" << where << "] region=" << tpcregion->GetName()
+            << " root_volumes=" << tpcregion->GetNumberOfRootVolumes()
+            << " materials=" << tpcregion->GetNumberOfMaterials()
+            << std::endl;
+
+  auto root_volume = tpcregion->GetRootLogicalVolumeIterator();
+  for (std::size_t i = 0; i < tpcregion->GetNumberOfRootVolumes(); ++i, ++root_volume)
+  {
+    const G4LogicalVolume *logical_volume = *root_volume;
+    if (!logical_volume)
+    {
+      continue;
+    }
+    const G4Region *logical_region = logical_volume->GetRegion();
+    const G4Material *material = logical_volume->GetMaterial();
+    std::cout << "PHG4Reco::TpcPaiDiagnostics [" << where << "] root_volume[" << i << "]="
+              << logical_volume->GetName()
+              << " material=" << (material ? material->GetName() : G4String("<none>"))
+              << " logical_region=" << (logical_region ? logical_region->GetName() : G4String("<none>"))
+              << std::endl;
+  }
+
+  G4ProductionCuts *cuts = tpcregion->GetProductionCuts();
+  if (!cuts)
+  {
+    std::cout << "PHG4Reco::TpcPaiDiagnostics [" << where << "] production cuts: <none>" << std::endl;
+    return;
+  }
+
+  std::cout << "PHG4Reco::TpcPaiDiagnostics [" << where << "] production_cuts_cm"
+            << " gamma=" << cuts->GetProductionCut("gamma") / cm
+            << " e-=" << cuts->GetProductionCut("e-") / cm
+            << " e+=" << cuts->GetProductionCut("e+") / cm
+            << std::endl;
+#else
+  (void) where;
+#endif
 }
 
 PHG4Subsystem *

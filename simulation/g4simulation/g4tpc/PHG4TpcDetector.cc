@@ -28,7 +28,10 @@
 #include <Geant4/G4LogicalVolume.hh>
 #include <Geant4/G4Material.hh>
 #include <Geant4/G4NistManager.hh>
+#include <Geant4/G4ProductionCuts.hh>
 #include <Geant4/G4PVPlacement.hh>
+#include <Geant4/G4Region.hh>
+#include <Geant4/G4RegionStore.hh>
 #include <Geant4/G4String.hh>  // for G4String
 #include <Geant4/G4SystemOfUnits.hh>
 #include <Geant4/G4ThreeVector.hh>  // for G4ThreeVector
@@ -103,6 +106,18 @@ void PHG4TpcDetector::ConstructMe(G4LogicalVolume *logicWorld)
   if (std::isfinite(steplimits) && steplimits > 0)
   {
     m_G4UserLimits = new G4UserLimits(steplimits);
+  }
+  if (m_Params->get_int_param("enable_pai_cluster_seeds") != 0)
+  {
+    const double user_min_ekine_eV = m_Params->get_double_param("pai_user_min_ekine_eV");
+    if (std::isfinite(user_min_ekine_eV) && user_min_ekine_eV > 0.0)
+    {
+      if (!m_G4UserLimits)
+      {
+        m_G4UserLimits = new G4UserLimits();
+      }
+      m_G4UserLimits->SetUserMinEkine(user_min_ekine_eV * eV);
+    }
   }
 
   G4VSolid *tpc_envelope = new G4Tubs("tpc_envelope", m_InnerCageRadius, m_OuterCageRadius, m_Params->get_double_param("tpc_length") * cm / 2., 0., 2 * M_PI);
@@ -281,10 +296,37 @@ int PHG4TpcDetector::ConstructTpcGasVolume(G4LogicalVolume *tpc_envelope)
   m_ActiveVolumeSet.insert(tpc_gas_phys);
 
 #if G4VERSION_NUMBER >= 1033
-  const G4RegionStore *theRegionStore = G4RegionStore::GetInstance();
-  G4Region *tpcregion = theRegionStore->GetRegion("REGION_TPCGAS");
+  G4RegionStore *theRegionStore = G4RegionStore::GetInstance();
+  G4Region *tpcregion = theRegionStore->GetRegion("REGION_TPCGAS", false);
+  if (!tpcregion)
+  {
+    tpcregion = new G4Region("REGION_TPCGAS");
+  }
   tpc_gas_logic->SetRegion(tpcregion);
   tpcregion->AddRootLogicalVolume(tpc_gas_logic);
+
+  if (m_Params->get_int_param("enable_pai_cluster_seeds") != 0 &&
+      m_Params->get_int_param("pai_print_diagnostics") != 0)
+  {
+    const G4Region *logical_region = tpc_gas_logic->GetRegion();
+    const G4Material *material = tpc_gas_logic->GetMaterial();
+    std::cout << "PHG4TpcDetector::ConstructTpcGasVolume - PAI diagnostics:"
+              << " logical_volume=" << tpc_gas_logic->GetName()
+              << " material=" << (material ? material->GetName() : G4String("<none>"))
+              << " region=" << (logical_region ? logical_region->GetName() : G4String("<none>"))
+              << " requested_user_min_ekine_eV=" << m_Params->get_double_param("pai_user_min_ekine_eV")
+              << std::endl;
+    if (tpcregion && tpcregion->GetProductionCuts())
+    {
+      G4ProductionCuts *cuts = tpcregion->GetProductionCuts();
+      std::cout << "PHG4TpcDetector::ConstructTpcGasVolume - PAI diagnostics:"
+                << " production_cuts_cm"
+                << " gamma=" << cuts->GetProductionCut("gamma") / cm
+                << " e-=" << cuts->GetProductionCut("e-") / cm
+                << " e+=" << cuts->GetProductionCut("e+") / cm
+                << std::endl;
+    }
+  }
 #endif
   return 0;
 }

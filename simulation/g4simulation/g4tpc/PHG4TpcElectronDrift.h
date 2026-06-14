@@ -96,8 +96,16 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   void set_enable_cluster_size_fluctuations(bool b) { m_enable_cluster_size_fluctuations = b; }
   // Backward-compatible alias; use set_enable_cluster_size_fluctuations instead.
   void set_enable_laser_clustering(bool b) { set_enable_cluster_size_fluctuations(b); }
+  void set_use_pai_cluster_seeds(bool b)
+  {
+    m_use_pai_cluster_seeds = b;
+    set_int_param("use_pai_cluster_seeds", b ? 1 : 0);
+  }
+  void set_pai_cluster_node_name(const std::string &name) { m_pai_cluster_node_name = name; }
   void set_qa_output_file(const std::string &f) { m_qa_output_file = f; }
   void set_step_qa_output_file(const std::string &f) { m_step_qa_output_file = f; }
+  void set_ionization_qa_output_file(const std::string &f) { m_ionization_qa_output_file = f; }
+  void set_write_legacy_qa_histograms(bool b) { m_write_legacy_qa_histograms = b; }
   void set_qa_write_only_with_secondaries(bool b) { m_qa_write_only_with_secondaries = b; }
   void set_avg_output_file(const std::string &f) { m_avg_output_file = f; }
   void set_do_ElectronDriftQAHistos(bool b) { do_ElectronDriftQAHistos = b; }
@@ -192,6 +200,9 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   TH2 *diffDYPerSqrtLVsDrift{nullptr};
   TTree *driftXY{nullptr};
   TTree *driftStepQA{nullptr};
+  TTree *ionizationEventQA{nullptr};
+  TTree *ionizationClusterQA{nullptr};
+  TTree *ionizationSegmentQA{nullptr};
   float m_drift_start_x{0.F};
   float m_drift_start_y{0.F};
   float m_drift_end_x{0.F};
@@ -210,6 +221,36 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   int m_stepqa_n_ionization_electrons{0};
   float m_stepqa_ionized_electrons_edep_kev{0.F};
   float m_stepqa_ionized_electrons_dedx_kev_per_cm{0.F};
+  int m_eventqa_event{0};
+  int m_eventqa_use_pai_cluster_seeds{0};
+  int m_eventqa_source_hits{0};
+  float m_eventqa_path_length_cm{0.F};
+  int m_eventqa_n_primary_clusters{0};
+  int m_eventqa_n_ionization_electrons{0};
+  float m_eventqa_primary_clusters_per_cm{0.F};
+  float m_eventqa_ionization_electrons_per_cm{0.F};
+  int m_clusterqa_event{0};
+  int m_clusterqa_use_pai_cluster_seeds{0};
+  int m_clusterqa_track_id{0};
+  int m_clusterqa_g4hit_id{0};
+  int m_clusterqa_cluster_index{0};
+  int m_clusterqa_segment_index{0};
+  int m_clusterqa_cluster_size{0};
+  float m_clusterqa_track_path_cm{0.F};
+  float m_clusterqa_x_cm{0.F};
+  float m_clusterqa_y_cm{0.F};
+  float m_clusterqa_z_cm{0.F};
+  float m_clusterqa_t_ns{0.F};
+  int m_segmentqa_event{0};
+  int m_segmentqa_use_pai_cluster_seeds{0};
+  int m_segmentqa_track_id{0};
+  int m_segmentqa_segment_index{0};
+  int m_segmentqa_n_primary_clusters{0};
+  int m_segmentqa_n_ionization_electrons{0};
+  float m_segmentqa_segment_start_cm{0.F};
+  float m_segmentqa_segment_length_cm{0.F};
+  float m_segmentqa_primary_clusters_per_cm{0.F};
+  float m_segmentqa_ionization_electrons_per_cm{0.F};
   //@}
 
   int event_num{0};
@@ -280,10 +321,14 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   bool m_uniform_density_test{false};
   std::vector<double> cluster_size_cdf;
   bool m_enable_cluster_size_fluctuations{false};
+  bool m_use_pai_cluster_seeds{false};
+  std::string m_pai_cluster_node_name{"G4HIT_TPC_PAI_CLUSTER"};
   std::string m_qa_output_file{"ElectronDriftQA.root"};
   std::string m_step_qa_output_file;
+  std::string m_ionization_qa_output_file;
   std::string m_avg_output_file{"avgXResidual.root"};
   bool m_qa_write_only_with_secondaries{false};
+  bool m_write_legacy_qa_histograms{true};
   bool m_seen_event_with_secondaries{false};
 
   bool record_ClusHitsVerbose{false};
@@ -299,6 +344,7 @@ class PHG4TpcElectronDrift : public SubsysReco, public PHParameterInterface
   std::unique_ptr<TFile> m_outf;
   std::unique_ptr<TFile> EDrift_outf;
   std::unique_ptr<TFile> m_stepQAOutf;
+  std::unique_ptr<TFile> m_ionizationQAOutf;
   std::unique_ptr<TFile> m_avgOutf;
 
   std::string detector;

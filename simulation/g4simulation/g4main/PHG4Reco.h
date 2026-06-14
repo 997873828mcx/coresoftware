@@ -124,6 +124,28 @@ class PHG4Reco : public SubsysReco
   void SetWorldMaterial(const std::string &s) { m_WorldMaterial = s; }
   void SetPhysicsList(const std::string &s) { m_PhysicsList = s; }
   void set_rapidity_coverage(const double eta);
+  void set_tpc_pai_model(const bool enable, const bool use_photon_model = false)
+  {
+    m_EnableTpcPaiModel = enable;
+    m_TpcPaiUsePhotonModel = use_photon_model;
+  }
+  void set_tpc_pai_production_cut_cm(const double cut_cm)
+  {
+    m_TpcPaiProductionCutCm = cut_cm;
+  }
+  void set_tpc_pai_energy_range_eV(const double low_eV, const double high_eV)
+  {
+    m_TpcPaiLowEnergyEV = low_eV;
+    m_TpcPaiHighEnergyEV = high_eV;
+  }
+  void set_tpc_pai_lowest_electron_energy_eV(const double energy_eV)
+  {
+    m_TpcPaiLowestElectronEnergyEV = energy_eV;
+  }
+  void set_tpc_pai_diagnostics(const bool enable)
+  {
+    m_TpcPaiPrintDiagnostics = enable;
+  }
 
   int setupInputEventNodeReader(PHCompositeNode *);
 
@@ -151,6 +173,8 @@ class PHG4Reco : public SubsysReco
   int InitUImanager();
   void DefineMaterials();
   void DefineRegions();
+  void ConfigureTpcPaiModels();
+  void PrintTpcPaiDiagnostics(const std::string &where) const;
 
   float m_MagneticField{std::numeric_limits<float>::signaling_NaN()};
   float m_MagneticFieldRescale = 1.0;
@@ -220,6 +244,13 @@ class PHG4Reco : public SubsysReco
 
   bool m_SaveDstGeometryFlag = true;
   bool m_disableUserActions = false;
+  bool m_EnableTpcPaiModel = false;
+  bool m_TpcPaiUsePhotonModel = false;
+  bool m_TpcPaiPrintDiagnostics = false;
+  double m_TpcPaiProductionCutCm = 1e-7;
+  double m_TpcPaiLowEnergyEV = 10.0;
+  double m_TpcPaiHighEnergyEV = 1.0e14;
+  double m_TpcPaiLowestElectronEnergyEV = 31.5;
 };
 
 #endif

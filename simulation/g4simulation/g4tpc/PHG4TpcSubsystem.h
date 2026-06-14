@@ -10,6 +10,7 @@
 class PHCompositeNode;
 class PHG4Detector;
 class PHG4DisplayAction;
+class PHG4StackingAction;
 class PHG4SteppingAction;
 class PHG4TpcDetector;
 
@@ -45,6 +46,8 @@ class PHG4TpcSubsystem : public PHG4DetectorSubsystem
 
   PHG4SteppingAction *GetSteppingAction(void) const override { return m_SteppingAction; }
 
+  PHG4StackingAction *GetStackingAction(void) const override { return m_StackingAction; }
+
   PHG4DisplayAction *GetDisplayAction() const override { return m_DisplayAction; }
 
  private:
@@ -57,6 +60,10 @@ class PHG4TpcSubsystem : public PHG4DetectorSubsystem
   //! detector "stepping" action, executes after every G4 step
   /*! derives from PHG4SteppingAction */
   PHG4SteppingAction *m_SteppingAction{nullptr};
+
+  //! detector "stacking" action, executes when G4 creates a new track
+  /*! derives from PHG4StackingAction */
+  PHG4StackingAction *m_StackingAction{nullptr};
 
   //! display attribute setting
   /*! derives from PHG4DisplayAction */

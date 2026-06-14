@@ -15,9 +15,11 @@ AM_CPPFLAGS = \
 
 AM_LDFLAGS = \
   -L$(libdir) \
-  -L$(OFFLINE_MAIN)/lib
+  -L$(OFFLINE_MAIN)/lib \
+  -L$(OFFLINE_MAIN)/lib64
 
 libg4tpc_la_LIBADD = \
+  -lActsCore \
   -lphool \
   -lcdbobjects \
   -lg4detectors \
@@ -39,7 +41,10 @@ pkginclude_HEADERS = \
   PHG4TpcPadBaselineShift.h \
   PHG4TpcPadPlane.h \
   PHG4TpcPadPlaneReadout.h \
-  PHG4TpcSubsystem.h
+  PHG4TpcPaiStackingAction.h \
+  PHG4TpcSubsystem.h \
+  PHG4TpcTruthPointBuilder.h \
+  PHG4TpcTruthPointTree.h
 
 libg4tpc_la_SOURCES = \
   PHG4TpcCentralMembrane.cc \
@@ -57,8 +62,11 @@ libg4tpc_la_SOURCES = \
   PHG4TpcPadBaselineShift.cc \
   PHG4TpcPadPlane.cc \
   PHG4TpcPadPlaneReadout.cc \
+  PHG4TpcPaiStackingAction.cc \
   PHG4TpcSteppingAction.cc \
-  PHG4TpcSubsystem.cc
+  PHG4TpcSubsystem.cc \
+  PHG4TpcTruthPointBuilder.cc \
+  PHG4TpcTruthPointTree.cc
 
 ################################################
 # linking tests

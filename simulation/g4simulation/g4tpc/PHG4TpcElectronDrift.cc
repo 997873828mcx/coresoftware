@@ -249,6 +249,7 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
   m_density_bin_width_cm = get_double_param("density_bin_width_cm");
   m_density_window_cm = get_double_param("density_window_cm");
   m_uniform_density_test = (get_int_param("uniform_density_test") != 0);
+  m_use_pai_cluster_seeds = (get_int_param("use_pai_cluster_seeds") != 0);
   fixed_primary_clusters_per_cm = get_double_param("fixed_primary_clusters_per_cm");
   if (fixed_primary_clusters_per_cm <= 0.0)
   {
@@ -683,6 +684,41 @@ int PHG4TpcElectronDrift::InitRun(PHCompositeNode *topNode)
     driftStepQA->Branch("n_ionization_electrons", &m_stepqa_n_ionization_electrons, "n_ionization_electrons/I");
     driftStepQA->Branch("ionized_electrons_edep_kev", &m_stepqa_ionized_electrons_edep_kev, "ionized_electrons_edep_kev/F");
     driftStepQA->Branch("ionized_electrons_dedx_kev_per_cm", &m_stepqa_ionized_electrons_dedx_kev_per_cm, "ionized_electrons_dedx_kev_per_cm/F");
+    ionizationEventQA = new TTree("ionizationEventQA", "Event-level primary-ionization QA");
+    ionizationEventQA->Branch("event", &m_eventqa_event, "event/I");
+    ionizationEventQA->Branch("use_pai_cluster_seeds", &m_eventqa_use_pai_cluster_seeds, "use_pai_cluster_seeds/I");
+    ionizationEventQA->Branch("source_hits", &m_eventqa_source_hits, "source_hits/I");
+    ionizationEventQA->Branch("path_length_cm", &m_eventqa_path_length_cm, "path_length_cm/F");
+    ionizationEventQA->Branch("n_primary_clusters", &m_eventqa_n_primary_clusters, "n_primary_clusters/I");
+    ionizationEventQA->Branch("n_ionization_electrons", &m_eventqa_n_ionization_electrons, "n_ionization_electrons/I");
+    ionizationEventQA->Branch("primary_clusters_per_cm", &m_eventqa_primary_clusters_per_cm, "primary_clusters_per_cm/F");
+    ionizationEventQA->Branch("ionization_electrons_per_cm", &m_eventqa_ionization_electrons_per_cm, "ionization_electrons_per_cm/F");
+
+    ionizationClusterQA = new TTree("ionizationClusterQA", "Primary-ionization cluster QA");
+    ionizationClusterQA->Branch("event", &m_clusterqa_event, "event/I");
+    ionizationClusterQA->Branch("use_pai_cluster_seeds", &m_clusterqa_use_pai_cluster_seeds, "use_pai_cluster_seeds/I");
+    ionizationClusterQA->Branch("track_id", &m_clusterqa_track_id, "track_id/I");
+    ionizationClusterQA->Branch("g4hit_id", &m_clusterqa_g4hit_id, "g4hit_id/I");
+    ionizationClusterQA->Branch("cluster_index", &m_clusterqa_cluster_index, "cluster_index/I");
+    ionizationClusterQA->Branch("segment_index", &m_clusterqa_segment_index, "segment_index/I");
+    ionizationClusterQA->Branch("cluster_size", &m_clusterqa_cluster_size, "cluster_size/I");
+    ionizationClusterQA->Branch("track_path_cm", &m_clusterqa_track_path_cm, "track_path_cm/F");
+    ionizationClusterQA->Branch("x_cm", &m_clusterqa_x_cm, "x_cm/F");
+    ionizationClusterQA->Branch("y_cm", &m_clusterqa_y_cm, "y_cm/F");
+    ionizationClusterQA->Branch("z_cm", &m_clusterqa_z_cm, "z_cm/F");
+    ionizationClusterQA->Branch("t_ns", &m_clusterqa_t_ns, "t_ns/F");
+
+    ionizationSegmentQA = new TTree("ionizationSegmentQA", "One-centimeter primary-ionization segment QA");
+    ionizationSegmentQA->Branch("event", &m_segmentqa_event, "event/I");
+    ionizationSegmentQA->Branch("use_pai_cluster_seeds", &m_segmentqa_use_pai_cluster_seeds, "use_pai_cluster_seeds/I");
+    ionizationSegmentQA->Branch("track_id", &m_segmentqa_track_id, "track_id/I");
+    ionizationSegmentQA->Branch("segment_index", &m_segmentqa_segment_index, "segment_index/I");
+    ionizationSegmentQA->Branch("segment_start_cm", &m_segmentqa_segment_start_cm, "segment_start_cm/F");
+    ionizationSegmentQA->Branch("segment_length_cm", &m_segmentqa_segment_length_cm, "segment_length_cm/F");
+    ionizationSegmentQA->Branch("n_primary_clusters", &m_segmentqa_n_primary_clusters, "n_primary_clusters/I");
+    ionizationSegmentQA->Branch("n_ionization_electrons", &m_segmentqa_n_ionization_electrons, "n_ionization_electrons/I");
+    ionizationSegmentQA->Branch("primary_clusters_per_cm", &m_segmentqa_primary_clusters_per_cm, "primary_clusters_per_cm/F");
+    ionizationSegmentQA->Branch("ionization_electrons_per_cm", &m_segmentqa_ionization_electrons_per_cm, "ionization_electrons_per_cm/F");
   }
 
   if (m_avg_x_enabled)
@@ -811,9 +847,22 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
     std::cout << "Could not locate g4 hit node " << hitnodename << std::endl;
     gSystem->Exit(1);
   }
+  PHG4HitContainer *pai_cluster_hits = nullptr;
+  if (m_use_pai_cluster_seeds)
+  {
+    pai_cluster_hits = findNode::getClass<PHG4HitContainer>(topNode, m_pai_cluster_node_name);
+    if (!pai_cluster_hits)
+    {
+      std::cout << Name() << " requested PAI cluster seeds, but could not locate node "
+                << m_pai_cluster_node_name << std::endl;
+      return Fun4AllReturnCodes::ABORTRUN;
+    }
+  }
   PHG4TruthInfoContainer *truthinfo =
       findNode::getClass<PHG4TruthInfoContainer>(topNode, "G4TruthInfo");
-  PHG4HitContainer::ConstRange hit_begin_end = g4hit->getHits();
+  PHG4HitContainer *drift_source_hits = m_use_pai_cluster_seeds ? pai_cluster_hits : g4hit;
+  PHG4HitContainer::ConstRange hit_begin_end = drift_source_hits->getHits();
+  const std::size_t drift_source_size = drift_source_hits->size();
   bool event_has_tpc_secondaries = false;
   auto is_secondary_track = [&](const int track_id) -> bool
   {
@@ -835,6 +884,11 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
 
   if (m_qa_write_only_with_secondaries)
   {
+    if (m_use_pai_cluster_seeds && drift_source_size > 0)
+    {
+      event_has_tpc_secondaries = true;
+      m_seen_event_with_secondaries = true;
+    }
     for (auto hiter = hit_begin_end.first; hiter != hit_begin_end.second; ++hiter)
     {
       if (is_secondary_track(hiter->second->get_trkid()))
@@ -848,6 +902,182 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
   const bool fill_qa_hists_this_event =
       do_ElectronDriftQAHistos &&
       (!m_qa_write_only_with_secondaries || event_has_tpc_secondaries);
+
+  struct OriginalTrackPathSegment
+  {
+    double track_path_start_cm{0.0};
+    double length_cm{0.0};
+    double x0{0.0};
+    double y0{0.0};
+    double z0{0.0};
+    double dx{0.0};
+    double dy{0.0};
+    double dz{0.0};
+  };
+
+  struct IonizationSegmentAccumulator
+  {
+    double segment_start_cm{0.0};
+    double segment_length_cm{0.0};
+    int n_primary_clusters{0};
+    int n_ionization_electrons{0};
+  };
+
+  static constexpr double ionization_qa_segment_length_cm = 1.0;
+  std::unordered_map<int, std::vector<OriginalTrackPathSegment>> original_track_path_segments;
+  std::unordered_map<int, double> original_track_path_lengths;
+  std::map<std::pair<int, int>, IonizationSegmentAccumulator> ionization_segment_accumulators;
+
+  auto clamp_track_path_cm = [&](const int track_id, double track_path_cm) -> double
+  {
+    auto length_iter = original_track_path_lengths.find(track_id);
+    if (length_iter != original_track_path_lengths.end() && length_iter->second > 0.0)
+    {
+      track_path_cm = std::clamp(track_path_cm, 0.0, length_iter->second);
+      if (track_path_cm >= length_iter->second)
+      {
+        track_path_cm = std::nextafter(length_iter->second, 0.0);
+      }
+    }
+    return track_path_cm;
+  };
+
+  auto add_segment_length = [&](const int track_id, const double track_path_start_cm, const double length_cm)
+  {
+    if (length_cm <= 0.0)
+    {
+      return;
+    }
+
+    double cursor = track_path_start_cm;
+    double remaining = length_cm;
+    while (remaining > 1e-9)
+    {
+      const int segment_index = static_cast<int>(std::floor(cursor / ionization_qa_segment_length_cm));
+      const double segment_start_cm = segment_index * ionization_qa_segment_length_cm;
+      const double segment_end_cm = segment_start_cm + ionization_qa_segment_length_cm;
+      const double step = std::min(remaining, segment_end_cm - cursor);
+      if (step <= 0.0)
+      {
+        break;
+      }
+
+      auto &segment = ionization_segment_accumulators[std::make_pair(track_id, segment_index)];
+      segment.segment_start_cm = segment_start_cm;
+      segment.segment_length_cm += step;
+
+      cursor += step;
+      remaining -= step;
+    }
+  };
+
+  auto path_from_position = [&](const int track_id, const PHG4Hit *hit, const double fallback_track_path_cm) -> double
+  {
+    auto segment_iter = original_track_path_segments.find(track_id);
+    if (segment_iter == original_track_path_segments.end() || segment_iter->second.empty())
+    {
+      return clamp_track_path_cm(track_id, fallback_track_path_cm);
+    }
+
+    const double x = hit->get_x(0);
+    const double y = hit->get_y(0);
+    const double z = hit->get_z(0);
+    double best_distance2 = std::numeric_limits<double>::max();
+    double best_track_path_cm = fallback_track_path_cm;
+
+    for (const auto &segment : segment_iter->second)
+    {
+      if (segment.length_cm <= 0.0)
+      {
+        continue;
+      }
+
+      const double length2 = segment.length_cm * segment.length_cm;
+      double f = ((x - segment.x0) * segment.dx + (y - segment.y0) * segment.dy + (z - segment.z0) * segment.dz) / length2;
+      f = std::clamp(f, 0.0, 1.0);
+
+      const double x_projected = segment.x0 + f * segment.dx;
+      const double y_projected = segment.y0 + f * segment.dy;
+      const double z_projected = segment.z0 + f * segment.dz;
+      const double distance2 = square(x - x_projected) + square(y - y_projected) + square(z - z_projected);
+      if (distance2 < best_distance2)
+      {
+        best_distance2 = distance2;
+        best_track_path_cm = segment.track_path_start_cm + f * segment.length_cm;
+      }
+    }
+
+    return clamp_track_path_cm(track_id, best_track_path_cm);
+  };
+
+  auto add_cluster_to_segment = [&](const int track_id, const double track_path_cm, const int cluster_size) -> int
+  {
+    if (!fill_qa_hists_this_event || !std::isfinite(track_path_cm) || track_path_cm < 0.0 || cluster_size <= 0)
+    {
+      return -1;
+    }
+
+    const double clamped_track_path_cm = clamp_track_path_cm(track_id, track_path_cm);
+    const int segment_index = static_cast<int>(std::floor(clamped_track_path_cm / ionization_qa_segment_length_cm));
+    if (segment_index < 0)
+    {
+      return -1;
+    }
+
+    auto &segment = ionization_segment_accumulators[std::make_pair(track_id, segment_index)];
+    segment.segment_start_cm = segment_index * ionization_qa_segment_length_cm;
+    ++segment.n_primary_clusters;
+    segment.n_ionization_electrons += cluster_size;
+    return segment_index;
+  };
+
+  double event_path_length_cm = 0.0;
+  if (fill_qa_hists_this_event)
+  {
+    std::unordered_map<int, double> original_track_path_offsets;
+    PHG4HitContainer::ConstRange g4hit_begin_end = g4hit->getHits();
+    for (auto path_iter = g4hit_begin_end.first; path_iter != g4hit_begin_end.second; ++path_iter)
+    {
+      const double t0 = std::fmax(path_iter->second->get_t(0), path_iter->second->get_t(1));
+      if (t0 > max_time)
+      {
+        continue;
+      }
+      const double dx_hit = path_iter->second->get_x(1) - path_iter->second->get_x(0);
+      const double dy_hit = path_iter->second->get_y(1) - path_iter->second->get_y(0);
+      const double dz_hit = path_iter->second->get_z(1) - path_iter->second->get_z(0);
+      const double step_length = std::sqrt(square(dx_hit) + square(dy_hit) + square(dz_hit));
+      event_path_length_cm += step_length;
+
+      const int track_id = path_iter->second->get_trkid();
+      const double track_path_start_cm = original_track_path_offsets[track_id];
+      if (step_length > 0.0)
+      {
+        OriginalTrackPathSegment segment;
+        segment.track_path_start_cm = track_path_start_cm;
+        segment.length_cm = step_length;
+        segment.x0 = path_iter->second->get_x(0);
+        segment.y0 = path_iter->second->get_y(0);
+        segment.z0 = path_iter->second->get_z(0);
+        segment.dx = dx_hit;
+        segment.dy = dy_hit;
+        segment.dz = dz_hit;
+        original_track_path_segments[track_id].push_back(segment);
+        add_segment_length(track_id, track_path_start_cm, step_length);
+      }
+      original_track_path_offsets[track_id] = track_path_start_cm + step_length;
+      original_track_path_lengths[track_id] = track_path_start_cm + step_length;
+    }
+
+    m_eventqa_event = event_num;
+    m_eventqa_use_pai_cluster_seeds = m_use_pai_cluster_seeds ? 1 : 0;
+    m_eventqa_source_hits = static_cast<int>(drift_source_size);
+    m_eventqa_path_length_cm = static_cast<float>(event_path_length_cm);
+    m_eventqa_n_primary_clusters = 0;
+    m_eventqa_n_ionization_electrons = 0;
+    m_eventqa_primary_clusters_per_cm = std::numeric_limits<float>::quiet_NaN();
+    m_eventqa_ionization_electrons_per_cm = std::numeric_limits<float>::quiet_NaN();
+  }
 
   if (m_truth_intersection_hits)
   {
@@ -916,7 +1146,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
         std::cout << " New track : " << trkid << " is embed? : ";
       }
 
-      if (truthinfo->isEmbeded(trkid))
+      if (truthinfo && truthinfo->isEmbeded(trkid))
       {
         truth_track = truthtracks->getTruthTrack(trkid, truthinfo);
         truth_clusterer.b_collect_hits = true;
@@ -991,9 +1221,13 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
 
     const double eion = hiter->second->get_eion();
     const double edep = hiter->second->get_edep();
-    const double poisson_mean = (eion > 0.) ? std::max(0.0, primary_clusters_per_cm * step_length) : 0.0;
+    const double poisson_mean = (!m_use_pai_cluster_seeds && eion > 0.) ? std::max(0.0, primary_clusters_per_cm * step_length) : 0.0;
     unsigned int n_primary_clusters = 0;
-    if (m_uniform_density_test)
+    if (m_use_pai_cluster_seeds)
+    {
+      n_primary_clusters = (hiter->second->get_index_i() > 0) ? 1 : 0;
+    }
+    else if (m_uniform_density_test)
     {
       n_primary_clusters = (poisson_mean > 0.) ? static_cast<unsigned int>(std::lround(poisson_mean)) : 0;
     }
@@ -1242,8 +1476,8 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
     for (unsigned int i = 0; i < n_primary_clusters; i++)
     {
       // Sample cluster size
-      int cluster_size = 1;
-      if (m_enable_cluster_size_fluctuations)
+      int cluster_size = m_use_pai_cluster_seeds ? hiter->second->get_index_i() : 1;
+      if (!m_use_pai_cluster_seeds && m_enable_cluster_size_fluctuations)
       {
         double p = gsl_ran_flat(RandomGenerator.get(), 0.0, 1.0);
         auto it = std::lower_bound(cluster_size_cdf.begin(), cluster_size_cdf.end(), p);
@@ -1252,13 +1486,21 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
           cluster_size = std::distance(cluster_size_cdf.begin(), it);
         }
       }
+      if (cluster_size <= 0)
+      {
+        continue;
+      }
 
       // We choose the electron starting position at random from a flat
       // distribution along the path length the parameter t is the fraction of
       // the distance along the path betwen entry and exit points, it has
       // values between 0 and 1
       double f = gsl_ran_flat(RandomGenerator.get(), 0.0, 1.0);
-      if (m_uniform_density_test && n_primary_clusters > 0)
+      if (m_use_pai_cluster_seeds)
+      {
+        f = 0.0;
+      }
+      else if (m_uniform_density_test && n_primary_clusters > 0)
       {
         f = (static_cast<double>(i) + 0.5) / static_cast<double>(n_primary_clusters);
         if (f >= 1.0)
@@ -1267,14 +1509,54 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
         }
       }
 
+      const double cluster_x = m_use_pai_cluster_seeds
+                                   ? hiter->second->get_x(0)
+                                   : hiter->second->get_x(0) + f * (hiter->second->get_x(1) - hiter->second->get_x(0));
+      const double cluster_y = m_use_pai_cluster_seeds
+                                   ? hiter->second->get_y(0)
+                                   : hiter->second->get_y(0) + f * (hiter->second->get_y(1) - hiter->second->get_y(0));
+      const double cluster_z = m_use_pai_cluster_seeds
+                                   ? hiter->second->get_z(0)
+                                   : hiter->second->get_z(0) + f * (hiter->second->get_z(1) - hiter->second->get_z(0));
+      const double cluster_t = m_use_pai_cluster_seeds
+                                   ? hiter->second->get_t(0)
+                                   : hiter->second->get_t(0) + f * (hiter->second->get_t(1) - hiter->second->get_t(0));
+      const double fallback_track_path_cm = track_segment_start + f * step_length;
+      const double cluster_track_path_cm = m_use_pai_cluster_seeds
+                                               ? path_from_position(track_id, hiter->second, fallback_track_path_cm)
+                                               : clamp_track_path_cm(track_id, fallback_track_path_cm);
+      const int cluster_segment_index = add_cluster_to_segment(track_id, cluster_track_path_cm, cluster_size);
+
+      if (fill_qa_hists_this_event)
+      {
+        ++m_eventqa_n_primary_clusters;
+        m_eventqa_n_ionization_electrons += cluster_size;
+        if (ionizationClusterQA)
+        {
+          m_clusterqa_event = event_num;
+          m_clusterqa_use_pai_cluster_seeds = m_use_pai_cluster_seeds ? 1 : 0;
+          m_clusterqa_track_id = track_id;
+          m_clusterqa_g4hit_id = static_cast<int>(hiter->first);
+          m_clusterqa_cluster_index = static_cast<int>(i);
+          m_clusterqa_segment_index = cluster_segment_index;
+          m_clusterqa_cluster_size = cluster_size;
+          m_clusterqa_track_path_cm = static_cast<float>(cluster_track_path_cm);
+          m_clusterqa_x_cm = static_cast<float>(cluster_x);
+          m_clusterqa_y_cm = static_cast<float>(cluster_y);
+          m_clusterqa_z_cm = static_cast<float>(cluster_z);
+          m_clusterqa_t_ns = static_cast<float>(cluster_t);
+          ionizationClusterQA->Fill();
+        }
+      }
+
       // Loop over secondary electrons in the cluster
       for (int j = 0; j < cluster_size; ++j)
       {
         ++n_secondary_electrons;
-        const double x_start = hiter->second->get_x(0) + f * (hiter->second->get_x(1) - hiter->second->get_x(0));
-        const double y_start = hiter->second->get_y(0) + f * (hiter->second->get_y(1) - hiter->second->get_y(0));
-        const double z_start = hiter->second->get_z(0) + f * (hiter->second->get_z(1) - hiter->second->get_z(0));
-        const double t_start = hiter->second->get_t(0) + f * (hiter->second->get_t(1) - hiter->second->get_t(0));
+        const double x_start = cluster_x;
+        const double y_start = cluster_y;
+        const double z_start = cluster_z;
+        const double t_start = cluster_t;
         unsigned int side = 0;
         if (z_start > 0)
         {
@@ -1502,7 +1784,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
             const double delta_r = radstart - m_density_layer_radius;
             if (delta_r >= -m_density_hist_half_range && delta_r <= m_density_hist_half_range)
             {
-              const double s_global = track_segment_start + f * step_length;
+              const double s_global = cluster_track_path_cm;
               if (!m_track_anchor_set[track_id])
               {
                 m_track_anchor_set[track_id] = true;
@@ -1594,7 +1876,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
     // Dump the temp_hitsetcontainer to the node tree and reset it
     //    - after every "dump_interval" g4hits
     //    - if this is the last g4hit
-    if (dump_counter >= dump_interval || count_g4hits == g4hit->size())
+    if (dump_counter >= dump_interval || count_g4hits == drift_source_size)
     {
       // additional debug: entering dump/copy of temp_hitsetcontainer to node TRKR_HITSET
       if (Verbosity() > 50)
@@ -1613,7 +1895,7 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
         std::cout << "EDrift: entering dump: evt=" << evtseq_dbg
                   << " dump_counter=" << dump_counter
                   << " count_g4hits=" << count_g4hits
-                  << " g4hit_size=" << g4hit->size()
+                  << " g4hit_size=" << drift_source_size
                   << " temp_hitsets=" << ntemp
                   << std::endl;
       }
@@ -1934,6 +2216,39 @@ int PHG4TpcElectronDrift::process_event(PHCompositeNode *topNode)
     hittruthassoc->identify();
   }
 
+  if (fill_qa_hists_this_event && ionizationSegmentQA)
+  {
+    for (const auto &segment_iter : ionization_segment_accumulators)
+    {
+      const int track_id = segment_iter.first.first;
+      const int segment_index = segment_iter.first.second;
+      const auto &segment = segment_iter.second;
+      const double length_cm = segment.segment_length_cm;
+
+      m_segmentqa_event = event_num;
+      m_segmentqa_use_pai_cluster_seeds = m_use_pai_cluster_seeds ? 1 : 0;
+      m_segmentqa_track_id = track_id;
+      m_segmentqa_segment_index = segment_index;
+      m_segmentqa_segment_start_cm = static_cast<float>(segment.segment_start_cm);
+      m_segmentqa_segment_length_cm = static_cast<float>(length_cm);
+      m_segmentqa_n_primary_clusters = segment.n_primary_clusters;
+      m_segmentqa_n_ionization_electrons = segment.n_ionization_electrons;
+      m_segmentqa_primary_clusters_per_cm = (length_cm > 0.0) ? static_cast<float>(segment.n_primary_clusters / length_cm) : std::numeric_limits<float>::quiet_NaN();
+      m_segmentqa_ionization_electrons_per_cm = (length_cm > 0.0) ? static_cast<float>(segment.n_ionization_electrons / length_cm) : std::numeric_limits<float>::quiet_NaN();
+      ionizationSegmentQA->Fill();
+    }
+  }
+
+  if (fill_qa_hists_this_event && ionizationEventQA)
+  {
+    if (event_path_length_cm > 0.0)
+    {
+      m_eventqa_primary_clusters_per_cm = static_cast<float>(m_eventqa_n_primary_clusters / event_path_length_cm);
+      m_eventqa_ionization_electrons_per_cm = static_cast<float>(m_eventqa_n_ionization_electrons / event_path_length_cm);
+    }
+    ionizationEventQA->Fill();
+  }
+
   padplane->EndEvent(event_num);
   ++event_num;  // if doing more than one event, event_num will be incremented.
 
@@ -1969,9 +2284,26 @@ int PHG4TpcElectronDrift::End(PHCompositeNode * /*topNode*/)
     ntfinalhit->Write();
     m_outf->Close();
   }
-  if (do_ElectronDriftQAHistos)
+  auto write_ionization_qa_trees = [&]()
   {
-    if (m_qa_write_only_with_secondaries && !m_seen_event_with_secondaries)
+    if (ionizationEventQA)
+    {
+      ionizationEventQA->Write();
+    }
+    if (ionizationClusterQA)
+    {
+      ionizationClusterQA->Write();
+    }
+    if (ionizationSegmentQA)
+    {
+      ionizationSegmentQA->Write();
+    }
+  };
+
+  const bool skip_qa_output = m_qa_write_only_with_secondaries && !m_seen_event_with_secondaries;
+  if (do_ElectronDriftQAHistos && m_write_legacy_qa_histograms)
+  {
+    if (skip_qa_output)
     {
       if (Verbosity() > 0)
       {
@@ -2094,6 +2426,10 @@ int PHG4TpcElectronDrift::End(PHCompositeNode * /*topNode*/)
       {
         driftStepQA->Write();
       }
+      if (m_ionization_qa_output_file.empty())
+      {
+        write_ionization_qa_trees();
+      }
       if (electronDensityProfile)
       {
         electronDensityProfile->Write();
@@ -2101,9 +2437,27 @@ int PHG4TpcElectronDrift::End(PHCompositeNode * /*topNode*/)
       EDrift_outf->Close();
     }
   }
+  if (do_ElectronDriftQAHistos && !m_ionization_qa_output_file.empty())
+  {
+    if (skip_qa_output)
+    {
+      if (Verbosity() > 0)
+      {
+        std::cout << Name() << ": skip writing " << m_ionization_qa_output_file
+                  << " (no secondary TPC g4hits found)." << std::endl;
+      }
+    }
+    else
+    {
+      m_ionizationQAOutf.reset(new TFile(m_ionization_qa_output_file.c_str(), "recreate"));
+      m_ionizationQAOutf->cd();
+      write_ionization_qa_trees();
+      m_ionizationQAOutf->Close();
+    }
+  }
   if (do_ElectronDriftQAHistos && driftStepQA && !m_step_qa_output_file.empty())
   {
-    if (m_qa_write_only_with_secondaries && !m_seen_event_with_secondaries)
+    if (skip_qa_output)
     {
       if (Verbosity() > 0)
       {
@@ -2169,6 +2523,7 @@ void PHG4TpcElectronDrift::SetDefaultParameters()
   set_default_double_param("fixed_primary_clusters_per_cm", -1.0);
   set_default_double_param("fixed_primary_electrons_per_cm", -1.0);  // backward-compatible alias
   set_default_int_param("uniform_density_test", 0);
+  set_default_int_param("use_pai_cluster_seeds", 0);
   set_default_int_param("average_x_layer", -1);
 
   return;

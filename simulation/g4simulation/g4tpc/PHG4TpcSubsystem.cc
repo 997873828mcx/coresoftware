@@ -1,6 +1,7 @@
 #include "PHG4TpcSubsystem.h"
 #include "PHG4TpcDetector.h"
 #include "PHG4TpcDisplayAction.h"
+#include "PHG4TpcPaiStackingAction.h"
 #include "PHG4TpcSteppingAction.h"
 
 #include <g4detectors/PHG4DetectorSubsystem.h>  // for PHG4DetectorSubsystem
@@ -20,6 +21,7 @@
 #include <phool/RunnumberRange.h>
 #include <phool/recoConsts.h>
 
+#include <algorithm>
 #include <iostream>  // for operator<<, basic_ost...
 #include <set>
 
@@ -91,6 +93,17 @@ int PHG4TpcSubsystem::InitRunSubsystem(PHCompositeNode *topNode)
     m_SteppingAction = new PHG4TpcSteppingAction(m_Detector, GetParams());
     m_SteppingAction->SetHitNodeName("G4HIT", m_HitNodeName);
     m_SteppingAction->SetHitNodeName("G4HIT_ABSORBER", m_AbsorberNodeName);
+
+    if (GetParams()->get_int_param("enable_pai_cluster_seeds") != 0)
+    {
+      auto *paiStackingAction = new PHG4TpcPaiStackingAction();
+      paiStackingAction->Verbosity(Verbosity());
+      paiStackingAction->set_w_value_eV(GetParams()->get_double_param("pai_w_value_eV"));
+      paiStackingAction->set_min_kinetic_energy_eV(GetParams()->get_double_param("pai_min_kinetic_energy_eV"));
+      paiStackingAction->set_max_cluster_size(static_cast<unsigned int>(std::max(1, GetParams()->get_int_param("pai_max_cluster_size"))));
+      m_StackingAction = paiStackingAction;
+      m_StackingAction->SetInterfacePointers(topNode);
+    }
   }
   else
   {
@@ -111,6 +124,10 @@ int PHG4TpcSubsystem::process_event(PHCompositeNode *topNode)
   if (m_SteppingAction)
   {
     m_SteppingAction->SetInterfacePointers(topNode);
+  }
+  if (m_StackingAction)
+  {
+    m_StackingAction->SetInterfacePointers(topNode);
   }
   return 0;
 }
@@ -150,6 +167,12 @@ void PHG4TpcSubsystem::SetDefaultParameters()
   set_default_double_param("tpc_length", 205.21);  // 2 * (maxdrift 102.325 + CM halfwidth 0.28) cm 
 
   set_default_double_param("steplimits", 1);  // 1cm by default
+  set_default_int_param("enable_pai_cluster_seeds", 0);
+  set_default_double_param("pai_w_value_eV", 35.0);
+  set_default_double_param("pai_min_kinetic_energy_eV", 0.0);
+  set_default_double_param("pai_user_min_ekine_eV", 10.0);
+  set_default_int_param("pai_print_diagnostics", 0);
+  set_default_int_param("pai_max_cluster_size", 100000);
 
   // material budget:
   // Cu (all layers): 0.5 oz cu per square foot, 1oz == 0.0347mm --> 0.5 oz ==  0.00347cm/2.
