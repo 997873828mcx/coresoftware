@@ -44,7 +44,8 @@ pkginclude_HEADERS = \
   PHG4TpcPaiStackingAction.h \
   PHG4TpcSubsystem.h \
   PHG4TpcTruthPointBuilder.h \
-  PHG4TpcTruthPointTree.h
+  PHG4TpcTruthPointTree.h \
+  TpcV0CandidateTree.h
 
 libg4tpc_la_SOURCES = \
   PHG4TpcCentralMembrane.cc \
@@ -66,7 +67,8 @@ libg4tpc_la_SOURCES = \
   PHG4TpcSteppingAction.cc \
   PHG4TpcSubsystem.cc \
   PHG4TpcTruthPointBuilder.cc \
-  PHG4TpcTruthPointTree.cc
+  PHG4TpcTruthPointTree.cc \
+  TpcV0CandidateTree.cc
 
 ################################################
 # linking tests
