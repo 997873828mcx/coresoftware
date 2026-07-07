@@ -525,6 +525,80 @@ TpcTrackVec3 TpcTrackKalmanFitter::state_tangent(const std::array<double, StateD
       state[TanLambda]};
 }
 
+std::array<double, TpcTrackKalmanFitter::StateDim> TpcTrackKalmanFitter::propagation_state(
+    const TpcKalmanResult &fit,
+    const TpcTrackVec3 & /*reference_vertex*/)
+{
+  if (!fit.success || fit.states_smoothed.empty())
+  {
+    return {};
+  }
+
+  if (fit.charge == 0)
+  {
+    return fit.states_smoothed.front();
+  }
+
+  const double charge_sign = static_cast<double>((fit.charge > 0) ? 1 : -1);
+  const double physical_qop_sign = -charge_sign;
+  const double sequence_qop = fit.states_smoothed.front()[QOverPt];
+  const bool sequence_runs_against_physical = sequence_qop * physical_qop_sign < 0.0;
+
+  // The fitted states are assumed to be in a continuous along-track sequence.
+  // Charge fixes only which end of that sequence is the physical initial point;
+  // do not use the reference vertex or any transverse-distance heuristic here.
+  auto state = sequence_runs_against_physical ? fit.states_smoothed.back()
+                                              : fit.states_smoothed.front();
+
+  const double qop_t = state[QOverPt];
+  if (std::abs(qop_t) < 1.0e-12)
+  {
+    return state;
+  }
+
+  const double pt = 1.0 / std::abs(qop_t);
+  const double fit_omega = 0.003 * fit.bfield_t * qop_t;
+  if (std::abs(fit_omega) < 1.0e-12)
+  {
+    return state;
+  }
+
+  const double fit_center_x = state[X] - std::sin(state[Phi]) / fit_omega;
+  const double fit_center_y = state[Y] + std::cos(state[Phi]) / fit_omega;
+
+  // Internal convention: omega = 0.003 * B * qop_t.  For a physical charge in
+  // a solenoidal field this corresponds to qop_t = -charge / pT.  The Kalman
+  // fit itself may have the opposite sign if the input point order was reversed,
+  // so choose the tangent direction that preserves the fitted circle center.
+  const double physical_qop_t = -charge_sign / pt;
+  const double physical_omega = 0.003 * fit.bfield_t * physical_qop_t;
+  if (std::abs(physical_omega) < 1.0e-12)
+  {
+    return state;
+  }
+
+  auto center_distance2 = [&](const double phi)
+  {
+    const double cx = state[X] - std::sin(phi) / physical_omega;
+    const double cy = state[Y] + std::cos(phi) / physical_omega;
+    return square(cx - fit_center_x) + square(cy - fit_center_y);
+  };
+
+  const double phi_keep = normalize_phi(state[Phi]);
+  const double phi_flip = normalize_phi(state[Phi] + kPi);
+  if (center_distance2(phi_flip) < center_distance2(phi_keep))
+  {
+    state[Phi] = phi_flip;
+    state[TanLambda] *= -1.0;
+  }
+  else
+  {
+    state[Phi] = phi_keep;
+  }
+  state[QOverPt] = physical_qop_t;
+  return state;
+}
+
 std::array<double, TpcTrackKalmanFitter::StateDim> TpcTrackKalmanFitter::propagate_state(
     const std::array<double, StateDim> &state,
     const double ds_cm,
@@ -542,7 +616,7 @@ std::pair<double, double> TpcTrackKalmanFitter::dca_to_vertex(const TpcKalmanRes
     return {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN()};
   }
 
-  const auto &state_array = fit.states_smoothed.front();
+  const auto state_array = propagation_state(fit, vertex);
   const StateVector state = to_eigen(state_array);
   const double omega = omega_from_state(state, fit.bfield_t);
   if (std::abs(omega) < 1.0e-10)

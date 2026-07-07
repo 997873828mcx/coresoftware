@@ -1,0 +1,120 @@
+// Tell emacs that this is a C++ source
+// -*- C++ -*-.
+#ifndef G4TPC_TPCTRACKFIT_H
+#define G4TPC_TPCTRACKFIT_H
+
+#include <array>
+#include <string>
+#include <vector>
+
+struct TpcTrackVec3
+{
+  double x{0.0};
+  double y{0.0};
+  double z{0.0};
+};
+
+struct TpcTrackPoint
+{
+  int track_id{0};
+  int shower_id{0};
+  int layer{0};
+  TpcTrackVec3 position;
+  TpcTrackVec3 momentum;
+  double t{0.0};
+  double path{0.0};
+};
+
+struct TpcTrackHelix
+{
+  double cx{0.0};
+  double cy{0.0};
+  double radius{0.0};
+  double z0{0.0};
+  double pitch{0.0};
+  double theta_first{0.0};
+  double theta_last{0.0};
+  double theta_min{0.0};
+  double theta_max{0.0};
+  double direction{1.0};
+  double bfield_t{1.4};
+};
+
+struct TpcTrackLinePca
+{
+  TpcTrackVec3 pca1;
+  TpcTrackVec3 pca2;
+  double dca{0.0};
+  double step1{0.0};
+  double step2{0.0};
+};
+
+struct TpcTrackHelixPca
+{
+  TpcTrackVec3 pca1;
+  TpcTrackVec3 pca2;
+  double dca{0.0};
+  double theta1{0.0};
+  double theta2{0.0};
+};
+
+enum class TpcTrackPointOrder
+{
+  Path,
+  Input,
+  Radius,
+  ThetaZ,
+  Auto
+};
+
+struct TpcTrackState
+{
+  TpcTrackVec3 position;
+  TpcTrackVec3 momentum;
+  int charge{0};
+  double chi2{0.0};
+  int ndof{0};
+  bool valid{false};
+};
+
+struct TpcKalmanConfig
+{
+  double bfield_t{1.4};
+  TpcTrackPointOrder point_order{TpcTrackPointOrder::Radius};
+  double meas_sigma_rphi_cm{0.03};
+  double meas_sigma_r_cm{0.03};
+  double meas_sigma_z_cm{0.05};
+  double min_measurement_sigma_cm{1.0e-6};
+  double initial_sigma_pos_cm{0.1};
+  double initial_sigma_phi{0.2};
+  double initial_sigma_qop_t{0.2};
+  double initial_sigma_tanl{0.2};
+  double process_sigma_pos_cm{1.0e-4};
+  double process_sigma_phi{1.0e-5};
+  double process_sigma_qop_t{1.0e-6};
+  double process_sigma_tanl{1.0e-6};
+  double material_x0_per_cm{0.0};
+  double multiple_scattering_scale{1.0};
+  double energy_loss_gev_per_cm{0.0};
+  double energy_loss_sigma_fraction{0.0};
+  double min_pt_gev{0.05};
+};
+
+struct TpcKalmanResult
+{
+  bool success{false};
+  std::string message;
+  int charge{0};
+  double bfield_t{1.4};
+  TpcTrackHelix seed;
+  std::vector<double> path_s;
+  std::vector<std::array<double, 6>> states_filtered;
+  std::vector<std::array<double, 36>> covs_filtered;
+  std::vector<std::array<double, 6>> states_smoothed;
+  std::vector<std::array<double, 36>> covs_smoothed;
+  double chi2{0.0};
+  int ndof{0};
+  double mass_gev{0.13957039};
+};
+
+#endif

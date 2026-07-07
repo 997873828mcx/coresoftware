@@ -32,6 +32,8 @@ class TpcTrackKalmanFitter
   static TpcTrackVec3 state_position(const std::array<double, StateDim> &state);
   static TpcTrackVec3 state_momentum(const std::array<double, StateDim> &state);
   static TpcTrackVec3 state_tangent(const std::array<double, StateDim> &state);
+  static std::array<double, StateDim> propagation_state(const TpcKalmanResult &fit,
+                                                        const TpcTrackVec3 &reference_vertex);
   static std::array<double, StateDim> propagate_state(const std::array<double, StateDim> &state,
                                                       double ds_cm,
                                                       const TpcKalmanConfig &config,

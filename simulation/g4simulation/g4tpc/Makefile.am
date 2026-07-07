@@ -11,6 +11,7 @@ lib_LTLIBRARIES = \
 AM_CPPFLAGS = \
   -I$(includedir) \
   -isystem$(OFFLINE_MAIN)/include \
+  -isystem/sphenix/user/mitrankova/F4A/TPC_pattern_reco/install/include \
   -isystem$(ROOTSYS)/include
 
 AM_LDFLAGS = \
@@ -45,6 +46,12 @@ pkginclude_HEADERS = \
   PHG4TpcSubsystem.h \
   PHG4TpcTruthPointBuilder.h \
   PHG4TpcTruthPointTree.h \
+  TpcPatternTrackPointTree.h \
+  TpcTrackFit.h \
+  TpcTrackHelixFitter.h \
+  TpcTrackKalmanFitter.h \
+  TpcTruthEventTree.h \
+  TpcTruthV0DecayTree.h \
   TpcV0CandidateTree.h
 
 libg4tpc_la_SOURCES = \
@@ -68,6 +75,11 @@ libg4tpc_la_SOURCES = \
   PHG4TpcSubsystem.cc \
   PHG4TpcTruthPointBuilder.cc \
   PHG4TpcTruthPointTree.cc \
+  TpcPatternTrackPointTree.cc \
+  TpcTrackHelixFitter.cc \
+  TpcTrackKalmanFitter.cc \
+  TpcTruthEventTree.cc \
+  TpcTruthV0DecayTree.cc \
   TpcV0CandidateTree.cc
 
 ################################################
