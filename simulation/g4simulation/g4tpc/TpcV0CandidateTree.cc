@@ -14,6 +14,9 @@
 
 #include <fun4all/Fun4AllReturnCodes.h>
 
+#include <phfield/PHField.h>
+#include <phfield/PHFieldUtility.h>
+
 #include <phool/PHCompositeNode.h>
 #include <phool/PHObject.h>
 #include <phool/getClass.h>
@@ -215,8 +218,14 @@ bool TpcV0CandidateTree::set_track_fit_method(const std::string &mode)
   return false;
 }
 
-int TpcV0CandidateTree::Init(PHCompositeNode * /*topNode*/)
+int TpcV0CandidateTree::Init(PHCompositeNode *topNode)
 {
+  if (m_use_kalman_field_map && m_kalman_config.magnetic_field == nullptr && topNode != nullptr)
+  {
+    m_kalman_config.magnetic_field =
+        findNode::getClass<PHField>(topNode, PHFieldUtility::GetDSTFieldMapNodeName());
+  }
+
   m_file = new TFile(m_filename.c_str(), "RECREATE");
   if (!m_file || m_file->IsZombie())
   {

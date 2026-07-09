@@ -2,6 +2,10 @@
 
 #include "TpcTrackHelixFitter.h"
 
+#include <phfield/PHField.h>
+
+#include <CLHEP/Units/SystemOfUnits.h>
+
 #include <Eigen/Dense>
 
 #include <algorithm>
@@ -11,6 +15,7 @@
 namespace
 {
   constexpr double kPi = 3.14159265358979323846;
+  constexpr double kCurvaturePerCm = 0.003;
 
   template <class T>
   constexpr T square(const T &value)
@@ -25,6 +30,7 @@ namespace
 
   using StateVector = Eigen::Matrix<double, 6, 1>;
   using StateMatrix = Eigen::Matrix<double, 6, 6>;
+  using Vector3 = Eigen::Matrix<double, 3, 1>;
   using MeasurementVector = Eigen::Matrix<double, 3, 1>;
   using MeasurementMatrix = Eigen::Matrix<double, 3, 6>;
   using MeasurementCov = Eigen::Matrix<double, 3, 3>;
@@ -71,15 +77,15 @@ namespace
 
   double omega_from_state(const StateVector &state, const double bfield_t)
   {
-    return 0.003 * bfield_t * state(TpcTrackKalmanFitter::QOverPt);
+    return kCurvaturePerCm * bfield_t * state(TpcTrackKalmanFitter::QOverPt);
   }
 
-  StateVector apply_mean_energy_loss(const StateVector &state,
-                                     const double ds_cm,
-                                     const TpcKalmanConfig &config,
-                                     const double mass_gev)
+  StateVector apply_mean_energy_loss_path3d(const StateVector &state,
+                                            const double signed_path3d_cm,
+                                            const TpcKalmanConfig &config,
+                                            const double mass_gev)
   {
-    if (config.energy_loss_gev_per_cm <= 0.0 || ds_cm == 0.0)
+    if (config.energy_loss_gev_per_cm <= 0.0 || signed_path3d_cm == 0.0)
     {
       return state;
     }
@@ -92,7 +98,7 @@ namespace
     }
 
     const double tanl = output(TpcTrackKalmanFitter::TanLambda);
-    const double path3d_cm = std::abs(ds_cm) * std::sqrt(1.0 + tanl * tanl);
+    const double path3d_cm = std::abs(signed_path3d_cm);
     if (path3d_cm <= 0.0)
     {
       return output;
@@ -101,7 +107,8 @@ namespace
     const double pt = 1.0 / std::abs(qop_t);
     const double momentum = pt * std::sqrt(1.0 + tanl * tanl);
     const double energy = std::sqrt(momentum * momentum + mass_gev * mass_gev);
-    const double signed_loss = std::copysign(config.energy_loss_gev_per_cm * path3d_cm, ds_cm);
+    const double signed_loss = std::copysign(config.energy_loss_gev_per_cm * path3d_cm,
+                                             signed_path3d_cm);
     const double new_energy = std::max(mass_gev + 1.0e-9, energy - signed_loss);
     const double new_momentum = std::sqrt(std::max(0.0, new_energy * new_energy - mass_gev * mass_gev));
     if (new_momentum <= 0.0)
@@ -115,31 +122,221 @@ namespace
     return output;
   }
 
-  StateVector propagate_eigen(const StateVector &state,
-                              const double ds_cm,
-                              const TpcKalmanConfig &config,
-                              const double mass_gev)
+  StateVector apply_mean_energy_loss(const StateVector &state,
+                                     const double ds_cm,
+                                     const TpcKalmanConfig &config,
+                                     const double mass_gev)
   {
-    StateVector output = state;
-    const double phi = state(TpcTrackKalmanFitter::Phi);
-    const double omega = omega_from_state(state, config.bfield_t);
+    const double tanl = state(TpcTrackKalmanFitter::TanLambda);
+    return apply_mean_energy_loss_path3d(state, ds_cm * std::sqrt(1.0 + tanl * tanl),
+                                         config, mass_gev);
+  }
 
-    if (std::abs(omega) < 1.0e-10)
+  Vector3 direction_from_state(const StateVector &state)
+  {
+    Vector3 direction(std::cos(state(TpcTrackKalmanFitter::Phi)),
+                      std::sin(state(TpcTrackKalmanFitter::Phi)),
+                      state(TpcTrackKalmanFitter::TanLambda));
+    const double norm = direction.norm();
+    if (norm <= 0.0 || !std::isfinite(norm))
     {
-      output(TpcTrackKalmanFitter::X) += ds_cm * std::cos(phi);
-      output(TpcTrackKalmanFitter::Y) += ds_cm * std::sin(phi);
+      return Vector3(1.0, 0.0, 0.0);
+    }
+    return direction / norm;
+  }
+
+  Vector3 magnetic_field_tesla(const Vector3 &position_cm,
+                               const TpcKalmanConfig &config)
+  {
+    if (config.magnetic_field != nullptr)
+    {
+      const double point[4] = {position_cm.x() * CLHEP::cm,
+                               position_cm.y() * CLHEP::cm,
+                               position_cm.z() * CLHEP::cm,
+                               0.0};
+      double field[3] = {0.0, 0.0, 0.0};
+      config.magnetic_field->GetFieldValue(point, field);
+      Vector3 output(field[0] / CLHEP::tesla,
+                     field[1] / CLHEP::tesla,
+                     field[2] / CLHEP::tesla);
+      if (std::isfinite(output.x()) && std::isfinite(output.y()) &&
+          std::isfinite(output.z()))
+      {
+        return output;
+      }
+      return Vector3::Zero();
+    }
+
+    return Vector3(0.0, 0.0, config.bfield_t);
+  }
+
+  Vector3 rkn_acceleration(const Vector3 &direction,
+                           const Vector3 &bfield_tesla,
+                           const double q_over_p)
+  {
+    return kCurvaturePerCm * q_over_p * direction.cross(bfield_tesla);
+  }
+
+  struct RknStep
+  {
+    Vector3 position;
+    Vector3 direction;
+    double error{0.0};
+  };
+
+  RknStep try_rkn4_step(const Vector3 &position_cm,
+                        const Vector3 &direction,
+                        const double q_over_p,
+                        const double h_cm,
+                        const TpcKalmanConfig &config)
+  {
+    const double h2 = h_cm * h_cm;
+    const double half_h = 0.5 * h_cm;
+
+    const Vector3 b_first = magnetic_field_tesla(position_cm, config);
+    const Vector3 k1 = rkn_acceleration(direction, b_first, q_over_p);
+
+    const Vector3 pos1 = position_cm + half_h * direction + 0.125 * h2 * k1;
+    const Vector3 b_middle = magnetic_field_tesla(pos1, config);
+    const Vector3 k2 = rkn_acceleration(direction + half_h * k1, b_middle, q_over_p);
+    const Vector3 k3 = rkn_acceleration(direction + half_h * k2, b_middle, q_over_p);
+
+    const Vector3 pos2 = position_cm + h_cm * direction + 0.5 * h2 * k3;
+    const Vector3 b_last = magnetic_field_tesla(pos2, config);
+    const Vector3 k4 = rkn_acceleration(direction + h_cm * k3, b_last, q_over_p);
+
+    RknStep output;
+    output.position = position_cm + h_cm * direction + h2 / 6.0 * (k1 + k2 + k3);
+    output.direction = direction + h_cm / 6.0 * (k1 + 2.0 * (k2 + k3) + k4);
+    const double direction_norm = output.direction.norm();
+    if (direction_norm > 0.0 && std::isfinite(direction_norm))
+    {
+      output.direction /= direction_norm;
     }
     else
     {
-      const double phi2 = phi + omega * ds_cm;
-      output(TpcTrackKalmanFitter::X) += (std::sin(phi2) - std::sin(phi)) / omega;
-      output(TpcTrackKalmanFitter::Y) += -(std::cos(phi2) - std::cos(phi)) / omega;
-      output(TpcTrackKalmanFitter::Phi) = phi2;
+      output.direction = direction;
+    }
+    output.error = std::max(1.0e-20,
+                            h2 * (k1 - k2 - k3 + k4).template lpNorm<1>());
+    return output;
+  }
+
+  double rkn_step_scale(const double tolerance, const double error)
+  {
+    if (error <= 0.0 || !std::isfinite(error))
+    {
+      return 1.0;
+    }
+    return std::clamp(std::sqrt(std::sqrt(tolerance / error)), 0.25, 4.0);
+  }
+
+  void advance_rkn4(Vector3 &position_cm,
+                    Vector3 &direction,
+                    const double q_over_p,
+                    const double signed_path3d_cm,
+                    const TpcKalmanConfig &config)
+  {
+    double remaining = signed_path3d_cm;
+    if (remaining == 0.0)
+    {
+      return;
     }
 
-    output(TpcTrackKalmanFitter::Z) += state(TpcTrackKalmanFitter::TanLambda) * ds_cm;
-    output(TpcTrackKalmanFitter::Phi) = normalize_phi(output(TpcTrackKalmanFitter::Phi));
-    return apply_mean_energy_loss(output, ds_cm, config, mass_gev);
+    constexpr double min_step_cm = 1.0e-5;
+    constexpr std::size_t max_total_steps = 100000;
+    const double max_step_cm = std::max(std::abs(config.rkn_max_step_cm), min_step_cm);
+    const double tolerance = std::max(config.rkn_step_tolerance, 1.0e-20);
+    const int max_trials = std::max(config.rkn_max_step_trials, 1);
+    const bool adaptive = config.rkn_step_tolerance > 0.0;
+
+    double h = std::copysign(std::min(std::abs(remaining), max_step_cm), remaining);
+    for (std::size_t nsteps = 0;
+         std::abs(remaining) > min_step_cm && nsteps < max_total_steps;
+         ++nsteps)
+    {
+      if (std::abs(h) > std::abs(remaining))
+      {
+        h = remaining;
+      }
+
+      RknStep trial;
+      int ntrials = 0;
+      while (true)
+      {
+        trial = try_rkn4_step(position_cm, direction, q_over_p, h, config);
+        if (!adaptive || trial.error <= 4.0 * tolerance ||
+            std::abs(h) <= min_step_cm || ntrials >= max_trials)
+        {
+          break;
+        }
+        h *= rkn_step_scale(tolerance, trial.error);
+        ++ntrials;
+      }
+
+      position_cm = trial.position;
+      direction = trial.direction;
+      remaining -= h;
+
+      if (std::abs(remaining) <= min_step_cm)
+      {
+        break;
+      }
+
+      double next_h = std::abs(h);
+      if (adaptive)
+      {
+        next_h *= rkn_step_scale(tolerance, trial.error);
+      }
+      next_h = std::min({next_h, max_step_cm, std::abs(remaining)});
+      h = std::copysign(std::max(next_h, min_step_cm), remaining);
+    }
+  }
+
+  StateVector propagate_rkn4(const StateVector &state,
+                             const double ds_cm,
+                             const TpcKalmanConfig &config,
+                             const double mass_gev)
+  {
+    StateVector output = state;
+    if (ds_cm == 0.0)
+    {
+      return apply_mean_energy_loss(output, ds_cm, config, mass_gev);
+    }
+
+    Vector3 position_cm(state(TpcTrackKalmanFitter::X),
+                        state(TpcTrackKalmanFitter::Y),
+                        state(TpcTrackKalmanFitter::Z));
+    Vector3 direction = direction_from_state(state);
+    const double transverse = std::hypot(direction.x(), direction.y());
+    if (transverse <= 1.0e-12 || !std::isfinite(transverse))
+    {
+      return apply_mean_energy_loss(output, ds_cm, config, mass_gev);
+    }
+
+    const double q_over_p = -state(TpcTrackKalmanFitter::QOverPt) * transverse;
+    const double signed_path3d_cm = ds_cm / transverse;
+    advance_rkn4(position_cm, direction, q_over_p, signed_path3d_cm, config);
+
+    const double final_transverse = std::hypot(direction.x(), direction.y());
+    output(TpcTrackKalmanFitter::X) = position_cm.x();
+    output(TpcTrackKalmanFitter::Y) = position_cm.y();
+    output(TpcTrackKalmanFitter::Z) = position_cm.z();
+    if (final_transverse > 1.0e-12 && std::isfinite(final_transverse))
+    {
+      output(TpcTrackKalmanFitter::Phi) =
+          normalize_phi(std::atan2(direction.y(), direction.x()));
+      output(TpcTrackKalmanFitter::TanLambda) = direction.z() / final_transverse;
+      output(TpcTrackKalmanFitter::QOverPt) = -q_over_p / final_transverse;
+      const double max_abs_qop_t = 1.0 / std::max(config.min_pt_gev, 1.0e-6);
+      if (std::abs(output(TpcTrackKalmanFitter::QOverPt)) > max_abs_qop_t)
+      {
+        output(TpcTrackKalmanFitter::QOverPt) =
+            std::copysign(max_abs_qop_t, output(TpcTrackKalmanFitter::QOverPt));
+      }
+    }
+
+    return apply_mean_energy_loss_path3d(output, signed_path3d_cm, config, mass_gev);
   }
 
   StateMatrix transport_jacobian(const StateVector &state,
@@ -162,8 +359,8 @@ namespace
         minus(col) = normalize_phi(minus(col));
       }
 
-      const StateVector f_plus = propagate_eigen(plus, ds_cm, config, mass_gev);
-      const StateVector f_minus = propagate_eigen(minus, ds_cm, config, mass_gev);
+      const StateVector f_plus = propagate_rkn4(plus, ds_cm, config, mass_gev);
+      const StateVector f_minus = propagate_rkn4(minus, ds_cm, config, mass_gev);
       jac.col(col) = residual(f_plus, f_minus) / (2.0 * step);
     }
     return jac;
@@ -325,7 +522,7 @@ namespace
 
     const double direction = seed.direction;
     const double theta0 = theta_values.front();
-    const double denom = 0.003 * config.bfield_t * seed.radius;
+    const double denom = kCurvaturePerCm * config.bfield_t * seed.radius;
     if (std::abs(denom) <= 0.0 || !std::isfinite(denom))
     {
       return false;
@@ -359,6 +556,7 @@ bool TpcTrackKalmanFitter::fit(const std::vector<TpcTrackPoint> &input_points,
   result = TpcKalmanResult{};
   result.charge = charge;
   result.bfield_t = config.bfield_t;
+  result.magnetic_field = config.magnetic_field;
   result.mass_gev = mass_gev;
 
   if (input_points.size() < 5)
@@ -425,7 +623,7 @@ bool TpcTrackKalmanFitter::fit(const std::vector<TpcTrackPoint> &input_points,
     {
       const double ds = result.path_s[index] - result.path_s[index - 1];
       fmat = transport_jacobian(state, ds, config, mass_gev);
-      pred_state = propagate_eigen(state, ds, config, mass_gev);
+      pred_state = propagate_rkn4(state, ds, config, mass_gev);
       pred_cov = fmat * cov * fmat.transpose() + process_noise(state, ds, config, mass_gev);
       pred_cov = 0.5 * (pred_cov + pred_cov.transpose()).eval();
     }
@@ -557,7 +755,7 @@ std::array<double, TpcTrackKalmanFitter::StateDim> TpcTrackKalmanFitter::propaga
   }
 
   const double pt = 1.0 / std::abs(qop_t);
-  const double fit_omega = 0.003 * fit.bfield_t * qop_t;
+  const double fit_omega = kCurvaturePerCm * fit.bfield_t * qop_t;
   if (std::abs(fit_omega) < 1.0e-12)
   {
     return state;
@@ -571,7 +769,7 @@ std::array<double, TpcTrackKalmanFitter::StateDim> TpcTrackKalmanFitter::propaga
   // fit itself may have the opposite sign if the input point order was reversed,
   // so choose the tangent direction that preserves the fitted circle center.
   const double physical_qop_t = -charge_sign / pt;
-  const double physical_omega = 0.003 * fit.bfield_t * physical_qop_t;
+  const double physical_omega = kCurvaturePerCm * fit.bfield_t * physical_qop_t;
   if (std::abs(physical_omega) < 1.0e-12)
   {
     return state;
@@ -605,7 +803,7 @@ std::array<double, TpcTrackKalmanFitter::StateDim> TpcTrackKalmanFitter::propaga
     const TpcKalmanConfig &config,
     const double mass_gev)
 {
-  return to_array(propagate_eigen(to_eigen(state), ds_cm, config, mass_gev));
+  return to_array(propagate_rkn4(to_eigen(state), ds_cm, config, mass_gev));
 }
 
 std::pair<double, double> TpcTrackKalmanFitter::dca_to_vertex(const TpcKalmanResult &fit,
@@ -649,6 +847,7 @@ std::pair<double, double> TpcTrackKalmanFitter::dca_to_vertex(const TpcKalmanRes
   const double s_cm = dtheta / omega;
   TpcKalmanConfig config;
   config.bfield_t = fit.bfield_t;
+  config.magnetic_field = fit.magnetic_field;
   const auto closest = propagate_state(state_array, s_cm, config, fit.mass_gev);
   return {dca_xy, std::abs(closest[Z] - vertex.z)};
 }

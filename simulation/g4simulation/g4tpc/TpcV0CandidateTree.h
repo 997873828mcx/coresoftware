@@ -13,6 +13,7 @@
 #include <vector>
 
 class PHCompositeNode;
+class PHField;
 class PHG4Hit;
 class PHG4HitContainer;
 class PHG4TruthInfoContainer;
@@ -67,6 +68,23 @@ class TpcV0CandidateTree : public SubsysReco
   {
     m_bfield_t = value;
     m_kalman_config.bfield_t = value;
+  }
+  void set_kalman_magnetic_field(const PHField *field) { m_kalman_config.magnetic_field = field; }
+  void use_kalman_field_map(const bool value = true)
+  {
+    m_use_kalman_field_map = value;
+    if (!value)
+    {
+      m_kalman_config.magnetic_field = nullptr;
+    }
+  }
+  void set_kalman_rkn4(const double max_step_cm,
+                       const double step_tolerance,
+                       const int max_step_trials = 12)
+  {
+    m_kalman_config.rkn_max_step_cm = max_step_cm;
+    m_kalman_config.rkn_step_tolerance = step_tolerance;
+    m_kalman_config.rkn_max_step_trials = max_step_trials;
   }
   void set_theta_extension(const double value) { m_theta_extension = value; }
   void set_coarse_steps(const int value) { m_coarse_steps = value; }
@@ -500,6 +518,7 @@ class TpcV0CandidateTree : public SubsysReco
   int m_fit_first_points{8};
   double m_bfield_t{1.4};
   TpcKalmanConfig m_kalman_config;
+  bool m_use_kalman_field_map{true};
   double m_kalman_max_upstream_cm{80.0};
   double m_kalman_downstream_margin_cm{5.0};
   double m_theta_extension{2.0};
