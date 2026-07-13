@@ -83,9 +83,14 @@ struct TpcKalmanConfig
 {
   double bfield_t{1.4};
   const PHField *magnetic_field{nullptr};
+  bool analytic_uniform_propagation{false};
   double rkn_max_step_cm{5.0};
   double rkn_step_tolerance{1.0e-4};
   int rkn_max_step_trials{12};
+  int rkn_max_total_steps{2000};
+  bool rkn_fast_field_jacobian{true};
+  bool rkn_fast_field_pca{true};
+  int rkn_field_pca_refine_iterations{6};
   TpcTrackPointOrder point_order{TpcTrackPointOrder::Radius};
   double meas_sigma_rphi_cm{0.03};
   double meas_sigma_r_cm{0.03};
@@ -113,6 +118,7 @@ struct TpcKalmanResult
   int charge{0};
   double bfield_t{1.4};
   const PHField *magnetic_field{nullptr};
+  bool analytic_uniform_propagation{false};
   TpcTrackHelix seed;
   std::vector<double> path_s;
   std::vector<std::array<double, 6>> states_filtered;
@@ -122,6 +128,12 @@ struct TpcKalmanResult
   double chi2{0.0};
   int ndof{0};
   double mass_gev{0.13957039};
+  std::size_t rkn_propagations{0};
+  std::size_t rkn_accepted_steps{0};
+  std::size_t rkn_rejected_trials{0};
+  std::size_t rkn_max_trial_accepts{0};
+  std::size_t rkn_failures{0};
+  double rkn_seconds{0.0};
 };
 
 #endif

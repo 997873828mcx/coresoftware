@@ -9,6 +9,7 @@
 #include <Eigen/Dense>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 
@@ -184,6 +185,16 @@ namespace
     double error{0.0};
   };
 
+  struct RknDiagnostics
+  {
+    std::size_t propagations{0};
+    std::size_t accepted_steps{0};
+    std::size_t rejected_trials{0};
+    std::size_t max_trial_accepts{0};
+    std::size_t failures{0};
+    double seconds{0.0};
+  };
+
   RknStep try_rkn4_step(const Vector3 &position_cm,
                         const Vector3 &direction,
                         const double q_over_p,
@@ -231,20 +242,22 @@ namespace
     return std::clamp(std::sqrt(std::sqrt(tolerance / error)), 0.25, 4.0);
   }
 
-  void advance_rkn4(Vector3 &position_cm,
+  bool advance_rkn4(Vector3 &position_cm,
                     Vector3 &direction,
                     const double q_over_p,
                     const double signed_path3d_cm,
-                    const TpcKalmanConfig &config)
+                    const TpcKalmanConfig &config,
+                    RknDiagnostics *diagnostics)
   {
     double remaining = signed_path3d_cm;
     if (remaining == 0.0)
     {
-      return;
+      return true;
     }
 
     constexpr double min_step_cm = 1.0e-5;
-    constexpr std::size_t max_total_steps = 100000;
+    const std::size_t max_total_steps =
+        static_cast<std::size_t>(std::max(config.rkn_max_total_steps, 1));
     const double max_step_cm = std::max(std::abs(config.rkn_max_step_cm), min_step_cm);
     const double tolerance = std::max(config.rkn_step_tolerance, 1.0e-20);
     const int max_trials = std::max(config.rkn_max_step_trials, 1);
@@ -265,18 +278,40 @@ namespace
       while (true)
       {
         trial = try_rkn4_step(position_cm, direction, q_over_p, h, config);
+        if (!trial.position.allFinite() || !trial.direction.allFinite() ||
+            !std::isfinite(trial.error))
+        {
+          if (diagnostics != nullptr)
+          {
+            ++diagnostics->failures;
+          }
+          return false;
+        }
         if (!adaptive || trial.error <= 4.0 * tolerance ||
             std::abs(h) <= min_step_cm || ntrials >= max_trials)
         {
+          if (adaptive && trial.error > 4.0 * tolerance && ntrials >= max_trials &&
+              diagnostics != nullptr)
+          {
+            ++diagnostics->max_trial_accepts;
+          }
           break;
         }
         h *= rkn_step_scale(tolerance, trial.error);
         ++ntrials;
+        if (diagnostics != nullptr)
+        {
+          ++diagnostics->rejected_trials;
+        }
       }
 
       position_cm = trial.position;
       direction = trial.direction;
       remaining -= h;
+      if (diagnostics != nullptr)
+      {
+        ++diagnostics->accepted_steps;
+      }
 
       if (std::abs(remaining) <= min_step_cm)
       {
@@ -291,17 +326,40 @@ namespace
       next_h = std::min({next_h, max_step_cm, std::abs(remaining)});
       h = std::copysign(std::max(next_h, min_step_cm), remaining);
     }
+
+    const bool complete = std::abs(remaining) <= min_step_cm;
+    if (!complete && diagnostics != nullptr)
+    {
+      ++diagnostics->failures;
+    }
+    return complete;
   }
 
   StateVector propagate_rkn4(const StateVector &state,
                              const double ds_cm,
                              const TpcKalmanConfig &config,
-                             const double mass_gev)
+                             const double mass_gev,
+                             RknDiagnostics *diagnostics = nullptr)
   {
+    const auto propagation_start = std::chrono::steady_clock::now();
+    const auto record_seconds = [&]()
+    {
+      if (diagnostics != nullptr)
+      {
+        diagnostics->seconds += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - propagation_start).count();
+      }
+    };
+    if (diagnostics != nullptr)
+    {
+      ++diagnostics->propagations;
+    }
     StateVector output = state;
     if (ds_cm == 0.0)
     {
-      return apply_mean_energy_loss(output, ds_cm, config, mass_gev);
+      output = apply_mean_energy_loss(output, ds_cm, config, mass_gev);
+      record_seconds();
+      return output;
     }
 
     Vector3 position_cm(state(TpcTrackKalmanFitter::X),
@@ -311,12 +369,19 @@ namespace
     const double transverse = std::hypot(direction.x(), direction.y());
     if (transverse <= 1.0e-12 || !std::isfinite(transverse))
     {
-      return apply_mean_energy_loss(output, ds_cm, config, mass_gev);
+      output = apply_mean_energy_loss(output, ds_cm, config, mass_gev);
+      record_seconds();
+      return output;
     }
 
     const double q_over_p = -state(TpcTrackKalmanFitter::QOverPt) * transverse;
     const double signed_path3d_cm = ds_cm / transverse;
-    advance_rkn4(position_cm, direction, q_over_p, signed_path3d_cm, config);
+    if (!advance_rkn4(position_cm, direction, q_over_p, signed_path3d_cm,
+                      config, diagnostics))
+    {
+      record_seconds();
+      return StateVector::Constant(std::numeric_limits<double>::quiet_NaN());
+    }
 
     const double final_transverse = std::hypot(direction.x(), direction.y());
     output(TpcTrackKalmanFitter::X) = position_cm.x();
@@ -336,15 +401,73 @@ namespace
       }
     }
 
-    return apply_mean_energy_loss_path3d(output, signed_path3d_cm, config, mass_gev);
+    output = apply_mean_energy_loss_path3d(output, signed_path3d_cm, config, mass_gev);
+    record_seconds();
+    return output;
+  }
+
+  StateVector propagate_uniform_bz(const StateVector &state,
+                                   const double ds_cm,
+                                   const double bfield_t,
+                                   const TpcKalmanConfig &config,
+                                   const double mass_gev)
+  {
+    StateVector output = state;
+    const double phi = state(TpcTrackKalmanFitter::Phi);
+    const double omega = kCurvaturePerCm * bfield_t *
+                         state(TpcTrackKalmanFitter::QOverPt);
+
+    if (std::abs(omega) < 1.0e-12)
+    {
+      output(TpcTrackKalmanFitter::X) += ds_cm * std::cos(phi);
+      output(TpcTrackKalmanFitter::Y) += ds_cm * std::sin(phi);
+    }
+    else
+    {
+      const double phi2 = phi + omega * ds_cm;
+      output(TpcTrackKalmanFitter::X) +=
+          (std::sin(phi2) - std::sin(phi)) / omega;
+      output(TpcTrackKalmanFitter::Y) +=
+          -(std::cos(phi2) - std::cos(phi)) / omega;
+      output(TpcTrackKalmanFitter::Phi) = normalize_phi(phi2);
+    }
+    output(TpcTrackKalmanFitter::Z) +=
+        state(TpcTrackKalmanFitter::TanLambda) * ds_cm;
+    return apply_mean_energy_loss(output, ds_cm, config, mass_gev);
   }
 
   StateMatrix transport_jacobian(const StateVector &state,
                                  const double ds_cm,
                                  const TpcKalmanConfig &config,
-                                 const double mass_gev)
+                                 const double mass_gev,
+                                 RknDiagnostics *diagnostics)
   {
     StateMatrix jac = StateMatrix::Identity();
+    const bool use_analytic_uniform =
+        config.magnetic_field == nullptr && config.analytic_uniform_propagation;
+    const bool use_fast_field_jacobian =
+        config.magnetic_field != nullptr && config.rkn_fast_field_jacobian;
+    double local_bz_t = config.bfield_t;
+    if (use_fast_field_jacobian)
+    {
+      const Vector3 position_cm(state(TpcTrackKalmanFitter::X),
+                                state(TpcTrackKalmanFitter::Y),
+                                state(TpcTrackKalmanFitter::Z));
+      local_bz_t = magnetic_field_tesla(position_cm, config).z();
+      if (!std::isfinite(local_bz_t))
+      {
+        local_bz_t = config.bfield_t;
+      }
+    }
+
+    const auto propagate_for_jacobian = [&](const StateVector &input)
+    {
+      if (use_analytic_uniform || use_fast_field_jacobian)
+      {
+        return propagate_uniform_bz(input, ds_cm, local_bz_t, config, mass_gev);
+      }
+      return propagate_rkn4(input, ds_cm, config, mass_gev, diagnostics);
+    };
     const double scales[6] = {1.0e-4, 1.0e-4, 1.0e-4, 1.0e-5, 1.0e-6, 1.0e-6};
     for (int col = 0; col < 6; ++col)
     {
@@ -359,8 +482,12 @@ namespace
         minus(col) = normalize_phi(minus(col));
       }
 
-      const StateVector f_plus = propagate_rkn4(plus, ds_cm, config, mass_gev);
-      const StateVector f_minus = propagate_rkn4(minus, ds_cm, config, mass_gev);
+      const StateVector f_plus = propagate_for_jacobian(plus);
+      const StateVector f_minus = propagate_for_jacobian(minus);
+      if (!f_plus.allFinite() || !f_minus.allFinite())
+      {
+        return StateMatrix::Constant(std::numeric_limits<double>::quiet_NaN());
+      }
       jac.col(col) = residual(f_plus, f_minus) / (2.0 * step);
     }
     return jac;
@@ -557,6 +684,7 @@ bool TpcTrackKalmanFitter::fit(const std::vector<TpcTrackPoint> &input_points,
   result.charge = charge;
   result.bfield_t = config.bfield_t;
   result.magnetic_field = config.magnetic_field;
+  result.analytic_uniform_propagation = config.analytic_uniform_propagation;
   result.mass_gev = mass_gev;
 
   if (input_points.size() < 5)
@@ -613,6 +741,17 @@ bool TpcTrackKalmanFitter::fit(const std::vector<TpcTrackPoint> &input_points,
   double chi2 = 0.0;
   int ndof = 0;
   const StateMatrix eye = StateMatrix::Identity();
+  RknDiagnostics rkn_diagnostics;
+
+  const auto copy_rkn_diagnostics = [&]()
+  {
+    result.rkn_propagations = rkn_diagnostics.propagations;
+    result.rkn_accepted_steps = rkn_diagnostics.accepted_steps;
+    result.rkn_rejected_trials = rkn_diagnostics.rejected_trials;
+    result.rkn_max_trial_accepts = rkn_diagnostics.max_trial_accepts;
+    result.rkn_failures = rkn_diagnostics.failures;
+    result.rkn_seconds = rkn_diagnostics.seconds;
+  };
 
   for (std::size_t index = 0; index < npoints; ++index)
   {
@@ -622,8 +761,16 @@ bool TpcTrackKalmanFitter::fit(const std::vector<TpcTrackPoint> &input_points,
     if (index > 0)
     {
       const double ds = result.path_s[index] - result.path_s[index - 1];
-      fmat = transport_jacobian(state, ds, config, mass_gev);
-      pred_state = propagate_rkn4(state, ds, config, mass_gev);
+      fmat = transport_jacobian(state, ds, config, mass_gev, &rkn_diagnostics);
+      pred_state = (config.magnetic_field == nullptr && config.analytic_uniform_propagation)
+                       ? propagate_uniform_bz(state, ds, config.bfield_t, config, mass_gev)
+                       : propagate_rkn4(state, ds, config, mass_gev, &rkn_diagnostics);
+      if (!fmat.allFinite() || !pred_state.allFinite())
+      {
+        copy_rkn_diagnostics();
+        result.message = "RK propagation exceeded its step budget or became non-finite";
+        return false;
+      }
       pred_cov = fmat * cov * fmat.transpose() + process_noise(state, ds, config, mass_gev);
       pred_cov = 0.5 * (pred_cov + pred_cov.transpose()).eval();
     }
@@ -695,6 +842,7 @@ bool TpcTrackKalmanFitter::fit(const std::vector<TpcTrackPoint> &input_points,
 
   result.chi2 = chi2;
   result.ndof = ndof - StateDim;
+  copy_rkn_diagnostics();
   result.success = true;
   result.message = "ok";
   return true;
@@ -803,11 +951,17 @@ std::array<double, TpcTrackKalmanFitter::StateDim> TpcTrackKalmanFitter::propaga
     const TpcKalmanConfig &config,
     const double mass_gev)
 {
-  return to_array(propagate_rkn4(to_eigen(state), ds_cm, config, mass_gev));
+  const StateVector input = to_eigen(state);
+  if (config.magnetic_field == nullptr && config.analytic_uniform_propagation)
+  {
+    return to_array(propagate_uniform_bz(input, ds_cm, config.bfield_t, config, mass_gev));
+  }
+  return to_array(propagate_rkn4(input, ds_cm, config, mass_gev));
 }
 
 std::pair<double, double> TpcTrackKalmanFitter::dca_to_vertex(const TpcKalmanResult &fit,
-                                                             const TpcTrackVec3 &vertex)
+                                                             const TpcTrackVec3 &vertex,
+                                                             const TpcKalmanConfig *input_config)
 {
   if (!fit.success || fit.states_smoothed.empty())
   {
@@ -845,9 +999,10 @@ std::pair<double, double> TpcTrackKalmanFitter::dca_to_vertex(const TpcKalmanRes
   const double theta0 = std::atan2(state(Y) - center_y, state(X) - center_x);
   const double dtheta = normalize_phi(theta_closest - theta0);
   const double s_cm = dtheta / omega;
-  TpcKalmanConfig config;
+  TpcKalmanConfig config = input_config != nullptr ? *input_config : TpcKalmanConfig{};
   config.bfield_t = fit.bfield_t;
   config.magnetic_field = fit.magnetic_field;
+  config.analytic_uniform_propagation = fit.analytic_uniform_propagation;
   const auto closest = propagate_state(state_array, s_cm, config, fit.mass_gev);
   return {dca_xy, std::abs(closest[Z] - vertex.z)};
 }

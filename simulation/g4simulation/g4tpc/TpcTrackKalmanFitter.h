@@ -39,7 +39,8 @@ class TpcTrackKalmanFitter
                                                       const TpcKalmanConfig &config,
                                                       double mass_gev = 0.13957039);
   static std::pair<double, double> dca_to_vertex(const TpcKalmanResult &fit,
-                                                 const TpcTrackVec3 &vertex);
+                                                 const TpcTrackVec3 &vertex,
+                                                 const TpcKalmanConfig *config = nullptr);
 };
 
 #endif

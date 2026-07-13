@@ -28,6 +28,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -246,11 +247,19 @@ int TpcV0CandidateTree::Init(PHCompositeNode *topNode)
 
 int TpcV0CandidateTree::process_event(PHCompositeNode *topNode)
 {
+  const auto event_start = std::chrono::steady_clock::now();
+  const double kalman_fit_before = m_timing_kalman_fit_seconds;
+  const double kalman_pca_before = m_timing_kalman_pca_seconds;
+  const std::uint64_t rkn_propagations_before = m_timing_rkn_propagations;
+  const std::uint64_t rkn_steps_before = m_timing_rkn_accepted_steps;
+  const std::uint64_t rkn_retries_before = m_timing_rkn_rejected_trials;
+  const std::uint64_t rkn_failures_before = m_timing_rkn_failures;
   const int run_number = get_run_number(topNode);
   const int event_number = get_event_number(topNode);
   Vec3 primary_vertex = m_fixed_primary_vertex;
   std::map<int, Tracklet> tracklet_map;
 
+  const auto track_build_start = std::chrono::steady_clock::now();
   if (m_use_pattern_cluster_tracks)
   {
 #if G4TPC_HAS_INMODULETRACKS
@@ -305,6 +314,48 @@ int TpcV0CandidateTree::process_event(PHCompositeNode *topNode)
     primary_vertex = get_primary_vertex(truth_info);
     tracklet_map = build_tracklets(truth_points, truth_info);
   }
+  const double track_build_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - track_build_start).count();
+  if (m_print_timing)
+  {
+    std::cout << "[V0TimingStage] run=" << run_number
+              << " event=" << event_number
+              << " stage=track_build_done"
+              << " tracks=" << tracklet_map.size()
+              << " stage_s=" << track_build_seconds
+              << " kalman_fit_s=" << (m_timing_kalman_fit_seconds - kalman_fit_before)
+              << " rkn_propagations=" << (m_timing_rkn_propagations - rkn_propagations_before)
+              << " rkn_steps=" << (m_timing_rkn_accepted_steps - rkn_steps_before)
+              << std::endl;
+  }
+
+  const auto dca_cache_start = std::chrono::steady_clock::now();
+  for (auto &entry : tracklet_map)
+  {
+    auto &tracklet = entry.second;
+    tracklet.vertex_dca = tracklet.has_kalman
+                              ? TpcTrackKalmanFitter::dca_to_vertex(
+                                    tracklet.kalman, primary_vertex, &m_kalman_config)
+                              : (tracklet.has_helix
+                                     ? helix_dca_to_vertex(tracklet.helix, primary_vertex)
+                                     : track_dca_to_vertex(
+                                           tracklet.position, tracklet.momentum, primary_vertex));
+    tracklet.has_vertex_dca =
+        std::isfinite(tracklet.vertex_dca.first) &&
+        std::isfinite(tracklet.vertex_dca.second);
+  }
+  const double dca_cache_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - dca_cache_start).count();
+  m_timing_dca_cache_seconds += dca_cache_seconds;
+  if (m_print_timing)
+  {
+    std::cout << "[V0TimingStage] run=" << run_number
+              << " event=" << event_number
+              << " stage=dca_cache_done"
+              << " tracks=" << tracklet_map.size()
+              << " stage_s=" << dca_cache_seconds
+              << std::endl;
+  }
 
   std::vector<const Tracklet *> tracklets;
   tracklets.reserve(tracklet_map.size());
@@ -313,6 +364,7 @@ int TpcV0CandidateTree::process_event(PHCompositeNode *topNode)
     tracklets.push_back(&entry.second);
   }
 
+  const auto track_qa_start = std::chrono::steady_clock::now();
   for (const auto *tracklet : tracklets)
   {
     fill_track_row(*tracklet, primary_vertex, run_number, event_number);
@@ -321,13 +373,81 @@ int TpcV0CandidateTree::process_event(PHCompositeNode *topNode)
       fill_cluster_residual_rows(*tracklet, primary_vertex, run_number, event_number);
     }
   }
+  const double track_qa_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - track_qa_start).count();
+  if (m_print_timing)
+  {
+    std::cout << "[V0TimingStage] run=" << run_number
+              << " event=" << event_number
+              << " stage=track_qa_done"
+              << " stage_s=" << track_qa_seconds
+              << std::endl;
+  }
 
+  const auto pair_loop_start = std::chrono::steady_clock::now();
+  std::uint64_t event_pairs_processed = 0;
+  const std::uint64_t event_pairs_total =
+      tracklets.size() > 1
+          ? static_cast<std::uint64_t>(tracklets.size()) *
+                static_cast<std::uint64_t>(tracklets.size() - 1) / 2
+          : 0;
+  if (m_print_timing)
+  {
+    std::cout << "[V0TimingStage] run=" << run_number
+              << " event=" << event_number
+              << " stage=pair_loop_start"
+              << " pairs=" << event_pairs_total
+              << std::endl;
+  }
   for (std::size_t i = 0; i < tracklets.size(); ++i)
   {
     for (std::size_t j = i + 1; j < tracklets.size(); ++j)
     {
       make_pair_row(*tracklets[i], *tracklets[j], primary_vertex, run_number, event_number);
+      ++event_pairs_processed;
+      if (m_print_timing &&
+          (event_pairs_processed == 1 || event_pairs_processed % 1000 == 0))
+      {
+        std::cout << "[V0TimingPair] run=" << run_number
+                  << " event=" << event_number
+                  << " done=" << event_pairs_processed
+                  << " total=" << event_pairs_total
+                  << " pair_loop_s=" << std::chrono::duration<double>(
+                         std::chrono::steady_clock::now() - pair_loop_start).count()
+                  << " kalman_pca_s=" << (m_timing_kalman_pca_seconds - kalman_pca_before)
+                  << std::endl;
+      }
     }
+  }
+  const double pair_loop_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - pair_loop_start).count();
+  const double total_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - event_start).count();
+  const double kalman_fit_seconds = m_timing_kalman_fit_seconds - kalman_fit_before;
+  const double kalman_pca_seconds = m_timing_kalman_pca_seconds - kalman_pca_before;
+
+  ++m_timing_events;
+  m_timing_total_seconds += total_seconds;
+  m_timing_track_build_seconds += track_build_seconds;
+  m_timing_track_qa_seconds += track_qa_seconds;
+  m_timing_pair_loop_seconds += pair_loop_seconds;
+
+  if (m_print_timing)
+  {
+    std::cout << "[V0Timing] run=" << run_number
+              << " event=" << event_number
+              << " tracks=" << tracklets.size()
+              << " total_s=" << total_seconds
+              << " track_build_s=" << track_build_seconds
+              << " kalman_fit_s=" << kalman_fit_seconds
+              << " track_qa_s=" << track_qa_seconds
+              << " pair_loop_s=" << pair_loop_seconds
+              << " kalman_pca_s=" << kalman_pca_seconds
+              << " rkn_propagations=" << (m_timing_rkn_propagations - rkn_propagations_before)
+              << " rkn_steps=" << (m_timing_rkn_accepted_steps - rkn_steps_before)
+              << " rkn_retries=" << (m_timing_rkn_rejected_trials - rkn_retries_before)
+              << " rkn_failures=" << (m_timing_rkn_failures - rkn_failures_before)
+              << std::endl;
   }
 
   return Fun4AllReturnCodes::EVENT_OK;
@@ -363,9 +483,29 @@ int TpcV0CandidateTree::End(PHCompositeNode * /*topNode*/)
               << " reject_pca=" << m_counter_reject_pca
               << " reject_pointing=" << m_counter_reject_pointing
               << " reject_ap=" << m_counter_reject_ap
+              << " reject_pair_selection=" << m_counter_reject_pair_selection
               << " written=" << m_counter_written
               << " tracks_written=" << m_counter_tracks_written
               << " cluster_residuals_written=" << m_counter_cluster_residuals_written
+              << std::endl;
+  }
+
+  if (m_print_timing)
+  {
+    std::cout << "[V0TimingSummary] events=" << m_timing_events
+              << " total_s=" << m_timing_total_seconds
+              << " track_build_s=" << m_timing_track_build_seconds
+              << " kalman_fits=" << m_timing_kalman_fits
+              << " kalman_fit_s=" << m_timing_kalman_fit_seconds
+              << " rkn_s=" << m_timing_rkn_seconds
+              << " dca_cache_s=" << m_timing_dca_cache_seconds
+              << " track_qa_s=" << m_timing_track_qa_seconds
+              << " pair_loop_s=" << m_timing_pair_loop_seconds
+              << " kalman_pca_s=" << m_timing_kalman_pca_seconds
+              << " rkn_propagations=" << m_timing_rkn_propagations
+              << " rkn_steps=" << m_timing_rkn_accepted_steps
+              << " rkn_retries=" << m_timing_rkn_rejected_trials
+              << " rkn_failures=" << m_timing_rkn_failures
               << std::endl;
   }
 
@@ -741,10 +881,13 @@ bool TpcV0CandidateTree::make_pair_row(const Tracklet &track1, const Tracklet &t
 
   if (m_fit_kalman_tracks && track1.has_kalman && track2.has_kalman)
   {
+    const auto pca_start = std::chrono::steady_clock::now();
     auto candidates = kalman_pca_candidates(
         track1.kalman, track2.kalman, m_kalman_config, primary_vertex,
         m_kalman_max_upstream_cm, m_kalman_downstream_margin_cm,
         m_coarse_steps, m_pca_candidates);
+    m_timing_kalman_pca_seconds += std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - pca_start).count();
     if (candidates.empty())
     {
       ++m_counter_reject_pca;
@@ -780,8 +923,14 @@ bool TpcV0CandidateTree::make_pair_row(const Tracklet &track1, const Tracklet &t
     theta2 = best.s2;
     mom1 = kalman_momentum(track1.kalman, theta1, m_kalman_config, primary_vertex);
     mom2 = kalman_momentum(track2.kalman, theta2, m_kalman_config, primary_vertex);
-    dca1 = TpcTrackKalmanFitter::dca_to_vertex(track1.kalman, primary_vertex);
-    dca2 = TpcTrackKalmanFitter::dca_to_vertex(track2.kalman, primary_vertex);
+    dca1 = track1.has_vertex_dca
+               ? track1.vertex_dca
+               : TpcTrackKalmanFitter::dca_to_vertex(
+                     track1.kalman, primary_vertex, &m_kalman_config);
+    dca2 = track2.has_vertex_dca
+               ? track2.vertex_dca
+               : TpcTrackKalmanFitter::dca_to_vertex(
+                     track2.kalman, primary_vertex, &m_kalman_config);
   }
   else if (m_fit_helix_tracks && track1.has_helix && track2.has_helix)
   {
@@ -858,6 +1007,13 @@ bool TpcV0CandidateTree::make_pair_row(const Tracklet &track1, const Tracklet &t
   if (!armenteros(pplus, pminus, alpha, qt))
   {
     ++m_counter_reject_ap;
+    return false;
+  }
+
+  if (!passes_pair_selection(pca1, pca2, pair_vertex, primary_vertex,
+                             pair_dca, cos_theta, alpha))
+  {
+    ++m_counter_reject_pair_selection;
     return false;
   }
 
@@ -1110,11 +1266,15 @@ void TpcV0CandidateTree::fill_track_row(const Tracklet &tracklet,
     m_track.residual_rphi_vec.push_back(std::isfinite(residual_rphi) ? static_cast<float>(residual_rphi) : nan);
   }
 
-  const auto dca = tracklet.has_kalman
-                       ? TpcTrackKalmanFitter::dca_to_vertex(tracklet.kalman, primary_vertex)
-                       : (tracklet.has_helix
-                              ? helix_dca_to_vertex(tracklet.helix, primary_vertex)
-                              : track_dca_to_vertex(tracklet.position, tracklet.momentum, primary_vertex));
+  const auto dca = tracklet.has_vertex_dca
+                       ? tracklet.vertex_dca
+                       : (tracklet.has_kalman
+                              ? TpcTrackKalmanFitter::dca_to_vertex(
+                                    tracklet.kalman, primary_vertex, &m_kalman_config)
+                              : (tracklet.has_helix
+                                     ? helix_dca_to_vertex(tracklet.helix, primary_vertex)
+                                     : track_dca_to_vertex(
+                                           tracklet.position, tracklet.momentum, primary_vertex)));
   m_track.dca_xy = static_cast<float>(dca.first);
   m_track.dca_z = static_cast<float>(dca.second);
   m_track.vertex_x = static_cast<float>(primary_vertex.x);
@@ -1816,7 +1976,33 @@ bool TpcV0CandidateTree::fit_kalman(const std::vector<TruthPoint> &points,
                                     const int charge,
                                     TpcKalmanResult &kalman) const
 {
-  return TpcTrackKalmanFitter::fit(points, charge, m_kalman_config, kalman, kPionMass);
+  const auto start = std::chrono::steady_clock::now();
+  const bool success = TpcTrackKalmanFitter::fit(
+      points, charge, m_kalman_config, kalman, kPionMass);
+  const double fit_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - start).count();
+  m_timing_kalman_fit_seconds += fit_seconds;
+  m_timing_rkn_seconds += kalman.rkn_seconds;
+  m_timing_rkn_propagations += kalman.rkn_propagations;
+  m_timing_rkn_accepted_steps += kalman.rkn_accepted_steps;
+  m_timing_rkn_rejected_trials += kalman.rkn_rejected_trials;
+  m_timing_rkn_failures += kalman.rkn_failures;
+  ++m_timing_kalman_fits;
+  if (m_print_timing &&
+      (m_timing_kalman_fits <= 3 || m_timing_kalman_fits % 10 == 0 || fit_seconds > 1.0))
+  {
+    std::cout << "[V0TimingFit] fit=" << m_timing_kalman_fits
+              << " points=" << points.size()
+              << " success=" << success
+              << " fit_s=" << fit_seconds
+              << " rkn_s=" << kalman.rkn_seconds
+              << " rkn_propagations=" << kalman.rkn_propagations
+              << " rkn_steps=" << kalman.rkn_accepted_steps
+              << " rkn_retries=" << kalman.rkn_rejected_trials
+              << " rkn_failures=" << kalman.rkn_failures
+              << std::endl;
+  }
+  return success;
 }
 
 bool TpcV0CandidateTree::helix_from_state(const Vec3 &position, const Vec3 &momentum,
@@ -1934,7 +2120,8 @@ TpcV0CandidateTree::KalmanPca TpcV0CandidateTree::refine_kalman_pair(
     double s1, double s2,
     const double min1, const double max1,
     const double min2, const double max2,
-    double max_step)
+    double max_step,
+    const int max_iterations)
 {
   KalmanPca best;
   best.s1 = s1;
@@ -1943,7 +2130,7 @@ TpcV0CandidateTree::KalmanPca TpcV0CandidateTree::refine_kalman_pair(
   best.pca2 = kalman_point(kalman2, s2, config, reference_vertex);
   double best_dca2 = square(distance(best.pca1, best.pca2));
 
-  for (int iter = 0; iter < 30; ++iter)
+  for (int iter = 0; iter < std::max(1, max_iterations); ++iter)
   {
     const Vec3 pos1 = kalman_point(kalman1, s1, config, reference_vertex);
     const Vec3 pos2 = kalman_point(kalman2, s2, config, reference_vertex);
@@ -2015,17 +2202,45 @@ std::vector<TpcV0CandidateTree::KalmanPca> TpcV0CandidateTree::kalman_pca_candid
   const double max2 = std::abs(downstream_margin_cm);
   const int nsteps = std::max(8, coarse_steps);
   const int ncandidates = std::max(1, max_candidates);
+  const bool use_fast_field_pca =
+      config.magnetic_field != nullptr && config.rkn_fast_field_pca;
+  TpcKalmanConfig search_config = config;
+  if (use_fast_field_pca)
+  {
+    // Use a cheap uniform-Bz trajectory only to locate promising path lengths.
+    // The selected candidates are refined below with the full field map.
+    search_config.magnetic_field = nullptr;
+    search_config.rkn_step_tolerance = 0.0;
+    search_config.rkn_max_step_cm = std::max(20.0, std::abs(config.rkn_max_step_cm));
+  }
+  const TpcKalmanConfig &coarse_config = use_fast_field_pca ? search_config : config;
 
   std::vector<std::tuple<double, double, double>> seeds;
   seeds.reserve(static_cast<std::size_t>(nsteps * nsteps));
+  std::vector<double> s1_values(static_cast<std::size_t>(nsteps));
+  std::vector<double> s2_values(static_cast<std::size_t>(nsteps));
+  std::vector<Vec3> points1(static_cast<std::size_t>(nsteps));
+  std::vector<Vec3> points2(static_cast<std::size_t>(nsteps));
   for (int i = 0; i < nsteps; ++i)
   {
-    const double s1 = min1 + (max1 - min1) * static_cast<double>(i) / static_cast<double>(nsteps - 1);
-    const Vec3 pos1 = kalman_point(kalman1, s1, config, reference_vertex);
+    s1_values[static_cast<std::size_t>(i)] =
+        min1 + (max1 - min1) * static_cast<double>(i) / static_cast<double>(nsteps - 1);
+    s2_values[static_cast<std::size_t>(i)] =
+        min2 + (max2 - min2) * static_cast<double>(i) / static_cast<double>(nsteps - 1);
+    points1[static_cast<std::size_t>(i)] =
+        kalman_point(kalman1, s1_values[static_cast<std::size_t>(i)], coarse_config, reference_vertex);
+    points2[static_cast<std::size_t>(i)] =
+        kalman_point(kalman2, s2_values[static_cast<std::size_t>(i)], coarse_config, reference_vertex);
+  }
+
+  for (int i = 0; i < nsteps; ++i)
+  {
+    const double s1 = s1_values[static_cast<std::size_t>(i)];
+    const Vec3 &pos1 = points1[static_cast<std::size_t>(i)];
     for (int j = 0; j < nsteps; ++j)
     {
-      const double s2 = min2 + (max2 - min2) * static_cast<double>(j) / static_cast<double>(nsteps - 1);
-      const Vec3 pos2 = kalman_point(kalman2, s2, config, reference_vertex);
+      const double s2 = s2_values[static_cast<std::size_t>(j)];
+      const Vec3 &pos2 = points2[static_cast<std::size_t>(j)];
       const double d2 = square(distance(pos1, pos2));
       if (std::isfinite(d2))
       {
@@ -2042,11 +2257,23 @@ std::vector<TpcV0CandidateTree::KalmanPca> TpcV0CandidateTree::kalman_pca_candid
   candidates.reserve(static_cast<std::size_t>(nrefine));
   for (int index = 0; index < nrefine; ++index)
   {
+    double seed_s1 = std::get<1>(seeds[static_cast<std::size_t>(index)]);
+    double seed_s2 = std::get<2>(seeds[static_cast<std::size_t>(index)]);
+    if (use_fast_field_pca)
+    {
+      const auto surrogate = refine_kalman_pair(
+          kalman1, kalman2, search_config, reference_vertex,
+          seed_s1, seed_s2, min1, max1, min2, max2, max_step, 12);
+      seed_s1 = surrogate.s1;
+      seed_s2 = surrogate.s2;
+    }
+
     candidates.push_back(refine_kalman_pair(
         kalman1, kalman2, config, reference_vertex,
-        std::get<1>(seeds[static_cast<std::size_t>(index)]),
-        std::get<2>(seeds[static_cast<std::size_t>(index)]),
-        min1, max1, min2, max2, max_step));
+        seed_s1, seed_s2, min1, max1, min2, max2, max_step,
+        use_fast_field_pca
+            ? std::max(1, config.rkn_field_pca_refine_iterations)
+            : 30));
   }
 
   std::sort(candidates.begin(), candidates.end(),
@@ -2103,18 +2330,44 @@ double TpcV0CandidateTree::invariant_mass(const Vec3 &mom1, const double mass1,
 bool TpcV0CandidateTree::passes_preselection(const Tracklet &track1, const Tracklet &track2,
                                              const Vec3 &primary_vertex) const
 {
+  if (m_pre_track_npoints_min > 0 &&
+      (track1.npoints < m_pre_track_npoints_min || track2.npoints < m_pre_track_npoints_min))
+  {
+    return false;
+  }
+
+  if (m_pre_track_quality_max >= 0.0 &&
+      (!std::isfinite(track1.fit_chi2_ndf) || !std::isfinite(track2.fit_chi2_ndf) ||
+       track1.fit_chi2_ndf >= m_pre_track_quality_max ||
+       track2.fit_chi2_ndf >= m_pre_track_quality_max))
+  {
+    return false;
+  }
+
   if (m_pre_track_pt_min > 0.0 &&
       (pt(track1.momentum) < m_pre_track_pt_min || pt(track2.momentum) < m_pre_track_pt_min))
   {
     return false;
   }
 
-  const auto dca1 = (track1.has_kalman) ? TpcTrackKalmanFitter::dca_to_vertex(track1.kalman, primary_vertex)
-                                        : ((track1.has_helix) ? helix_dca_to_vertex(track1.helix, primary_vertex)
-                                                              : track_dca_to_vertex(track1.position, track1.momentum, primary_vertex));
-  const auto dca2 = (track2.has_kalman) ? TpcTrackKalmanFitter::dca_to_vertex(track2.kalman, primary_vertex)
-                                        : ((track2.has_helix) ? helix_dca_to_vertex(track2.helix, primary_vertex)
-                                                              : track_dca_to_vertex(track2.position, track2.momentum, primary_vertex));
+  const auto dca1 = track1.has_vertex_dca
+                        ? track1.vertex_dca
+                        : ((track1.has_kalman)
+                               ? TpcTrackKalmanFitter::dca_to_vertex(
+                                     track1.kalman, primary_vertex, &m_kalman_config)
+                               : ((track1.has_helix)
+                                      ? helix_dca_to_vertex(track1.helix, primary_vertex)
+                                      : track_dca_to_vertex(
+                                            track1.position, track1.momentum, primary_vertex)));
+  const auto dca2 = track2.has_vertex_dca
+                        ? track2.vertex_dca
+                        : ((track2.has_kalman)
+                               ? TpcTrackKalmanFitter::dca_to_vertex(
+                                     track2.kalman, primary_vertex, &m_kalman_config)
+                               : ((track2.has_helix)
+                                      ? helix_dca_to_vertex(track2.helix, primary_vertex)
+                                      : track_dca_to_vertex(
+                                            track2.position, track2.momentum, primary_vertex)));
   if (!std::isfinite(dca1.first) || !std::isfinite(dca1.second) ||
       !std::isfinite(dca2.first) || !std::isfinite(dca2.second))
   {
@@ -2170,6 +2423,56 @@ bool TpcV0CandidateTree::passes_preselection(const Tracklet &track1, const Track
   }
   if (m_pre_cos_theta_min >= -1.0 &&
       (!std::isfinite(cos_theta) || cos_theta < m_pre_cos_theta_min))
+  {
+    return false;
+  }
+
+  return true;
+}
+
+bool TpcV0CandidateTree::passes_pair_selection(const Vec3 &pca1, const Vec3 &pca2,
+                                               const Vec3 &pair_vertex,
+                                               const Vec3 &primary_vertex,
+                                               const double pair_dca,
+                                               const double cos_theta,
+                                               const double alpha) const
+{
+  if (m_pair_pca_z_max >= 0.0 &&
+      (!std::isfinite(pair_vertex.z) || std::abs(pair_vertex.z) >= m_pair_pca_z_max))
+  {
+    return false;
+  }
+
+  const double pca_dz = std::abs(pca1.z - pca2.z);
+  if (m_pair_pca_dz_max >= 0.0 &&
+      (!std::isfinite(pca_dz) || pca_dz >= m_pair_pca_dz_max))
+  {
+    return false;
+  }
+
+  const double dx = pair_vertex.x - primary_vertex.x;
+  const double dy = pair_vertex.y - primary_vertex.y;
+  const double decay_radius = std::hypot(dx, dy);
+  if (m_pair_decay_radius_min >= 0.0 &&
+      (!std::isfinite(decay_radius) || decay_radius <= m_pair_decay_radius_min))
+  {
+    return false;
+  }
+
+  if (m_pair_alpha_abs_max >= 0.0 &&
+      (!std::isfinite(alpha) || std::abs(alpha) >= m_pair_alpha_abs_max))
+  {
+    return false;
+  }
+
+  if (m_pair_dca_max >= 0.0 &&
+      (!std::isfinite(pair_dca) || pair_dca >= m_pair_dca_max))
+  {
+    return false;
+  }
+
+  if (m_pair_dira_min >= -1.0 &&
+      (!std::isfinite(cos_theta) || cos_theta <= m_pair_dira_min))
   {
     return false;
   }

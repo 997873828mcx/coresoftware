@@ -70,6 +70,10 @@ class TpcV0CandidateTree : public SubsysReco
     m_kalman_config.bfield_t = value;
   }
   void set_kalman_magnetic_field(const PHField *field) { m_kalman_config.magnetic_field = field; }
+  void set_kalman_analytic_uniform_propagation(const bool value = true)
+  {
+    m_kalman_config.analytic_uniform_propagation = value;
+  }
   void use_kalman_field_map(const bool value = true)
   {
     m_use_kalman_field_map = value;
@@ -80,15 +84,30 @@ class TpcV0CandidateTree : public SubsysReco
   }
   void set_kalman_rkn4(const double max_step_cm,
                        const double step_tolerance,
-                       const int max_step_trials = 12)
+                       const int max_step_trials = 12,
+                       const int max_total_steps = 2000)
   {
     m_kalman_config.rkn_max_step_cm = max_step_cm;
     m_kalman_config.rkn_step_tolerance = step_tolerance;
     m_kalman_config.rkn_max_step_trials = max_step_trials;
+    m_kalman_config.rkn_max_total_steps = max_total_steps;
+  }
+  void set_kalman_fast_field_jacobian(const bool value = true)
+  {
+    m_kalman_config.rkn_fast_field_jacobian = value;
+  }
+  void set_kalman_fast_field_pca(const bool value = true)
+  {
+    m_kalman_config.rkn_fast_field_pca = value;
+  }
+  void set_kalman_field_pca_refine_iterations(const int value)
+  {
+    m_kalman_config.rkn_field_pca_refine_iterations = value;
   }
   void set_theta_extension(const double value) { m_theta_extension = value; }
   void set_coarse_steps(const int value) { m_coarse_steps = value; }
   void set_pca_candidates(const int value) { m_pca_candidates = value; }
+  void set_print_timing(const bool value = true) { m_print_timing = value; }
   void set_downstream_margin(const double value) { m_downstream_margin = value; }
   void set_kalman_search(const double max_upstream_cm, const double downstream_margin_cm)
   {
@@ -137,6 +156,14 @@ class TpcV0CandidateTree : public SubsysReco
   void set_pre_pair_dca_max(const double value) { m_pre_pair_dca_max = value; }
   void set_pre_lproj_min(const double value) { m_pre_lproj_min = value; }
   void set_pre_cos_theta_min(const double value) { m_pre_cos_theta_min = value; }
+  void set_pre_track_quality_max(const double value) { m_pre_track_quality_max = value; }
+  void set_pre_track_npoints_min(const int value) { m_pre_track_npoints_min = value; }
+  void set_pair_pca_z_max(const double value) { m_pair_pca_z_max = value; }
+  void set_pair_pca_dz_max(const double value) { m_pair_pca_dz_max = value; }
+  void set_pair_decay_radius_min(const double value) { m_pair_decay_radius_min = value; }
+  void set_pair_alpha_abs_max(const double value) { m_pair_alpha_abs_max = value; }
+  void set_pair_dca_max(const double value) { m_pair_dca_max = value; }
+  void set_pair_dira_min(const double value) { m_pair_dira_min = value; }
   void set_write_same_sign_pairs(const bool value) { m_write_same_sign_pairs = value; }
   void set_write_cluster_residual_tree(const bool value) { m_write_cluster_residual_tree = value; }
 
@@ -176,6 +203,8 @@ class TpcV0CandidateTree : public SubsysReco
     double fit_chi2{0.0};
     int fit_ndf{0};
     double fit_chi2_ndf{0.0};
+    bool has_vertex_dca{false};
+    std::pair<double, double> vertex_dca;
   };
 
   struct KalmanPca
@@ -471,7 +500,8 @@ class TpcV0CandidateTree : public SubsysReco
                                       double s1, double s2,
                                       double min1, double max1,
                                       double min2, double max2,
-                                      double max_step);
+                                      double max_step,
+                                      int max_iterations = 30);
   static std::vector<KalmanPca> kalman_pca_candidates(const TpcKalmanResult &kalman1,
                                                      const TpcKalmanResult &kalman2,
                                                      const TpcKalmanConfig &config,
@@ -492,6 +522,9 @@ class TpcV0CandidateTree : public SubsysReco
 
   bool passes_preselection(const Tracklet &track1, const Tracklet &track2,
                            const Vec3 &primary_vertex) const;
+  bool passes_pair_selection(const Vec3 &pca1, const Vec3 &pca2,
+                             const Vec3 &pair_vertex, const Vec3 &primary_vertex,
+                             double pair_dca, double cos_theta, double alpha) const;
 
   std::string m_filename;
   std::string m_truth_point_node{"G4HIT_TPC_TRUECLUSTER"};
@@ -536,7 +569,16 @@ class TpcV0CandidateTree : public SubsysReco
   double m_pre_pair_dca_max{5.0};
   double m_pre_lproj_min{0.2};
   double m_pre_cos_theta_min{-2.0};
+  double m_pre_track_quality_max{-1.0};
+  int m_pre_track_npoints_min{0};
+  double m_pair_pca_z_max{-1.0};
+  double m_pair_pca_dz_max{-1.0};
+  double m_pair_decay_radius_min{-1.0};
+  double m_pair_alpha_abs_max{-1.0};
+  double m_pair_dca_max{-1.0};
+  double m_pair_dira_min{-2.0};
   bool m_write_same_sign_pairs{false};
+  bool m_print_timing{false};
 
   std::uint64_t m_counter_raw_pairs{0};
   std::uint64_t m_counter_reject_charge{0};
@@ -544,9 +586,24 @@ class TpcV0CandidateTree : public SubsysReco
   std::uint64_t m_counter_reject_pca{0};
   std::uint64_t m_counter_reject_pointing{0};
   std::uint64_t m_counter_reject_ap{0};
+  std::uint64_t m_counter_reject_pair_selection{0};
   std::uint64_t m_counter_written{0};
   std::uint64_t m_counter_tracks_written{0};
   std::uint64_t m_counter_cluster_residuals_written{0};
+  std::uint64_t m_timing_events{0};
+  mutable std::uint64_t m_timing_kalman_fits{0};
+  mutable std::uint64_t m_timing_rkn_propagations{0};
+  mutable std::uint64_t m_timing_rkn_accepted_steps{0};
+  mutable std::uint64_t m_timing_rkn_rejected_trials{0};
+  mutable std::uint64_t m_timing_rkn_failures{0};
+  double m_timing_total_seconds{0.0};
+  double m_timing_track_build_seconds{0.0};
+  mutable double m_timing_kalman_fit_seconds{0.0};
+  mutable double m_timing_rkn_seconds{0.0};
+  double m_timing_track_qa_seconds{0.0};
+  double m_timing_dca_cache_seconds{0.0};
+  double m_timing_pair_loop_seconds{0.0};
+  double m_timing_kalman_pca_seconds{0.0};
 };
 
 #endif
