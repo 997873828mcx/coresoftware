@@ -20,6 +20,7 @@ class PHG4TruthInfoContainer;
 class TFile;
 class TTree;
 class FinalTrackContainer;
+class FinalTrackVertexContainer;
 class TpcPolyClusterTrackContainer;
 
 class TpcV0CandidateTree : public SubsysReco
@@ -38,6 +39,7 @@ class TpcV0CandidateTree : public SubsysReco
   void set_truth_info_node(const std::string &name) { m_truth_info_node = name; }
   void set_pattern_cluster_track_node(const std::string &name) { m_pattern_cluster_track_node = name; }
   void set_pattern_final_track_node(const std::string &name) { m_pattern_final_track_node = name; }
+  void set_pattern_final_track_vertex_node(const std::string &name) { m_pattern_final_track_vertex_node = name; }
   void use_pattern_cluster_tracks(const bool value = true) { m_use_pattern_cluster_tracks = value; }
   void set_use_truth_primary_vertex(const bool value) { m_use_truth_primary_vertex = value; }
   void set_primary_vertex(const double x, const double y, const double z);
@@ -188,7 +190,11 @@ class TpcV0CandidateTree : public SubsysReco
     int embed_id{0};
     int is_primary{0};
     int charge{0};
+    int side{-1};
     int npoints{0};
+    unsigned int ntpc_clusters{0};
+    bool has_dedx{false};
+    double dedx{0.0};
     Vec3 position;
     Vec3 momentum;
     Vec3 truth_momentum;
@@ -205,6 +211,13 @@ class TpcV0CandidateTree : public SubsysReco
     double fit_chi2_ndf{0.0};
     bool has_vertex_dca{false};
     std::pair<double, double> vertex_dca;
+    bool has_beamline_pca{false};
+    Vec3 beamline_pca;
+    double rdca_zero{0.0};
+    bool has_pattern_vertex{false};
+    Vec3 pattern_vertex;
+    double pattern_vertex_z_rms{0.0};
+    unsigned int pattern_vertex_ntracks{0};
   };
 
   struct KalmanPca
@@ -240,6 +253,8 @@ class TpcV0CandidateTree : public SubsysReco
     float qT{0.0F};
     float charge1{0.0F};
     float charge2{0.0F};
+    float dedx_1{0.0F};
+    float dedx_2{0.0F};
     float cosThetaReco{0.0F};
     float Lproj{0.0F};
 
@@ -310,17 +325,21 @@ class TpcV0CandidateTree : public SubsysReco
     int pid{0};
     int parent_id{0};
     int parent_pid{0};
-    int charge{0};
+    double charge{0.0};
+    int side{-1};
     int npoints{0};
+    unsigned int ntpc_clusters{0};
     int has_helix{0};
     int has_kalman{0};
     int is_primary{0};
 
-    float px{0.0F};
-    float py{0.0F};
-    float pz{0.0F};
-    float pt{0.0F};
-    float p{0.0F};
+    double px{0.0};
+    double py{0.0};
+    double pz{0.0};
+    double pt{0.0};
+    double p{0.0};
+    double eta{0.0};
+    double dedx{0.0};
     float x{0.0F};
     float y{0.0F};
     float z{0.0F};
@@ -336,9 +355,17 @@ class TpcV0CandidateTree : public SubsysReco
 
     float dca_xy{0.0F};
     float dca_z{0.0F};
-    float vertex_x{0.0F};
-    float vertex_y{0.0F};
-    float vertex_z{0.0F};
+    double vertex_x{0.0};
+    double vertex_y{0.0};
+    double vertex_z{0.0};
+    int vertex_from_upstream{0};
+    double vertex_z_rms{0.0};
+    unsigned int vertex_ntracks{0};
+    double pca_x{0.0};
+    double pca_y{0.0};
+    double pca_z{0.0};
+    double rDCA_zero{0.0};
+    double zDCA{0.0};
 
     float helix_cx{0.0F};
     float helix_cy{0.0F};
@@ -365,15 +392,15 @@ class TpcV0CandidateTree : public SubsysReco
     float truth_pz{0.0F};
     float cos_mom_truth{0.0F};
 
-    std::vector<int> cluster_index_vec;
-    std::vector<int> cluster_side_vec;
-    std::vector<int> cluster_layer_vec;
-    std::vector<float> cluster_z_vec;
-    std::vector<float> cluster_r_vec;
-    std::vector<float> cluster_phi_vec;
-    std::vector<float> residual_z_vec;
-    std::vector<float> residual_r_vec;
-    std::vector<float> residual_rphi_vec;
+    std::vector<unsigned int> cluster_index;
+    std::vector<int> cluster_side;
+    std::vector<unsigned int> layer;
+    std::vector<double> cluster_z;
+    std::vector<double> cluster_r;
+    std::vector<double> cluster_phi;
+    std::vector<double> residual_z;
+    std::vector<double> residual_r;
+    std::vector<double> residual_rphi;
   };
 
   struct ClusterResidualRow
@@ -427,6 +454,12 @@ class TpcV0CandidateTree : public SubsysReco
                       int run_number, int event_number);
   void fill_cluster_residual_rows(const Tracklet &tracklet, const Vec3 &primary_vertex,
                                   int run_number, int event_number);
+  bool track_pca_to_xy(const Tracklet &tracklet, const Vec3 &beamline,
+                       Vec3 &pca, double &signed_dca_xy) const;
+  bool choose_pattern_collision_vertex(const Tracklet &tracklet,
+                                       FinalTrackVertexContainer *vertices,
+                                       Vec3 &vertex, double &z_rms,
+                                       unsigned int &ntracks) const;
   void assign_fit_quality(Tracklet &tracklet) const;
   void reset_pair_row();
   void reset_track_row();
@@ -531,6 +564,7 @@ class TpcV0CandidateTree : public SubsysReco
   std::string m_truth_info_node{"G4TruthInfo"};
   std::string m_pattern_cluster_track_node{"TPCPOLYCLUSTERTRACKS"};
   std::string m_pattern_final_track_node{"FINALTRACKS"};
+  std::string m_pattern_final_track_vertex_node{"FINALTRACKVERTICES"};
   bool m_use_pattern_cluster_tracks{false};
 
   TFile *m_file{nullptr};
