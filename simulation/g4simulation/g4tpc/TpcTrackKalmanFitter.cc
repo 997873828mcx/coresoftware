@@ -652,6 +652,12 @@ namespace
 
     const double direction = seed.direction;
     const double theta0 = theta_values.front();
+    const TpcTrackVec3 seed_position = TpcTrackHelixFitter::point(seed, theta0);
+    if (!TpcTrackHelixFitter::finite(seed_position))
+    {
+      return false;
+    }
+
     const double denom = kCurvaturePerCm * config.bfield_t * seed.radius;
     if (std::abs(denom) <= 0.0 || !std::isfinite(denom))
     {
@@ -659,9 +665,9 @@ namespace
     }
 
     state.setZero();
-    state(TpcTrackKalmanFitter::X) = points.front().position.x;
-    state(TpcTrackKalmanFitter::Y) = points.front().position.y;
-    state(TpcTrackKalmanFitter::Z) = points.front().position.z;
+    state(TpcTrackKalmanFitter::X) = seed_position.x;
+    state(TpcTrackKalmanFitter::Y) = seed_position.y;
+    state(TpcTrackKalmanFitter::Z) = seed_position.z;
     state(TpcTrackKalmanFitter::Phi) = normalize_phi(std::atan2(direction * std::cos(theta0),
                                                                direction * -std::sin(theta0)));
     state(TpcTrackKalmanFitter::QOverPt) = direction / denom;
