@@ -111,6 +111,12 @@ class TpcV0CandidateTree : public SubsysReco
   void set_pca_candidates(const int value) { m_pca_candidates = value; }
   void set_print_timing(const bool value = true) { m_print_timing = value; }
   void set_downstream_margin(const double value) { m_downstream_margin = value; }
+  void set_final_track_helix_search(const double max_upstream_cm,
+                                    const double downstream_margin_cm)
+  {
+    m_final_track_helix_max_upstream_cm = max_upstream_cm;
+    m_final_track_helix_downstream_margin_cm = downstream_margin_cm;
+  }
   void set_kalman_search(const double max_upstream_cm, const double downstream_margin_cm)
   {
     m_kalman_max_upstream_cm = max_upstream_cm;
@@ -174,6 +180,7 @@ class TpcV0CandidateTree : public SubsysReco
   using TruthPoint = TpcTrackPoint;
   using HelixFit = TpcTrackHelix;
   using HelixPca = TpcTrackHelixPca;
+  using HelixSearchRange = TpcTrackHelixSearchRange;
   using LinePca = TpcTrackLinePca;
   using PointOrder = TpcTrackPointOrder;
 
@@ -204,6 +211,8 @@ class TpcV0CandidateTree : public SubsysReco
     std::vector<TruthPoint> points;
     bool has_helix{false};
     HelixFit helix;
+    bool has_helix_search_range{false};
+    HelixSearchRange helix_search_range;
     bool has_kalman{false};
     TpcKalmanResult kalman;
     double fit_chi2{0.0};
@@ -375,6 +384,15 @@ class TpcV0CandidateTree : public SubsysReco
     float helix_theta_first{0.0F};
     float helix_theta_last{0.0F};
     float helix_direction{0.0F};
+    int helix_search_anchored{0};
+    int helix_anchor_point_index{-1};
+    float helix_anchor_theta{0.0F};
+    float helix_anchor_path_cm{0.0F};
+    float helix_anchor_residual_cm{0.0F};
+    float helix_search_theta_min{0.0F};
+    float helix_search_theta_max{0.0F};
+    float helix_search_upstream_cm{0.0F};
+    float helix_search_downstream_cm{0.0F};
 
     float kalman_chi2{0.0F};
     int kalman_ndof{0};
@@ -592,6 +610,8 @@ class TpcV0CandidateTree : public SubsysReco
   int m_coarse_steps{64};
   int m_pca_candidates{32};
   double m_downstream_margin{0.2};
+  double m_final_track_helix_max_upstream_cm{80.0};
+  double m_final_track_helix_downstream_margin_cm{5.0};
   bool m_prefer_positive_pointing{false};
   bool m_write_cluster_residual_tree{false};
 
@@ -624,6 +644,7 @@ class TpcV0CandidateTree : public SubsysReco
   std::uint64_t m_counter_written{0};
   std::uint64_t m_counter_tracks_written{0};
   std::uint64_t m_counter_cluster_residuals_written{0};
+  mutable std::uint64_t m_counter_reject_helix_anchor{0};
   std::uint64_t m_timing_events{0};
   mutable std::uint64_t m_timing_kalman_fits{0};
   mutable std::uint64_t m_timing_rkn_propagations{0};

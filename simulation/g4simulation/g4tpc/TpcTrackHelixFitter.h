@@ -44,6 +44,12 @@ class TpcTrackHelixFitter
   static std::pair<double, double> theta_search_range(const TpcTrackHelix &helix,
                                                       double theta_extension,
                                                       double downstream_margin);
+  static bool measurement_anchored_search_range(
+      const TpcTrackHelix &helix,
+      const std::vector<TpcTrackPoint> &points,
+      double max_upstream_cm,
+      double downstream_margin_cm,
+      TpcTrackHelixSearchRange &range);
   static bool line_line_pca(const TpcTrackVec3 &pos1,
                             const TpcTrackVec3 &dir1,
                             const TpcTrackVec3 &pos2,
@@ -65,6 +71,13 @@ class TpcTrackHelixFitter
                                                       int coarse_steps,
                                                       double downstream_margin,
                                                       int max_candidates);
+  static std::vector<TpcTrackHelixPca> pca_candidates_in_ranges(
+      const TpcTrackHelix &helix1,
+      const TpcTrackHelix &helix2,
+      const TpcTrackHelixSearchRange &range1,
+      const TpcTrackHelixSearchRange &range2,
+      int coarse_steps,
+      int max_candidates);
 
   static std::pair<double, double> helix_dca_to_vertex(const TpcTrackHelix &helix,
                                                        const TpcTrackVec3 &vertex);

@@ -13,6 +13,10 @@ namespace
   constexpr double kPi = 3.14159265358979323846;
   constexpr double kCurvatureRefineMinRadiusCm = 150.0;
   constexpr double kCurvatureRefineMaxThetaSpan = 1.0;
+  constexpr double kMinTurnDzForBranchingCm = 0.5;
+  constexpr double kAnchorResidualSlackCm = 5.0;
+  constexpr double kMaximumSearchTurnFraction = 0.95;
+  constexpr int kMaxMeasurementTurns = 32;
 
   template <class T>
   constexpr T square(const T &value)
@@ -986,6 +990,165 @@ std::pair<double, double> TpcTrackHelixFitter::theta_search_range(const TpcTrack
   return {std::min(upstream, downstream), std::max(upstream, downstream)};
 }
 
+bool TpcTrackHelixFitter::measurement_anchored_search_range(
+    const TpcTrackHelix &helix,
+    const std::vector<TpcTrackPoint> &points,
+    const double max_upstream_cm,
+    const double downstream_margin_cm,
+    TpcTrackHelixSearchRange &range)
+{
+  range = {};
+  if (points.empty() || !(helix.radius > 0.0) ||
+      !std::isfinite(helix.radius) || !std::isfinite(helix.theta_first) ||
+      !std::isfinite(helix.direction) || std::abs(helix.direction) < 0.5)
+  {
+    return false;
+  }
+
+  const double direction = helix.direction > 0.0 ? 1.0 : -1.0;
+  const double reference_theta = helix.theta_first;
+  const double circumference_cm = 2.0 * kPi * helix.radius;
+  if (!(circumference_cm > 0.0) || !std::isfinite(circumference_cm))
+  {
+    return false;
+  }
+
+  struct Projection
+  {
+    int point_index{-1};
+    double theta{0.0};
+    double path_cm{0.0};
+    double residual_cm{0.0};
+  };
+
+  std::vector<Projection> projections;
+  projections.reserve(points.size());
+  double minimum_residual_cm = std::numeric_limits<double>::infinity();
+  const double turn_dz_cm = 2.0 * kPi * helix.pitch * direction;
+
+  for (std::size_t index = 0; index < points.size(); ++index)
+  {
+    const auto &measurement = points[index].position;
+    if (!finite(measurement))
+    {
+      continue;
+    }
+
+    const double raw_theta = std::atan2(measurement.y - helix.cy,
+                                        measurement.x - helix.cx);
+    // Path is signed relative to the transverse perigee. Measurements may be
+    // either before or after that point in physical time, so start from the
+    // nearest angular branch and let z resolve any additional full turns.
+    const double base_phase = std::remainder(
+        direction * (raw_theta - reference_theta), 2.0 * kPi);
+    const double base_theta = reference_theta + direction * base_phase;
+    const TpcTrackVec3 base_position = point(helix, base_theta);
+
+    int turn_guess = 0;
+    if (std::abs(turn_dz_cm) >= kMinTurnDzForBranchingCm)
+    {
+      turn_guess = static_cast<int>(std::llround(
+          (measurement.z - base_position.z) / turn_dz_cm));
+      turn_guess = std::clamp(turn_guess,
+                              -kMaxMeasurementTurns,
+                              kMaxMeasurementTurns);
+    }
+
+    const int first_turn = std::max(-kMaxMeasurementTurns, turn_guess - 2);
+    const int last_turn = std::min(kMaxMeasurementTurns, turn_guess + 2);
+    Projection best;
+    best.point_index = static_cast<int>(index);
+    best.residual_cm = std::numeric_limits<double>::infinity();
+    int best_turn = -1;
+    for (int turn = first_turn; turn <= last_turn; ++turn)
+    {
+      const double theta = base_theta + direction * 2.0 * kPi * turn;
+      const TpcTrackVec3 projected = point(helix, theta);
+      const double residual_cm = distance(projected, measurement);
+      if (!std::isfinite(residual_cm))
+      {
+        continue;
+      }
+
+      if (residual_cm < best.residual_cm - 1.0e-12 ||
+          (std::abs(residual_cm - best.residual_cm) <= 1.0e-12 &&
+           (best_turn < 0 || turn < best_turn)))
+      {
+        best.theta = theta;
+        best.path_cm = helix.radius * (base_phase + 2.0 * kPi * turn);
+        best.residual_cm = residual_cm;
+        best_turn = turn;
+      }
+    }
+
+    if (!std::isfinite(best.residual_cm))
+    {
+      continue;
+    }
+    projections.push_back(best);
+    minimum_residual_cm = std::min(minimum_residual_cm, best.residual_cm);
+  }
+
+  if (projections.empty() || !std::isfinite(minimum_residual_cm))
+  {
+    return false;
+  }
+
+  const double residual_limit_cm = minimum_residual_cm + kAnchorResidualSlackCm;
+  auto anchor_iter = projections.end();
+  for (auto iter = projections.begin(); iter != projections.end(); ++iter)
+  {
+    if (iter->residual_cm > residual_limit_cm)
+    {
+      continue;
+    }
+    if (anchor_iter == projections.end() ||
+        iter->path_cm < anchor_iter->path_cm - 1.0e-9 ||
+        (std::abs(iter->path_cm - anchor_iter->path_cm) <= 1.0e-9 &&
+         iter->residual_cm < anchor_iter->residual_cm))
+    {
+      anchor_iter = iter;
+    }
+  }
+  if (anchor_iter == projections.end())
+  {
+    return false;
+  }
+
+  const double requested_upstream_cm = std::max(0.0, max_upstream_cm);
+  const double requested_downstream_cm = std::max(0.0, downstream_margin_cm);
+  // Leave a finite gap between the two ends of the search domain. A cap that
+  // differs from one turn only by machine epsilon still permits duplicate
+  // geometric intersections and rounds back to 2*pi in float QA branches.
+  const double maximum_span_cm =
+      kMaximumSearchTurnFraction * circumference_cm;
+  const double downstream_cm =
+      std::min(requested_downstream_cm, maximum_span_cm);
+  const double upstream_cm = std::min(
+      requested_upstream_cm, std::max(0.0, maximum_span_cm - downstream_cm));
+  if (!(upstream_cm + downstream_cm > 0.0))
+  {
+    return false;
+  }
+
+  const double lower_path_cm = anchor_iter->path_cm - upstream_cm;
+  const double upper_path_cm = anchor_iter->path_cm + downstream_cm;
+  const double theta_a = reference_theta + direction * lower_path_cm / helix.radius;
+  const double theta_b = reference_theta + direction * upper_path_cm / helix.radius;
+
+  range.valid = true;
+  range.anchor_point_index = anchor_iter->point_index;
+  range.anchor_theta = anchor_iter->theta;
+  range.anchor_path_cm = anchor_iter->path_cm;
+  range.anchor_residual_cm = anchor_iter->residual_cm;
+  range.theta_min = std::min(theta_a, theta_b);
+  range.theta_max = std::max(theta_a, theta_b);
+  range.upstream_cm = upstream_cm;
+  range.downstream_cm = downstream_cm;
+  return std::isfinite(range.theta_min) && std::isfinite(range.theta_max) &&
+         range.theta_max > range.theta_min;
+}
+
 bool TpcTrackHelixFitter::line_line_pca(const TpcTrackVec3 &pos1,
                                         const TpcTrackVec3 &dir1,
                                         const TpcTrackVec3 &pos2,
@@ -1088,8 +1251,37 @@ std::vector<TpcTrackHelixPca> TpcTrackHelixFitter::pca_candidates(
     const double downstream_margin,
     const int max_candidates)
 {
-  const auto range1 = theta_search_range(helix1, theta_extension, downstream_margin);
-  const auto range2 = theta_search_range(helix2, theta_extension, downstream_margin);
+  TpcTrackHelixSearchRange range1;
+  const auto legacy_range1 = theta_search_range(helix1, theta_extension, downstream_margin);
+  range1.valid = true;
+  range1.theta_min = legacy_range1.first;
+  range1.theta_max = legacy_range1.second;
+  TpcTrackHelixSearchRange range2;
+  const auto legacy_range2 = theta_search_range(helix2, theta_extension, downstream_margin);
+  range2.valid = true;
+  range2.theta_min = legacy_range2.first;
+  range2.theta_max = legacy_range2.second;
+  return pca_candidates_in_ranges(helix1, helix2, range1, range2,
+                                  coarse_steps, max_candidates);
+}
+
+std::vector<TpcTrackHelixPca> TpcTrackHelixFitter::pca_candidates_in_ranges(
+    const TpcTrackHelix &helix1,
+    const TpcTrackHelix &helix2,
+    const TpcTrackHelixSearchRange &range1,
+    const TpcTrackHelixSearchRange &range2,
+    const int coarse_steps,
+    const int max_candidates)
+{
+  if (!range1.valid || !range2.valid ||
+      !std::isfinite(range1.theta_min) || !std::isfinite(range1.theta_max) ||
+      !std::isfinite(range2.theta_min) || !std::isfinite(range2.theta_max) ||
+      !(range1.theta_max > range1.theta_min) ||
+      !(range2.theta_max > range2.theta_min))
+  {
+    return {};
+  }
+
   const int n_steps = std::max(8, coarse_steps);
 
   std::vector<double> theta1_values;
@@ -1099,8 +1291,8 @@ std::vector<TpcTrackHelixPca> TpcTrackHelixFitter::pca_candidates(
   for (int i = 0; i < n_steps; ++i)
   {
     const double fraction = (n_steps == 1) ? 0.0 : static_cast<double>(i) / static_cast<double>(n_steps - 1);
-    theta1_values.push_back(range1.first + fraction * (range1.second - range1.first));
-    theta2_values.push_back(range2.first + fraction * (range2.second - range2.first));
+    theta1_values.push_back(range1.theta_min + fraction * (range1.theta_max - range1.theta_min));
+    theta2_values.push_back(range2.theta_min + fraction * (range2.theta_max - range2.theta_min));
   }
 
   std::vector<std::tuple<double, int, int>> coarse;
@@ -1119,7 +1311,8 @@ std::vector<TpcTrackHelixPca> TpcTrackHelixFitter::pca_candidates(
             [](const auto &lhs, const auto &rhs)
             { return std::get<0>(lhs) < std::get<0>(rhs); });
 
-  const double max_step = std::max(range1.second - range1.first, range2.second - range2.first) /
+  const double max_step = std::max(range1.theta_max - range1.theta_min,
+                                   range2.theta_max - range2.theta_min) /
                           static_cast<double>(n_steps);
   const int n_candidates = std::min({std::max(1, max_candidates), static_cast<int>(coarse.size())});
 
@@ -1131,7 +1324,8 @@ std::vector<TpcTrackHelixPca> TpcTrackHelixFitter::pca_candidates(
     const int j = std::get<2>(coarse[index]);
     candidates.push_back(refine_pair(
         helix1, helix2, theta1_values[i], theta2_values[j],
-        range1.first, range1.second, range2.first, range2.second, max_step));
+        range1.theta_min, range1.theta_max,
+        range2.theta_min, range2.theta_max, max_step));
   }
 
   std::sort(candidates.begin(), candidates.end(),

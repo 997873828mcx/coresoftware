@@ -60,6 +60,19 @@ struct TpcTrackHelixPca
   double theta2{0.0};
 };
 
+struct TpcTrackHelixSearchRange
+{
+  bool valid{false};
+  int anchor_point_index{-1};
+  double anchor_theta{0.0};
+  double anchor_path_cm{0.0};
+  double anchor_residual_cm{0.0};
+  double theta_min{0.0};
+  double theta_max{0.0};
+  double upstream_cm{0.0};
+  double downstream_cm{0.0};
+};
+
 enum class TpcTrackPointOrder
 {
   Path,

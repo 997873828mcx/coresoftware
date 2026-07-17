@@ -507,6 +507,7 @@ int TpcV0CandidateTree::End(PHCompositeNode * /*topNode*/)
               << " reject_pair_selection=" << m_counter_reject_pair_selection
               << " written=" << m_counter_written
               << " tracks_written=" << m_counter_tracks_written
+              << " reject_helix_anchor=" << m_counter_reject_helix_anchor
               << " cluster_residuals_written=" << m_counter_cluster_residuals_written
               << std::endl;
   }
@@ -837,6 +838,18 @@ std::map<int, TpcV0CandidateTree::Tracklet> TpcV0CandidateTree::build_pattern_tr
         continue;
       }
 
+      tracklet.has_helix_search_range =
+          TpcTrackHelixFitter::measurement_anchored_search_range(
+              tracklet.helix, tracklet.points,
+              m_final_track_helix_max_upstream_cm,
+              m_final_track_helix_downstream_margin_cm,
+              tracklet.helix_search_range);
+      if (!tracklet.has_helix_search_range)
+      {
+        ++m_counter_reject_helix_anchor;
+        continue;
+      }
+
       tracklet.position = helix_point(tracklet.helix, tracklet.helix.theta_first);
       tracklet.momentum = helix_momentum(tracklet.helix, tracklet.helix.theta_first);
     }
@@ -1111,9 +1124,20 @@ bool TpcV0CandidateTree::make_pair_row(const Tracklet &track1, const Tracklet &t
   }
   else if (m_fit_helix_tracks && track1.has_helix && track2.has_helix)
   {
-    auto candidates = helix_helix_pca_candidates(
-        track1.helix, track2.helix, m_theta_extension, m_coarse_steps,
-        m_downstream_margin, m_pca_candidates);
+    std::vector<HelixPca> candidates;
+    if (track1.has_helix_search_range && track2.has_helix_search_range)
+    {
+      candidates = TpcTrackHelixFitter::pca_candidates_in_ranges(
+          track1.helix, track2.helix,
+          track1.helix_search_range, track2.helix_search_range,
+          m_coarse_steps, m_pca_candidates);
+    }
+    else
+    {
+      candidates = helix_helix_pca_candidates(
+          track1.helix, track2.helix, m_theta_extension, m_coarse_steps,
+          m_downstream_margin, m_pca_candidates);
+    }
     if (candidates.empty())
     {
       ++m_counter_reject_pca;
@@ -1493,6 +1517,19 @@ void TpcV0CandidateTree::fill_track_row(const Tracklet &tracklet,
     m_track.helix_theta_first = static_cast<float>(tracklet.helix.theta_first);
     m_track.helix_theta_last = static_cast<float>(tracklet.helix.theta_last);
     m_track.helix_direction = static_cast<float>(tracklet.helix.direction);
+    if (tracklet.has_helix_search_range)
+    {
+      const auto &range = tracklet.helix_search_range;
+      m_track.helix_search_anchored = 1;
+      m_track.helix_anchor_point_index = range.anchor_point_index;
+      m_track.helix_anchor_theta = static_cast<float>(range.anchor_theta);
+      m_track.helix_anchor_path_cm = static_cast<float>(range.anchor_path_cm);
+      m_track.helix_anchor_residual_cm = static_cast<float>(range.anchor_residual_cm);
+      m_track.helix_search_theta_min = static_cast<float>(range.theta_min);
+      m_track.helix_search_theta_max = static_cast<float>(range.theta_max);
+      m_track.helix_search_upstream_cm = static_cast<float>(range.upstream_cm);
+      m_track.helix_search_downstream_cm = static_cast<float>(range.downstream_cm);
+    }
   }
 
   if (tracklet.has_kalman)
@@ -1846,6 +1883,15 @@ void TpcV0CandidateTree::reset_track_row()
   m_track.helix_theta_first = nan;
   m_track.helix_theta_last = nan;
   m_track.helix_direction = nan;
+  m_track.helix_search_anchored = 0;
+  m_track.helix_anchor_point_index = -1;
+  m_track.helix_anchor_theta = nan;
+  m_track.helix_anchor_path_cm = nan;
+  m_track.helix_anchor_residual_cm = nan;
+  m_track.helix_search_theta_min = nan;
+  m_track.helix_search_theta_max = nan;
+  m_track.helix_search_upstream_cm = nan;
+  m_track.helix_search_downstream_cm = nan;
   m_track.kalman_chi2 = nan;
   m_track.kalman_ndof = 0;
   m_track.kalman_qop_t = nan;
@@ -2019,6 +2065,24 @@ void TpcV0CandidateTree::create_branches()
   m_track_tree->Branch("helix_theta_first", &m_track.helix_theta_first, "helix_theta_first/F");
   m_track_tree->Branch("helix_theta_last", &m_track.helix_theta_last, "helix_theta_last/F");
   m_track_tree->Branch("helix_direction", &m_track.helix_direction, "helix_direction/F");
+  m_track_tree->Branch("helix_search_anchored", &m_track.helix_search_anchored,
+                       "helix_search_anchored/I");
+  m_track_tree->Branch("helix_anchor_point_index", &m_track.helix_anchor_point_index,
+                       "helix_anchor_point_index/I");
+  m_track_tree->Branch("helix_anchor_theta", &m_track.helix_anchor_theta,
+                       "helix_anchor_theta/F");
+  m_track_tree->Branch("helix_anchor_path_cm", &m_track.helix_anchor_path_cm,
+                       "helix_anchor_path_cm/F");
+  m_track_tree->Branch("helix_anchor_residual_cm", &m_track.helix_anchor_residual_cm,
+                       "helix_anchor_residual_cm/F");
+  m_track_tree->Branch("helix_search_theta_min", &m_track.helix_search_theta_min,
+                       "helix_search_theta_min/F");
+  m_track_tree->Branch("helix_search_theta_max", &m_track.helix_search_theta_max,
+                       "helix_search_theta_max/F");
+  m_track_tree->Branch("helix_search_upstream_cm", &m_track.helix_search_upstream_cm,
+                       "helix_search_upstream_cm/F");
+  m_track_tree->Branch("helix_search_downstream_cm", &m_track.helix_search_downstream_cm,
+                       "helix_search_downstream_cm/F");
   m_track_tree->Branch("kalman_chi2", &m_track.kalman_chi2, "kalman_chi2/F");
   m_track_tree->Branch("kalman_ndof", &m_track.kalman_ndof, "kalman_ndof/I");
   m_track_tree->Branch("kalman_qop_t", &m_track.kalman_qop_t, "kalman_qop_t/F");

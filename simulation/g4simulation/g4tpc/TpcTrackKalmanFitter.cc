@@ -548,9 +548,12 @@ namespace
     const double theta0 = multiple_scattering_theta0(state, ds_cm, config, mass_gev);
     if (theta0 > 0.0)
     {
-      noise(TpcTrackKalmanFitter::Phi, TpcTrackKalmanFitter::Phi) += square(theta0);
+      const double tanl = state(TpcTrackKalmanFitter::TanLambda);
+      const double sec2_lambda = 1.0 + square(tanl);
+      noise(TpcTrackKalmanFitter::Phi, TpcTrackKalmanFitter::Phi) +=
+          square(theta0 * std::sqrt(sec2_lambda));
       noise(TpcTrackKalmanFitter::TanLambda, TpcTrackKalmanFitter::TanLambda) +=
-          square(theta0 * std::sqrt(1.0 + square(state(TpcTrackKalmanFitter::TanLambda))));
+          square(theta0 * sec2_lambda);
     }
 
     if (config.energy_loss_sigma_fraction > 0.0 && config.energy_loss_gev_per_cm > 0.0)
