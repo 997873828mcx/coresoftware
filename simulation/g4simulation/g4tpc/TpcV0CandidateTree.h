@@ -134,6 +134,10 @@ class TpcV0CandidateTree : public SubsysReco
     m_kalman_config.meas_sigma_r_cm = r_cm;
     m_kalman_config.meas_sigma_z_cm = z_cm;
   }
+  void set_write_kalman_innovation_diagnostics(const bool value = true)
+  {
+    m_kalman_config.collect_innovation_components = value;
+  }
   void set_kalman_process_sigmas(const double pos_cm,
                                  const double phi,
                                  const double qop_t,
@@ -396,6 +400,11 @@ class TpcV0CandidateTree : public SubsysReco
 
     float kalman_chi2{0.0F};
     int kalman_ndof{0};
+    unsigned int kalman_naccepted{0};
+    unsigned int kalman_nrejected{0};
+    float kalman_measurement_sigma_r{0.0F};
+    float kalman_measurement_sigma_rphi{0.0F};
+    float kalman_measurement_sigma_z{0.0F};
     float kalman_qop_t{0.0F};
     float kalman_omega{0.0F};
     float kalman_cx{0.0F};
@@ -419,6 +428,24 @@ class TpcV0CandidateTree : public SubsysReco
     std::vector<double> residual_z;
     std::vector<double> residual_r;
     std::vector<double> residual_rphi;
+    std::vector<double> kalman_measurement_chi2;
+    std::vector<unsigned char> kalman_measurement_used;
+    std::vector<unsigned char> kalman_measurement_in_seed;
+    std::vector<double> kalman_innovation_residual_r;
+    std::vector<double> kalman_innovation_residual_rphi;
+    std::vector<double> kalman_innovation_residual_z;
+    std::vector<double> kalman_prediction_sigma_r;
+    std::vector<double> kalman_prediction_sigma_rphi;
+    std::vector<double> kalman_prediction_sigma_z;
+    std::vector<double> kalman_innovation_sigma_r;
+    std::vector<double> kalman_innovation_sigma_rphi;
+    std::vector<double> kalman_innovation_sigma_z;
+    std::vector<double> kalman_innovation_rho_r_rphi;
+    std::vector<double> kalman_innovation_rho_r_z;
+    std::vector<double> kalman_innovation_rho_rphi_z;
+    std::vector<double> kalman_innovation_whitened_0;
+    std::vector<double> kalman_innovation_whitened_1;
+    std::vector<double> kalman_innovation_whitened_2;
   };
 
   struct ClusterResidualRow

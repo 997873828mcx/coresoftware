@@ -596,6 +596,65 @@ namespace
     return cov;
   }
 
+  MeasurementCov measurement_local_rotation(const TpcTrackPoint &point)
+  {
+    const double radius = std::hypot(point.position.x, point.position.y);
+    const double cos_phi = (radius > 0.0) ? point.position.x / radius : 1.0;
+    const double sin_phi = (radius > 0.0) ? point.position.y / radius : 0.0;
+
+    MeasurementCov rotation = MeasurementCov::Zero();
+    rotation(0, 0) = cos_phi;
+    rotation(0, 1) = sin_phi;
+    rotation(1, 0) = -sin_phi;
+    rotation(1, 1) = cos_phi;
+    rotation(2, 2) = 1.0;
+    return rotation;
+  }
+
+  double covariance_sigma(const MeasurementCov &covariance, const int index)
+  {
+    return std::sqrt(std::max(0.0, covariance(index, index)));
+  }
+
+  double covariance_correlation(const MeasurementCov &covariance,
+                                const int first,
+                                const int second,
+                                const double sigma_first,
+                                const double sigma_second)
+  {
+    const double denominator = sigma_first * sigma_second;
+    if (!(denominator > 0.0) || !std::isfinite(denominator))
+    {
+      return std::numeric_limits<double>::quiet_NaN();
+    }
+    return std::clamp(covariance(first, second) / denominator, -1.0, 1.0);
+  }
+
+  MeasurementVector whiten_innovation(const MeasurementCov &innovation,
+                                       const MeasurementVector &residual)
+  {
+    MeasurementVector whitened = MeasurementVector::Constant(
+        std::numeric_limits<double>::quiet_NaN());
+
+    const Eigen::LLT<MeasurementCov> llt(innovation);
+    if (llt.info() == Eigen::Success)
+    {
+      whitened = llt.matrixL().solve(residual);
+      return whitened;
+    }
+
+    const Eigen::SelfAdjointEigenSolver<MeasurementCov> eigensolver(innovation);
+    if (eigensolver.info() != Eigen::Success ||
+        eigensolver.eigenvalues().minCoeff() <= 0.0)
+    {
+      return whitened;
+    }
+
+    whitened = eigensolver.eigenvalues().cwiseSqrt().cwiseInverse().asDiagonal() *
+               eigensolver.eigenvectors().transpose() * residual;
+    return whitened;
+  }
+
   bool make_seed(const std::vector<TpcTrackPoint> &points,
                  const TpcKalmanConfig &config,
                  TpcTrackHelix &seed,
@@ -752,6 +811,28 @@ bool TpcTrackKalmanFitter::fit(const std::vector<TpcTrackPoint> &input_points,
   const StateMatrix eye = StateMatrix::Identity();
   RknDiagnostics rkn_diagnostics;
 
+  result.measurement_chi2.reserve(npoints);
+  result.measurement_used.reserve(npoints);
+  if (config.collect_innovation_components)
+  {
+    result.measurement_in_seed.reserve(npoints);
+    result.innovation_residual_r.reserve(npoints);
+    result.innovation_residual_rphi.reserve(npoints);
+    result.innovation_residual_z.reserve(npoints);
+    result.prediction_sigma_r.reserve(npoints);
+    result.prediction_sigma_rphi.reserve(npoints);
+    result.prediction_sigma_z.reserve(npoints);
+    result.innovation_sigma_r.reserve(npoints);
+    result.innovation_sigma_rphi.reserve(npoints);
+    result.innovation_sigma_z.reserve(npoints);
+    result.innovation_rho_r_rphi.reserve(npoints);
+    result.innovation_rho_r_z.reserve(npoints);
+    result.innovation_rho_rphi_z.reserve(npoints);
+    result.innovation_whitened_0.reserve(npoints);
+    result.innovation_whitened_1.reserve(npoints);
+    result.innovation_whitened_2.reserve(npoints);
+  }
+
   const auto copy_rkn_diagnostics = [&]()
   {
     result.rkn_propagations = rkn_diagnostics.propagations;
@@ -791,6 +872,54 @@ bool TpcTrackKalmanFitter::fit(const std::vector<TpcTrackPoint> &input_points,
     const MeasurementCov innovation = hmat * pred_cov * hmat.transpose() + meas_cov;
     const MeasurementCov innovation_inv =
         innovation.completeOrthogonalDecomposition().solve(MeasurementCov::Identity());
+    const double step_chi2 =
+        (meas_residual.transpose() * innovation_inv * meas_residual)(0, 0);
+
+    if (config.collect_innovation_components)
+    {
+      const MeasurementCov local_rotation = measurement_local_rotation(points[index]);
+      const MeasurementVector local_residual = local_rotation * meas_residual;
+      const MeasurementCov predicted_position_cov = hmat * pred_cov * hmat.transpose();
+      const MeasurementCov local_prediction_cov =
+          local_rotation * predicted_position_cov * local_rotation.transpose();
+      const MeasurementCov local_innovation =
+          local_rotation * innovation * local_rotation.transpose();
+
+      const double prediction_sigma_r = covariance_sigma(local_prediction_cov, 0);
+      const double prediction_sigma_rphi = covariance_sigma(local_prediction_cov, 1);
+      const double prediction_sigma_z = covariance_sigma(local_prediction_cov, 2);
+      const double innovation_sigma_r = covariance_sigma(local_innovation, 0);
+      const double innovation_sigma_rphi = covariance_sigma(local_innovation, 1);
+      const double innovation_sigma_z = covariance_sigma(local_innovation, 2);
+      const MeasurementVector whitened = whiten_innovation(local_innovation, local_residual);
+
+      // The current seed is a global helix fit, so every measurement contributes
+      // to it. This marker will distinguish bootstrap seed points once the seed
+      // is restricted to an initial consecutive subset.
+      result.measurement_in_seed.push_back(1U);
+      result.innovation_residual_r.push_back(local_residual(0));
+      result.innovation_residual_rphi.push_back(local_residual(1));
+      result.innovation_residual_z.push_back(local_residual(2));
+      result.prediction_sigma_r.push_back(prediction_sigma_r);
+      result.prediction_sigma_rphi.push_back(prediction_sigma_rphi);
+      result.prediction_sigma_z.push_back(prediction_sigma_z);
+      result.innovation_sigma_r.push_back(innovation_sigma_r);
+      result.innovation_sigma_rphi.push_back(innovation_sigma_rphi);
+      result.innovation_sigma_z.push_back(innovation_sigma_z);
+      result.innovation_rho_r_rphi.push_back(
+          covariance_correlation(local_innovation, 0, 1,
+                                 innovation_sigma_r, innovation_sigma_rphi));
+      result.innovation_rho_r_z.push_back(
+          covariance_correlation(local_innovation, 0, 2,
+                                 innovation_sigma_r, innovation_sigma_z));
+      result.innovation_rho_rphi_z.push_back(
+          covariance_correlation(local_innovation, 1, 2,
+                                 innovation_sigma_rphi, innovation_sigma_z));
+      result.innovation_whitened_0.push_back(whitened(0));
+      result.innovation_whitened_1.push_back(whitened(1));
+      result.innovation_whitened_2.push_back(whitened(2));
+    }
+
     const Eigen::Matrix<double, 6, 3> gain = pred_cov * hmat.transpose() * innovation_inv;
     state = pred_state + gain * meas_residual;
     state(Phi) = normalize_phi(state(Phi));
@@ -798,7 +927,10 @@ bool TpcTrackKalmanFitter::fit(const std::vector<TpcTrackPoint> &input_points,
           gain * meas_cov * gain.transpose();
     cov = 0.5 * (cov + cov.transpose()).eval();
 
-    chi2 += (meas_residual.transpose() * innovation_inv * meas_residual)(0, 0);
+    result.measurement_chi2.push_back(step_chi2);
+    result.measurement_used.push_back(1U);
+    ++result.naccepted;
+    chi2 += step_chi2;
     ndof += 3;
 
     states_predicted[index] = pred_state;

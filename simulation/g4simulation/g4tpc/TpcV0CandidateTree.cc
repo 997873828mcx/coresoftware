@@ -1365,6 +1365,16 @@ void TpcV0CandidateTree::fill_track_row(const Tracklet &tracklet,
   m_track.has_kalman = tracklet.has_kalman ? 1 : 0;
   m_track.is_primary = tracklet.is_primary;
 
+  if (m_kalman_config.collect_innovation_components)
+  {
+    m_track.kalman_measurement_sigma_r =
+        static_cast<float>(m_kalman_config.meas_sigma_r_cm);
+    m_track.kalman_measurement_sigma_rphi =
+        static_cast<float>(m_kalman_config.meas_sigma_rphi_cm);
+    m_track.kalman_measurement_sigma_z =
+        static_cast<float>(m_kalman_config.meas_sigma_z_cm);
+  }
+
   Vec3 row_position = tracklet.position;
   Vec3 row_momentum = tracklet.momentum;
   std::array<double, TpcTrackKalmanFitter::StateDim> kalman_row_state{};
@@ -1536,6 +1546,29 @@ void TpcV0CandidateTree::fill_track_row(const Tracklet &tracklet,
   {
     m_track.kalman_chi2 = static_cast<float>(tracklet.kalman.chi2);
     m_track.kalman_ndof = tracklet.kalman.ndof;
+    m_track.kalman_naccepted = static_cast<unsigned int>(tracklet.kalman.naccepted);
+    m_track.kalman_nrejected = static_cast<unsigned int>(tracklet.kalman.nrejected);
+    m_track.kalman_measurement_chi2 = tracklet.kalman.measurement_chi2;
+    m_track.kalman_measurement_used = tracklet.kalman.measurement_used;
+    if (m_kalman_config.collect_innovation_components)
+    {
+      m_track.kalman_measurement_in_seed = tracklet.kalman.measurement_in_seed;
+      m_track.kalman_innovation_residual_r = tracklet.kalman.innovation_residual_r;
+      m_track.kalman_innovation_residual_rphi = tracklet.kalman.innovation_residual_rphi;
+      m_track.kalman_innovation_residual_z = tracklet.kalman.innovation_residual_z;
+      m_track.kalman_prediction_sigma_r = tracklet.kalman.prediction_sigma_r;
+      m_track.kalman_prediction_sigma_rphi = tracklet.kalman.prediction_sigma_rphi;
+      m_track.kalman_prediction_sigma_z = tracklet.kalman.prediction_sigma_z;
+      m_track.kalman_innovation_sigma_r = tracklet.kalman.innovation_sigma_r;
+      m_track.kalman_innovation_sigma_rphi = tracklet.kalman.innovation_sigma_rphi;
+      m_track.kalman_innovation_sigma_z = tracklet.kalman.innovation_sigma_z;
+      m_track.kalman_innovation_rho_r_rphi = tracklet.kalman.innovation_rho_r_rphi;
+      m_track.kalman_innovation_rho_r_z = tracklet.kalman.innovation_rho_r_z;
+      m_track.kalman_innovation_rho_rphi_z = tracklet.kalman.innovation_rho_rphi_z;
+      m_track.kalman_innovation_whitened_0 = tracklet.kalman.innovation_whitened_0;
+      m_track.kalman_innovation_whitened_1 = tracklet.kalman.innovation_whitened_1;
+      m_track.kalman_innovation_whitened_2 = tracklet.kalman.innovation_whitened_2;
+    }
     if (has_kalman_row_state)
     {
       const auto &state = kalman_row_state;
@@ -2085,6 +2118,35 @@ void TpcV0CandidateTree::create_branches()
                        "helix_search_downstream_cm/F");
   m_track_tree->Branch("kalman_chi2", &m_track.kalman_chi2, "kalman_chi2/F");
   m_track_tree->Branch("kalman_ndof", &m_track.kalman_ndof, "kalman_ndof/I");
+  m_track_tree->Branch("kalman_naccepted", &m_track.kalman_naccepted, "kalman_naccepted/i");
+  m_track_tree->Branch("kalman_nrejected", &m_track.kalman_nrejected, "kalman_nrejected/i");
+  m_track_tree->Branch("kalman_measurement_chi2", &m_track.kalman_measurement_chi2);
+  m_track_tree->Branch("kalman_measurement_used", &m_track.kalman_measurement_used);
+  if (m_kalman_config.collect_innovation_components)
+  {
+    m_track_tree->Branch("kalman_measurement_sigma_r", &m_track.kalman_measurement_sigma_r,
+                         "kalman_measurement_sigma_r/F");
+    m_track_tree->Branch("kalman_measurement_sigma_rphi", &m_track.kalman_measurement_sigma_rphi,
+                         "kalman_measurement_sigma_rphi/F");
+    m_track_tree->Branch("kalman_measurement_sigma_z", &m_track.kalman_measurement_sigma_z,
+                         "kalman_measurement_sigma_z/F");
+    m_track_tree->Branch("kalman_measurement_in_seed", &m_track.kalman_measurement_in_seed);
+    m_track_tree->Branch("kalman_innovation_residual_r", &m_track.kalman_innovation_residual_r);
+    m_track_tree->Branch("kalman_innovation_residual_rphi", &m_track.kalman_innovation_residual_rphi);
+    m_track_tree->Branch("kalman_innovation_residual_z", &m_track.kalman_innovation_residual_z);
+    m_track_tree->Branch("kalman_prediction_sigma_r", &m_track.kalman_prediction_sigma_r);
+    m_track_tree->Branch("kalman_prediction_sigma_rphi", &m_track.kalman_prediction_sigma_rphi);
+    m_track_tree->Branch("kalman_prediction_sigma_z", &m_track.kalman_prediction_sigma_z);
+    m_track_tree->Branch("kalman_innovation_sigma_r", &m_track.kalman_innovation_sigma_r);
+    m_track_tree->Branch("kalman_innovation_sigma_rphi", &m_track.kalman_innovation_sigma_rphi);
+    m_track_tree->Branch("kalman_innovation_sigma_z", &m_track.kalman_innovation_sigma_z);
+    m_track_tree->Branch("kalman_innovation_rho_r_rphi", &m_track.kalman_innovation_rho_r_rphi);
+    m_track_tree->Branch("kalman_innovation_rho_r_z", &m_track.kalman_innovation_rho_r_z);
+    m_track_tree->Branch("kalman_innovation_rho_rphi_z", &m_track.kalman_innovation_rho_rphi_z);
+    m_track_tree->Branch("kalman_innovation_whitened_0", &m_track.kalman_innovation_whitened_0);
+    m_track_tree->Branch("kalman_innovation_whitened_1", &m_track.kalman_innovation_whitened_1);
+    m_track_tree->Branch("kalman_innovation_whitened_2", &m_track.kalman_innovation_whitened_2);
+  }
   m_track_tree->Branch("kalman_qop_t", &m_track.kalman_qop_t, "kalman_qop_t/F");
   m_track_tree->Branch("kalman_omega", &m_track.kalman_omega, "kalman_omega/F");
   m_track_tree->Branch("kalman_cx", &m_track.kalman_cx, "kalman_cx/F");
