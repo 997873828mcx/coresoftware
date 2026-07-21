@@ -44,6 +44,13 @@
 #include "/sphenix/user/mitrankova/F4A/TPC_pattern_reco/install/include/inmoduletracks/TpcPolyClusterTrackContainer.h"
 #define G4TPC_HAS_INMODULETRACKS 1
 
+#include "/sphenix/user/mitrankova/install_PR_TPC_SA/include/tpctrackreco/Tpc_PolyCluster.h"
+#include "/sphenix/user/mitrankova/install_PR_TPC_SA/include/tpctrackreco/Tpc_PolyClusterContainer.h"
+#include "/sphenix/user/mitrankova/install_PR_TPC_SA/include/tpctrackreco/Tpc_PolyTrack.h"
+#include "/sphenix/user/mitrankova/install_PR_TPC_SA/include/tpctrackreco/Tpc_PolyTrackContainer.h"
+#include "/sphenix/user/mitrankova/install_PR_TPC_SA/include/tpctrackreco/Tpc_PolyTrackVertexContainer.h"
+#define G4TPC_HAS_TPC_SA 1
+
 namespace
 {
   constexpr double kPi = 3.14159265358979323846;
@@ -259,6 +266,7 @@ int TpcV0CandidateTree::process_event(PHCompositeNode *topNode)
   const int event_number = get_event_number(topNode);
   Vec3 primary_vertex = m_fixed_primary_vertex;
   FinalTrackVertexContainer *pattern_vertices = nullptr;
+  Tpc_PolyTrackVertexContainer *tpc_sa_vertices = nullptr;
   std::map<int, Tracklet> tracklet_map;
 
   const auto track_build_start = std::chrono::steady_clock::now();
@@ -270,39 +278,70 @@ int TpcV0CandidateTree::process_event(PHCompositeNode *topNode)
 #else
     TpcPolyClusterTrackContainer *cluster_tracks = nullptr;
 #endif
-    if (!cluster_tracks)
+    if (cluster_tracks)
     {
-      if (Verbosity() > 0)
-      {
-        std::cout << PHWHERE << Name() << ": missing pattern cluster track node "
-                  << m_pattern_cluster_track_node << std::endl;
-      }
-      return Fun4AllReturnCodes::EVENT_OK;
-    }
-
 #if G4TPC_HAS_INMODULETRACKS
-    auto *final_track_object = findNode::getClass<PHObject>(topNode, m_pattern_final_track_node);
-    auto *final_tracks = static_cast<FinalTrackContainer *>(final_track_object);
+      auto *final_track_object = findNode::getClass<PHObject>(topNode, m_pattern_final_track_node);
+      auto *final_tracks = static_cast<FinalTrackContainer *>(final_track_object);
 #else
-    FinalTrackContainer *final_tracks = nullptr;
+      FinalTrackContainer *final_tracks = nullptr;
 #endif
-    if (!final_tracks && Verbosity() > 0)
-    {
-      std::cout << PHWHERE << Name() << ": missing pattern final track node "
-                << m_pattern_final_track_node << "; charge cannot be assigned" << std::endl;
-    }
+      if (!final_tracks && Verbosity() > 0)
+      {
+        std::cout << PHWHERE << Name() << ": missing pattern final track node "
+                  << m_pattern_final_track_node << "; charge cannot be assigned" << std::endl;
+      }
 
 #if G4TPC_HAS_INMODULETRACKS
-    auto *final_vertex_object = findNode::getClass<PHObject>(topNode, m_pattern_final_track_vertex_node);
-    pattern_vertices = static_cast<FinalTrackVertexContainer *>(final_vertex_object);
+      auto *final_vertex_object = findNode::getClass<PHObject>(topNode, m_pattern_final_track_vertex_node);
+      pattern_vertices = static_cast<FinalTrackVertexContainer *>(final_vertex_object);
 #endif
-    if (!pattern_vertices && Verbosity() > 1)
-    {
-      std::cout << PHWHERE << Name() << ": missing pattern final-track vertex node "
-                << m_pattern_final_track_vertex_node
-                << "; trackTree vertex_z will use the configured fallback vertex" << std::endl;
+      if (!pattern_vertices && Verbosity() > 1)
+      {
+        std::cout << PHWHERE << Name() << ": missing pattern final-track vertex node "
+                  << m_pattern_final_track_vertex_node
+                  << "; trackTree vertex_z will use the configured fallback vertex" << std::endl;
+      }
+      tracklet_map = build_pattern_tracklets(cluster_tracks, final_tracks);
     }
-    tracklet_map = build_pattern_tracklets(cluster_tracks, final_tracks);
+    else
+    {
+#if G4TPC_HAS_TPC_SA
+      auto *tpc_sa_cluster_object = findNode::getClass<PHObject>(
+          topNode, m_tpc_sa_cluster_node);
+      auto *tpc_sa_track_object = findNode::getClass<PHObject>(
+          topNode, m_tpc_sa_track_node);
+      auto *tpc_sa_vertex_object = findNode::getClass<PHObject>(
+          topNode, m_tpc_sa_track_vertex_node);
+      auto *tpc_sa_clusters = static_cast<Tpc_PolyClusterContainer *>(
+          tpc_sa_cluster_object);
+      auto *tpc_sa_tracks = static_cast<Tpc_PolyTrackContainer *>(
+          tpc_sa_track_object);
+      tpc_sa_vertices = static_cast<Tpc_PolyTrackVertexContainer *>(
+          tpc_sa_vertex_object);
+#else
+      Tpc_PolyClusterContainer *tpc_sa_clusters = nullptr;
+      Tpc_PolyTrackContainer *tpc_sa_tracks = nullptr;
+#endif
+      if (!tpc_sa_clusters || !tpc_sa_tracks)
+      {
+        if (Verbosity() > 0)
+        {
+          std::cout << PHWHERE << Name()
+                    << ": missing both supported pattern-reco inputs: old node "
+                    << m_pattern_cluster_track_node << " and new nodes "
+                    << m_tpc_sa_cluster_node << "/" << m_tpc_sa_track_node << std::endl;
+        }
+        return Fun4AllReturnCodes::EVENT_OK;
+      }
+      if (!tpc_sa_vertices && Verbosity() > 1)
+      {
+        std::cout << PHWHERE << Name() << ": missing TPC SA vertex node "
+                  << m_tpc_sa_track_vertex_node
+                  << "; trackTree vertex_z will use the configured fallback vertex" << std::endl;
+      }
+      tracklet_map = build_tpc_sa_tracklets(tpc_sa_clusters, tpc_sa_tracks);
+    }
   }
   else
   {
@@ -348,9 +387,15 @@ int TpcV0CandidateTree::process_event(PHCompositeNode *topNode)
     auto &tracklet = entry.second;
     tracklet.has_beamline_pca = track_pca_to_xy(
         tracklet, Vec3{0.0, 0.0, 0.0}, tracklet.beamline_pca, tracklet.rdca_zero);
-    tracklet.has_pattern_vertex = choose_pattern_collision_vertex(
-        tracklet, pattern_vertices, tracklet.pattern_vertex,
-        tracklet.pattern_vertex_z_rms, tracklet.pattern_vertex_ntracks);
+    tracklet.has_pattern_vertex = pattern_vertices
+                                      ? choose_pattern_collision_vertex(
+                                            tracklet, pattern_vertices, tracklet.pattern_vertex,
+                                            tracklet.pattern_vertex_z_rms,
+                                            tracklet.pattern_vertex_ntracks)
+                                      : choose_tpc_sa_collision_vertex(
+                                            tracklet, tpc_sa_vertices, tracklet.pattern_vertex,
+                                            tracklet.pattern_vertex_z_rms,
+                                            tracklet.pattern_vertex_ntracks);
     const Vec3 &dca_vertex = tracklet.has_pattern_vertex
                                  ? tracklet.pattern_vertex
                                  : primary_vertex;
@@ -810,72 +855,14 @@ std::map<int, TpcV0CandidateTree::Tracklet> TpcV0CandidateTree::build_pattern_tr
       }
     }
 
-    order_track_points(tracklet.points, m_point_order);
-    tracklet.npoints = static_cast<int>(tracklet.points.size());
-    if (tracklet.npoints < m_min_points || tracklet.charge == 0)
+    const bool has_upstream_state = final_track &&
+                                    finite(tracklet.position) &&
+                                    finite(tracklet.momentum) &&
+                                    norm(tracklet.momentum) > 0.0;
+    if (!finalize_pattern_tracklet(tracklet, has_upstream_state))
     {
       continue;
     }
-
-    if (m_fit_kalman_tracks)
-    {
-      tracklet.has_kalman = fit_kalman(tracklet.points, tracklet.charge, tracklet.kalman);
-      if (!tracklet.has_kalman || tracklet.kalman.states_smoothed.empty())
-      {
-        continue;
-      }
-
-      const auto state = TpcTrackKalmanFitter::propagation_state(tracklet.kalman, Vec3{});
-      tracklet.position = TpcTrackKalmanFitter::state_position(state);
-      tracklet.momentum = TpcTrackKalmanFitter::state_momentum(state);
-    }
-    else if (m_use_final_track_helix && final_track)
-    {
-      tracklet.has_helix = helix_from_state(tracklet.position, tracklet.momentum,
-                                            tracklet.charge, m_bfield_t, tracklet.helix);
-      if (!tracklet.has_helix)
-      {
-        continue;
-      }
-
-      tracklet.has_helix_search_range =
-          TpcTrackHelixFitter::measurement_anchored_search_range(
-              tracklet.helix, tracklet.points,
-              m_final_track_helix_max_upstream_cm,
-              m_final_track_helix_downstream_margin_cm,
-              tracklet.helix_search_range);
-      if (!tracklet.has_helix_search_range)
-      {
-        ++m_counter_reject_helix_anchor;
-        continue;
-      }
-
-      tracklet.position = helix_point(tracklet.helix, tracklet.helix.theta_first);
-      tracklet.momentum = helix_momentum(tracklet.helix, tracklet.helix.theta_first);
-    }
-    else if (m_fit_helix_tracks)
-    {
-      tracklet.has_helix = fit_helix(tracklet.points, m_fit_first_points,
-                                     tracklet.charge, m_bfield_t, tracklet.helix);
-      if (!tracklet.has_helix)
-      {
-        continue;
-      }
-
-      tracklet.position = helix_point(tracklet.helix, tracklet.helix.theta_first);
-      tracklet.momentum = helix_momentum(tracklet.helix, tracklet.helix.theta_first);
-    }
-    else if (!finite(tracklet.momentum) || norm(tracklet.momentum) <= 0.0)
-    {
-      if (tracklet.points.size() < 2)
-      {
-        continue;
-      }
-      tracklet.position = tracklet.points.front().position;
-      tracklet.momentum = subtract(tracklet.points[1].position, tracklet.points.front().position);
-    }
-
-    assign_fit_quality(tracklet);
 
     tracklet.truth_momentum = tracklet.momentum;
     tracklets[track_id] = tracklet;
@@ -891,6 +878,195 @@ std::map<int, TpcV0CandidateTree::Tracklet> TpcV0CandidateTree::build_pattern_tr
 #endif
 
   return tracklets;
+}
+
+std::map<int, TpcV0CandidateTree::Tracklet> TpcV0CandidateTree::build_tpc_sa_tracklets(
+    Tpc_PolyClusterContainer *clusters,
+    Tpc_PolyTrackContainer *tracks) const
+{
+  std::map<int, Tracklet> tracklets;
+
+#if G4TPC_HAS_TPC_SA
+  if (!clusters || !tracks)
+  {
+    return tracklets;
+  }
+
+  std::map<unsigned int, std::vector<const Tpc_PolyCluster *>> clusters_by_source_id;
+  for (unsigned int icluster = 0; icluster < clusters->size(); ++icluster)
+  {
+    const Tpc_PolyCluster *cluster = clusters->get_cluster(icluster);
+    if (!cluster || !cluster->isValid())
+    {
+      continue;
+    }
+    clusters_by_source_id[cluster->get_source_assembled_track_id()].push_back(cluster);
+  }
+
+  for (unsigned int itrack = 0; itrack < tracks->size(); ++itrack)
+  {
+    const Tpc_PolyTrack *track = tracks->get_track(itrack);
+    if (!track || !track->isValid() || track->get_fit_status() == 0)
+    {
+      continue;
+    }
+
+    const unsigned int source_id = track->get_source_assembled_track_id();
+    const auto cluster_iter = clusters_by_source_id.find(source_id);
+    if (cluster_iter == clusters_by_source_id.end())
+    {
+      continue;
+    }
+
+    const unsigned int pattern_track_id = track->get_track_id();
+    const int track_id = static_cast<int>(pattern_track_id != 0 ? pattern_track_id : itrack + 1);
+
+    Tracklet tracklet;
+    tracklet.track_id = track_id;
+    tracklet.shower_id = static_cast<int>(source_id);
+    tracklet.charge = sign_to_charge(track->get_charge());
+    tracklet.position = {track->get_x(), track->get_y(), track->get_z()};
+    tracklet.momentum = {track->get_px(), track->get_py(), track->get_pz()};
+    tracklet.truth_momentum = tracklet.momentum;
+    tracklet.dedx = track->get_dedx();
+    tracklet.has_dedx = std::isfinite(tracklet.dedx);
+
+    std::map<int, unsigned int> side_counts;
+    const auto &track_clusters = cluster_iter->second;
+    tracklet.points.reserve(track_clusters.size());
+    for (unsigned int icluster = 0; icluster < track_clusters.size(); ++icluster)
+    {
+      const Tpc_PolyCluster *cluster = track_clusters[icluster];
+      if (!cluster || !cluster->isValid())
+      {
+        continue;
+      }
+
+      TruthPoint point;
+      point.track_id = track_id;
+      point.shower_id = static_cast<int>(source_id);
+      point.layer = -1;
+      if (cluster->size_hits() > 0)
+      {
+        point.layer = static_cast<int>(TrkrDefs::getLayer(cluster->get_hit_index(0).first));
+      }
+      point.position = {cluster->get_centroid_x(),
+                        cluster->get_centroid_y(),
+                        cluster->get_centroid_z()};
+      point.momentum = tracklet.momentum;
+      point.t = 0.0;
+      point.path = point.layer >= 0 ? static_cast<double>(point.layer)
+                                    : static_cast<double>(icluster);
+      if (finite(point.position))
+      {
+        tracklet.points.push_back(point);
+        ++side_counts[cluster->get_side()];
+      }
+    }
+
+    if (!side_counts.empty())
+    {
+      tracklet.side = std::max_element(
+                          side_counts.begin(), side_counts.end(),
+                          [](const auto &lhs, const auto &rhs)
+                          { return lhs.second < rhs.second; })
+                          ->first;
+    }
+    tracklet.ntpc_clusters = track->get_nclusters() > 0
+                                ? track->get_nclusters()
+                                : static_cast<unsigned int>(tracklet.points.size());
+
+    const bool has_upstream_state = finite(tracklet.position) &&
+                                    finite(tracklet.momentum) &&
+                                    norm(tracklet.momentum) > 0.0;
+    if (!finalize_pattern_tracklet(tracklet, has_upstream_state))
+    {
+      continue;
+    }
+
+    tracklet.truth_momentum = tracklet.momentum;
+    tracklets[track_id] = std::move(tracklet);
+  }
+#else
+  (void) clusters;
+  (void) tracks;
+#endif
+
+  return tracklets;
+}
+
+bool TpcV0CandidateTree::finalize_pattern_tracklet(Tracklet &tracklet,
+                                                    const bool has_upstream_state) const
+{
+  order_track_points(tracklet.points, m_point_order);
+  tracklet.npoints = static_cast<int>(tracklet.points.size());
+  if (tracklet.npoints < m_min_points || tracklet.charge == 0)
+  {
+    return false;
+  }
+
+  if (m_fit_kalman_tracks)
+  {
+    tracklet.has_kalman = fit_kalman(tracklet.points, tracklet.charge, tracklet.kalman);
+    if (!tracklet.has_kalman || tracklet.kalman.states_smoothed.empty())
+    {
+      return false;
+    }
+
+    const auto state = TpcTrackKalmanFitter::propagation_state(tracklet.kalman, Vec3{});
+    tracklet.position = TpcTrackKalmanFitter::state_position(state);
+    tracklet.momentum = TpcTrackKalmanFitter::state_momentum(state);
+  }
+  else if (m_use_final_track_helix && has_upstream_state)
+  {
+    tracklet.has_helix = helix_from_state(tracklet.position, tracklet.momentum,
+                                          tracklet.charge, m_bfield_t, tracklet.helix);
+    if (!tracklet.has_helix)
+    {
+      return false;
+    }
+
+    tracklet.has_helix_search_range =
+        TpcTrackHelixFitter::measurement_anchored_search_range(
+            tracklet.helix, tracklet.points,
+            m_final_track_helix_max_upstream_cm,
+            m_final_track_helix_downstream_margin_cm,
+            tracklet.helix_search_range);
+    if (!tracklet.has_helix_search_range)
+    {
+      ++m_counter_reject_helix_anchor;
+      return false;
+    }
+
+    tracklet.position = helix_point(tracklet.helix, tracklet.helix.theta_first);
+    tracklet.momentum = helix_momentum(tracklet.helix, tracklet.helix.theta_first);
+  }
+  else if (m_fit_helix_tracks)
+  {
+    tracklet.has_helix = fit_helix(tracklet.points, m_fit_first_points,
+                                   tracklet.charge, m_bfield_t, tracklet.helix);
+    if (!tracklet.has_helix)
+    {
+      return false;
+    }
+
+    tracklet.position = helix_point(tracklet.helix, tracklet.helix.theta_first);
+    tracklet.momentum = helix_momentum(tracklet.helix, tracklet.helix.theta_first);
+  }
+  else if (!has_upstream_state)
+  {
+    if (tracklet.points.size() < 2)
+    {
+      return false;
+    }
+    tracklet.position = tracklet.points.front().position;
+    tracklet.momentum = subtract(tracklet.points[1].position,
+                                 tracklet.points.front().position);
+  }
+
+  assign_fit_quality(tracklet);
+  return finite(tracklet.position) && finite(tracklet.momentum) &&
+         norm(tracklet.momentum) > 0.0;
 }
 
 bool TpcV0CandidateTree::track_pca_to_xy(const Tracklet &tracklet,
@@ -997,6 +1173,57 @@ bool TpcV0CandidateTree::choose_pattern_collision_vertex(
     unsigned int &ntracks) const
 {
 #if G4TPC_HAS_INMODULETRACKS
+  if (!vertices || vertices->get_collision_vertex_valid() == 0)
+  {
+    return false;
+  }
+
+  double best_dz = std::numeric_limits<double>::max();
+  const unsigned int count = vertices->get_collision_vertex_count();
+  for (unsigned int index = 0; index < count; ++index)
+  {
+    const Vec3 candidate{vertices->get_collision_x(index),
+                         vertices->get_collision_y(index),
+                         vertices->get_collision_z(index)};
+    if (!finite(candidate))
+    {
+      continue;
+    }
+
+    Vec3 candidate_pca;
+    double candidate_dca = 0.0;
+    if (!track_pca_to_xy(tracklet, candidate, candidate_pca, candidate_dca))
+    {
+      continue;
+    }
+    const double dz = std::abs(candidate_pca.z - candidate.z);
+    if (dz < best_dz)
+    {
+      best_dz = dz;
+      vertex = candidate;
+      z_rms = vertices->get_collision_z_rms(index);
+      ntracks = vertices->get_collision_ntracks(index);
+    }
+  }
+  return best_dz < std::numeric_limits<double>::max();
+#else
+  (void) tracklet;
+  (void) vertices;
+  (void) vertex;
+  (void) z_rms;
+  (void) ntracks;
+  return false;
+#endif
+}
+
+bool TpcV0CandidateTree::choose_tpc_sa_collision_vertex(
+    const Tracklet &tracklet,
+    Tpc_PolyTrackVertexContainer *vertices,
+    Vec3 &vertex,
+    double &z_rms,
+    unsigned int &ntracks) const
+{
+#if G4TPC_HAS_TPC_SA
   if (!vertices || vertices->get_collision_vertex_valid() == 0)
   {
     return false;

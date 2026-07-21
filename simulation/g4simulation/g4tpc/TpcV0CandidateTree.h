@@ -22,6 +22,9 @@ class TTree;
 class FinalTrackContainer;
 class FinalTrackVertexContainer;
 class TpcPolyClusterTrackContainer;
+class Tpc_PolyClusterContainer;
+class Tpc_PolyTrackContainer;
+class Tpc_PolyTrackVertexContainer;
 
 class TpcV0CandidateTree : public SubsysReco
 {
@@ -40,6 +43,9 @@ class TpcV0CandidateTree : public SubsysReco
   void set_pattern_cluster_track_node(const std::string &name) { m_pattern_cluster_track_node = name; }
   void set_pattern_final_track_node(const std::string &name) { m_pattern_final_track_node = name; }
   void set_pattern_final_track_vertex_node(const std::string &name) { m_pattern_final_track_vertex_node = name; }
+  void set_tpc_sa_cluster_node(const std::string &name) { m_tpc_sa_cluster_node = name; }
+  void set_tpc_sa_track_node(const std::string &name) { m_tpc_sa_track_node = name; }
+  void set_tpc_sa_track_vertex_node(const std::string &name) { m_tpc_sa_track_vertex_node = name; }
   void use_pattern_cluster_tracks(const bool value = true) { m_use_pattern_cluster_tracks = value; }
   void set_use_truth_primary_vertex(const bool value) { m_use_truth_primary_vertex = value; }
   void set_primary_vertex(const double x, const double y, const double z);
@@ -492,6 +498,9 @@ class TpcV0CandidateTree : public SubsysReco
                                           PHG4TruthInfoContainer *truth_info) const;
   std::map<int, Tracklet> build_pattern_tracklets(TpcPolyClusterTrackContainer *cluster_tracks,
                                                   FinalTrackContainer *final_tracks) const;
+  std::map<int, Tracklet> build_tpc_sa_tracklets(Tpc_PolyClusterContainer *clusters,
+                                                 Tpc_PolyTrackContainer *tracks) const;
+  bool finalize_pattern_tracklet(Tracklet &tracklet, bool has_upstream_state) const;
   bool make_pair_row(const Tracklet &track1, const Tracklet &track2,
                      const Vec3 &primary_vertex, const int run_number,
                      const int event_number);
@@ -505,6 +514,10 @@ class TpcV0CandidateTree : public SubsysReco
                                        FinalTrackVertexContainer *vertices,
                                        Vec3 &vertex, double &z_rms,
                                        unsigned int &ntracks) const;
+  bool choose_tpc_sa_collision_vertex(const Tracklet &tracklet,
+                                      Tpc_PolyTrackVertexContainer *vertices,
+                                      Vec3 &vertex, double &z_rms,
+                                      unsigned int &ntracks) const;
   void assign_fit_quality(Tracklet &tracklet) const;
   void reset_pair_row();
   void reset_track_row();
@@ -610,6 +623,9 @@ class TpcV0CandidateTree : public SubsysReco
   std::string m_pattern_cluster_track_node{"TPCPOLYCLUSTERTRACKS"};
   std::string m_pattern_final_track_node{"FINALTRACKS"};
   std::string m_pattern_final_track_vertex_node{"FINALTRACKVERTICES"};
+  std::string m_tpc_sa_cluster_node{"TPC_POLYCLUSTERS"};
+  std::string m_tpc_sa_track_node{"TPC_POLYTRACKS"};
+  std::string m_tpc_sa_track_vertex_node{"TPC_POLYTRACKVERTICES"};
   bool m_use_pattern_cluster_tracks{false};
 
   TFile *m_file{nullptr};
