@@ -53,8 +53,6 @@ PHG4TpcDigitizer::~PHG4TpcDigitizer()
 
 int PHG4TpcDigitizer::InitRun(PHCompositeNode *topNode)
 {
-  ADCThreshold += Pedestal;
-
   // Factor that converts the charge in each z bin into a voltage in each z bin
   // ChargeToPeakVolts relates TOTAL charge collected to peak voltage, while the cell maker actually distributes the signal
   // GEM output charge in Z bins using the shaper time response. For 80 ns shaping, the scaleup factor of 2.4 gets the peak voltage right.
@@ -62,7 +60,8 @@ int PHG4TpcDigitizer::InitRun(PHCompositeNode *topNode)
   // The noise is by definition the RMS noise width voltage divided by ChargeToPeakVolts
   ADCNoiseConversionGain = ChargeToPeakVolts * 1.60e-04;  // 20 (or 30) mV/fC * fC/electron
 
-  ADCThreshold_mV = ADCThreshold * ADCNoiseConversionGain;
+  const float threshold_electrons = ADCThreshold + (no_noise ? 0.0F : Pedestal);
+  ADCThreshold_mV = threshold_electrons * ADCNoiseConversionGain;
 
   //-------------
   // Add Hit Node
@@ -667,9 +666,12 @@ void PHG4TpcDigitizer::DigitizeCylinderCells(PHCompositeNode *topNode)
 float PHG4TpcDigitizer::add_noise_to_bin(float signal)
 {
   // add noise to the signal and return adc input voltage
-  float adc_input_voltage = signal * ADCSignalConversionGain;                 // mV, see comments above
-  float noise_voltage = (Pedestal + added_noise()) * ADCNoiseConversionGain;  // mV - from definition of noise charge and pedestal charge
-  adc_input_voltage += noise_voltage;
+  float adc_input_voltage = signal * ADCSignalConversionGain;  // mV, see comments above
+  if (!no_noise)
+  {
+    const float noise_voltage = (Pedestal + added_noise()) * ADCNoiseConversionGain;  // mV - from definition of noise charge and pedestal charge
+    adc_input_voltage += noise_voltage;
+  }
 
   return adc_input_voltage;
 }

@@ -40,6 +40,7 @@ class PHG4TpcDigitizer : public SubsysReco
   void SetADCThreshold(const float thresh) { ADCThreshold = thresh; };
   void SetENC(const float enc) { TpcEnc = enc; };
   void set_skip_noise_flag(const bool skip) { skip_noise = skip; }
+  void set_no_noise_flag(const bool value) { no_noise = value; }
 
  private:
   void CalculateCylinderCellADCScale(PHCompositeNode *topNode);
@@ -58,6 +59,7 @@ class PHG4TpcDigitizer : public SubsysReco
   float ADCNoiseConversionGain {std::numeric_limits<float>::quiet_NaN()};
 
   bool skip_noise {false};
+  bool no_noise {false};
 
   std::vector<std::vector<TrkrHitSet::ConstIterator> > phi_sorted_hits;
   std::vector<float> adc_input;
