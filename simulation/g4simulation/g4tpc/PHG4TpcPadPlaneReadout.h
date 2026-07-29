@@ -9,12 +9,12 @@
 #include <gsl/gsl_rng.h>
 
 #include <array>
+#include <cstdint>
 #include <climits>
 #include <cmath>
 #include <string>  // for string
 #include <vector>
 #include <map>
-
 typedef std::map<TrkrDefs::hitsetkey, std::vector<TrkrDefs::hitkey>> hitMaskTpc;
 
 class PHCompositeNode;
@@ -34,6 +34,8 @@ class PHG4TpcPadPlaneReadout : public PHG4TpcPadPlane
   ~PHG4TpcPadPlaneReadout() override;
 
   int InitRun(PHCompositeNode *topNode) override;
+  void BeginEvent(unsigned int event) override;
+  void EndEvent(unsigned int event) override;
 
   void UseGain(const int flagToUseGain);
   void SetUseModuleGainWeights(const int flag) { m_use_module_gain_weights = flag; }
@@ -42,6 +44,19 @@ class PHG4TpcPadPlaneReadout : public PHG4TpcPadPlane
   void SetUsePolyaGEMGain(const int flagPolya) { m_usePolya = flagPolya; }
   void SetUseLangauGEMGain(const int flagLangau) { m_useLangau = flagLangau; }
   void SetLangauParsFileName(const std::string &name) { m_tpc_langau_pars_file = name; }
+  double GetAveragePadAreaForLayer(unsigned int layer) const;
+  void EnablePadPolygonAreaCalculation(bool enable) { m_enable_pad_polygon_area_calculation = enable; }
+  void SetPadAreaPlotFile(const std::string &file) { m_pad_area_plot_output = file; }
+  // Pad-sharing method selection: true uses SERF polygon overlap.
+  void UseSerfPadSharing(bool use_serf) { m_use_serf_padsharing = use_serf; }
+  // If true and SERF polygons are unavailable, abort InitRun with an error
+  void RequireSerfPadSharing(bool require) { m_require_serf = require; }
+  // If true, also require polygons for all readout layers (partial coverage aborts)
+  void RequireSerfFullCoverage(bool require) { m_require_serf_full = require; }
+  // If true, keep charge that falls into polygon gaps as loss (do not renormalize it into pads).
+  void PreservePadGapLosses(bool preserve) { m_preserve_pad_gap_losses = preserve; }
+  // When using analytic sharing (no SERF polygons), choose rectangular response instead of triangular
+  void UseRectangularPadResponse(bool use_rectangular) { m_use_rectangular_pad_response = use_rectangular; }
 
   // otherwise warning of inconsistent overload since only one MapToPadPlane methow is overridden
   using PHG4TpcPadPlane::MapToPadPlane;
@@ -50,37 +65,80 @@ class PHG4TpcPadPlaneReadout : public PHG4TpcPadPlane
 
   void SetDefaultParameters() override;
   void UpdateInternalParameters() override;
- 
-  void SetMaskChannelsFromFile() 
+
+  void SetMaskChannelsFromFile()
   {
     m_maskFromFile = true;
-  } 
-  void SetDeadChannelMapName(const std::string& dcmap) 
+  }
+  void SetDeadChannelMapName(const std::string &dcmap)
   {
     m_maskDeadChannels = true;
     m_deadChannelMapName = dcmap;
   }
-  void SetHotChannelMapName(const std::string& hmap) 
+  void SetHotChannelMapName(const std::string &hmap)
   {
     m_maskHotChannels = true;
     m_hotChannelMapName = hmap;
   }
+  // Debug printing helpers
+  // If set >= 0, limit PadHit prints to a single layer number; otherwise prints for all layers.
+  void SetDebugPadHitLayer(int layer) { m_dbg_pad_hit_layer = layer; }
+  // Enable a one-shot visualization of a single avalanche cloud overlap with zigzag pads.
+  // Passing target_side/target_layer < 0 matches the first cloud encountered.
+  // grid_step <= 0 defaults to sigma/30 sampling.
+  void EnableSingleCloudVisualization(bool enable,
+                                      const std::string &output_file = "AvalancheCloudOverlap.png",
+                                      int target_side = -1,
+                                      int target_layer = -1,
+                                      double grid_step = -1.0);
+  void SetVisualizationDumpFile(const std::string &file);
+  void SetVisualizeAllClouds(bool enable);
+  void EnableSideLayerDebug(bool enable) { m_enable_side_layer_debug = enable; }
+  // Compare LayerGeom pad centers (from CDB-derived geometry) against
+  // SERF BRD polygon centers using the same side/index mapping as SERF lookup.
+  void EnablePadGeomConsistencyCheck(bool enable) { m_check_pad_geom_consistency = enable; }
+  // Optional per-pad dump for one target (layer, sector[, side]).
+  // Set side < 0 to include both sides.
+  void SetPadGeomConsistencyDumpTarget(int layer, int sector, int side = -1)
+  {
+    m_consistency_dump_layer = layer;
+    m_consistency_dump_sector = sector;
+    m_consistency_dump_side = side;
+  }
+
+ protected:
+  double Ts = 80.0;  // SAMPA peaking time
+
+  double sampaShapingResponseFunction(double tzero, double t) const;
+
+  void sampaTimeDistribution(double tzero,
+                             std::vector<int> &adc_tbin,
+                             std::vector<double> &adc_tbin_share);
 
  private:
+
   //  void populate_rectangular_phibins(const unsigned int layernum, const double phi, const double cloud_sig_rp, std::vector<int> &pad_phibin, std::vector<double> &pad_phibin_share);
-  void populate_zigzag_phibins(const unsigned int side, const unsigned int layernum, const double phi, const double cloud_sig_rp, std::vector<int> &phibin_pad, std::vector<double> &phibin_pad_share);
+  void populate_zigzag_phibins(const unsigned int side, const unsigned int layernum, const double phi, const double cloud_sig_rp, std::vector<int> &pad_phibin, std::vector<double> &pad_phibin_share);
+  void SERF_zigzag_phibins(const unsigned int side, const unsigned int layernum, const double phi, const double rad_gem, const double cloud_sig_rp, std::vector<int> &pad_phibin, std::vector<double> &pad_phibin_share);
 
-  void sampaTimeDistribution(double tzero,  std::vector<int> &adc_tbin, std::vector<double> &adc_tbin_share);
-  double sampaShapingResponseFunction(double tzero, double t) const;
-  
   double check_phi(const unsigned int side, const double phi, const double radius);
+  void makeChannelMask(hitMaskTpc &aMask, const std::string &dbName, const std::string &totalChannelsToMask);
+  // utility: pick layers whose annulus intersects a radial window around rad
+  std::vector<unsigned int> layersInRadialWindow(double rad, double sigma, double nsig) const;
 
-  void makeChannelMask(hitMaskTpc& aMask, const std::string& dbName, const std::string& totalChannelsToMask);
+  // utility: find geometry for a given layer
+  PHG4TpcGeom* getGeomForLayer(unsigned int layer) const;
+
+  // utility: determine sector for (x,y) and rotate to a canonical frame
+  void rotatePointToSector(double x, double y, unsigned int side, int& sectorFound, double& xNew, double& yNew);
+  void runPadGeomConsistencyCheck();
 
   PHG4TpcGeomContainer *GeomContainer = nullptr;
   PHG4TpcGeom *LayerGeom = nullptr;
 
-  double neffelectrons_threshold {std::numeric_limits<double>::quiet_NaN()};
+  // Minimum effective electrons per (pad,tbin) to create a hit.
+  // Default to 0.0 so all contributions are kept unless configured otherwise.
+  double neffelectrons_threshold = 0.0;
 
   std::array<double, 3> MinRadius{};
   std::array<double, 3> MaxRadius{};
@@ -92,9 +150,8 @@ class PHG4TpcPadPlaneReadout : public PHG4TpcPadPlane
   double sigmaT {std::numeric_limits<double>::quiet_NaN()};
   std::array<double, 2> sigmaL{};
   double phi_bin_width{};
-
-  int NTBins {std::numeric_limits<int>::max()};
-  int m_NHits {0};
+  int NTBins = std::numeric_limits<int>::max();
+  int m_NHits = 0;
   // Using Gain maps is turned off by default
   int m_flagToUseGain {0};
 
@@ -104,9 +161,7 @@ class PHG4TpcPadPlaneReadout : public PHG4TpcPadPlane
   std::string m_tpc_module_gain_weights_file;
 
   // gaussian sampling
-  static constexpr double _nsigmas {5};
-
-  double Ts {55.0}; // SAMPA v5 peaking time
+  static constexpr double _nsigmas = 2.5;
 
   double averageGEMGain {std::numeric_limits<double>::quiet_NaN()};
   double polyaTheta {std::numeric_limits<double>::quiet_NaN()};
@@ -138,13 +193,137 @@ class PHG4TpcPadPlaneReadout : public PHG4TpcPadPlane
   TF1 *flangau[2][3][12] {{{nullptr}}};
 
   hitMaskTpc m_deadChannelMap;
-  hitMaskTpc m_hotChannelMap; 
+  hitMaskTpc m_hotChannelMap;
 
   bool m_maskDeadChannels {false};
   bool m_maskHotChannels {false};
   bool m_maskFromFile {false};
-  std::string m_deadChannelMapName; 
-  std::string m_hotChannelMapName; 
+  std::string m_deadChannelMapName;
+  std::string m_hotChannelMapName;
+  bool m_enable_pad_polygon_area_calculation = false;
+  std::string m_pad_area_plot_output = "TPCPadAverageAreaByLayer.png";
+  std::array<double, 3 * 16 + 7> m_average_pad_area_cm2{};
+  std::array<unsigned int, 3 * 16 + 7> m_pad_polygon_count_by_layer{};
+  struct Point { double x, y; };
+
+  struct PadInfo {
+    std::string          name;       // pad name
+    int                  pad_number; // pad number (number in module)
+    int                  pad_bin;    // pad phi bin (number according to get_phi_bin)
+    double               cx, cy;     // centroid coords
+    double               rad, phi;   // pad radius and phi
+    std::vector<Point>   vertices;   // pad polygon
+    bool                isedge = false; // whether to keep this pad signal
+    void clear() {
+      name.clear();
+      pad_number = -1;
+      pad_bin    = -1;
+      cx = cy = rad = phi = 0.0;
+      vertices.clear();
+      isedge = false;
+    }
+  };
+
+  struct DebugSample
+  {
+    double x = 0.0;
+    double y = 0.0;
+    double density = 0.0;
+  };
+
+std::array<std::vector<PadInfo>,3*16+7> Pads;
+bool pointInPolygon( double x, double y,const std::vector<Point>& poly);
+  double polygonArea(const std::vector<Point>& vertices) const;
+  void updatePadPolygonAreaSummary();
+  void printPadPolygonAreaSummary() const;
+  void plotPadPolygonAreaSummary() const;
+  double integratedDensityOfCircleAndPad(double hitX,double hitY, double sigma, const std::vector<Point>& pad,double gridStep = 0.0, std::vector<DebugSample>* debug_samples = nullptr);
+  // hard‑coded list of input .brd files
+  static const std::vector<std::string> brdMaps_;
+void loadPadPlanes();
+int ntpc_phibins_sector[3] = { 94, 128, 192 };
+
+int findPadForPoint( double x, double y, int tpc_module);
+  const std::array<double, 5> Thickness =
+      {{
+          0.56598621677629212,
+          1.0206889851687158,
+          1.0970475085472556,
+          0.5630547309825637,
+          0.56891770257002054,
+      }};
+double min_radii_module[3]={314.9836110818037, 416.59202613529567, 589.1096495597712};
+double max_radii_module[3]={399.85222874031024, 569.695373910603, 753.6667758418596};
+
+  // choose between SERF polygon overlap (default) and triangle response
+  bool m_use_serf_padsharing = true;
+  bool m_require_serf = false;
+  bool m_require_serf_full = false;
+  bool m_preserve_pad_gap_losses = true;
+  bool m_serf_polygons_present = false; // summarized availability after InitRun
+  bool m_warned_serf_fallback = false;  // printed once if per-hit fallback occurs
+  // analytic sharing option: rectangular (flat) pad response instead of triangular
+  bool m_use_rectangular_pad_response = false;
+
+  // Debug: restrict PadHit prints to a single layer (or all if < 0)
+  int m_dbg_pad_hit_layer = 49;
+
+  struct DebugPadContribution
+  {
+    int pad_bin = -1;
+    double charge = 0.0;
+    std::vector<Point> polygon;
+    double pad_phi = 0.0;
+    double pad_r = 0.0;
+  };
+  struct VisualizationCircle
+  {
+    double x = 0.0;
+    double y = 0.0;
+    double radius = 0.0;
+  };
+
+  void maybeVisualizeAvalanche(unsigned int side,
+                               unsigned int layernum,
+                               double phi,
+                               double rad_gem,
+                               double cloud_sig_rp,
+                               double x_center,
+                               double y_center,
+                               const std::vector<DebugPadContribution> &contribs,
+                               const std::vector<DebugSample> &samples,
+                               const std::vector<VisualizationCircle> &circles);
+
+  bool m_visualize_single_cloud = false;
+  bool m_visualization_done = false;
+  int  m_visualization_target_layer = -1;
+  int  m_visualization_target_side = -1;
+  std::string m_visualization_output = "AvalancheCloudOverlap.png";
+  double m_visualization_grid_step = -1.0;
+  bool m_visualize_all_matches = false;
+  std::string m_visualization_dump_file;
+  unsigned long m_visualization_dump_index = 0;
+  unsigned long m_visualization_cloud_counter = 0;
+  std::vector<DebugSample> m_visualization_aggregate_samples;
+  std::vector<VisualizationCircle> m_visualization_circles;
+  std::map<int, DebugPadContribution> m_visualization_pad_union;
+
+  struct SideLayerDebugCounters
+  {
+    std::uint64_t cloud_calls{0};
+    std::uint64_t cloud_no_hits{0};
+    std::uint64_t pad_contributors{0};
+    std::uint64_t bins_written{0};
+    double neff_sum{0.0};
+  };
+  bool m_enable_side_layer_debug{false};
+  bool m_check_pad_geom_consistency{false};
+  int m_consistency_dump_layer{-1};
+  int m_consistency_dump_sector{-1};
+  int m_consistency_dump_side{-1};
+  int m_side_layer_debug_event{-1};
+  std::array<std::uint64_t, NSides> m_side_layer_no_layer{{0, 0}};
+  std::map<std::pair<unsigned int, unsigned int>, SideLayerDebugCounters> m_side_layer_debug_counters;
 };
 
 #endif
