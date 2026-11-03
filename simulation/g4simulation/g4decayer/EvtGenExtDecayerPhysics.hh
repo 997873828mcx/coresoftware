@@ -38,6 +38,9 @@
 #include <Geant4/G4String.hh>
 #include <Geant4/G4VPhysicsConstructor.hh>
 
+#include <set>
+#include <string>
+
 /// The builder for external decayer.
 ///
 /// The external decayer is added to all instantiated decay
@@ -50,9 +53,24 @@ class EvtGenExtDecayerPhysics : public G4VPhysicsConstructor
  public:
   EvtGenExtDecayerPhysics(const G4String& name = "ExtDecayer");
   ~EvtGenExtDecayerPhysics() override = default;
-  void CustomizeEvtGenDecay(std::string& InputDecayFile)
+  void CustomizeEvtGenDecay(const std::string& inputDecayFile)
   {
-	  DecayFile = InputDecayFile;
+    m_decayFile = inputDecayFile;
+  }
+
+  /// Make EvtGen authoritative for a particle species even when Geant4
+  /// provides a native decay table. Other species retain their native tables.
+  /// This selects the decay model; it does not force an immediate decay.
+  void OverrideNativeDecayForPdg(const int pdgCode)
+  {
+    m_overrideNativeDecayPdgCodes.insert(pdgCode);
+  }
+
+  /// Suppress PHOTOS final-state radiation only for decays whose mother has
+  /// this PDG code. This does not change PHOTOS behavior for other species.
+  void SuppressPhotosForPdg(const int pdgCode)
+  {
+    m_suppressPhotosPdgCodes.insert(pdgCode);
   }
 
  protected:
@@ -67,7 +85,9 @@ class EvtGenExtDecayerPhysics : public G4VPhysicsConstructor
   /// Not implemented
   EvtGenExtDecayerPhysics& operator=(const EvtGenExtDecayerPhysics& right);
   G4EvtGenDecayer* extDecayer = nullptr;
-  std::string DecayFile = "";
+  std::string m_decayFile;
+  std::set<int> m_overrideNativeDecayPdgCodes;
+  std::set<int> m_suppressPhotosPdgCodes;
 };
 
 #endif  // P6D_EXT_DECAYER_PHYSICS_H

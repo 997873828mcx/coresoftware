@@ -47,6 +47,7 @@
 #include <EvtGenBase/EvtRandom.hh>               // for EvtRandom
 #include <EvtGenBase/EvtVector4R.hh>             // for EvtVector4R
 #include <EvtGenExternal/EvtExternalGenList.hh>  // for EvtExternalGenList
+#include <Photos/Photos.h>
 
 #include <HepMC3/Attribute.h>        // for string
 #include <HepMC3/FourVector.h>       // for FourVector
@@ -244,4 +245,11 @@ G4DecayProducts* G4EvtGenDecayer::ImportDecayProducts(const G4Track& track)
 void G4EvtGenDecayer::SetDecayTable(const string& decayTable, bool useXml)
 {
   mEvtGen->readUDecay(decayTable, useXml);
+}
+
+void G4EvtGenDecayer::SuppressPhotosForPdg(const int pdgCode)
+{
+  // A zero daughter count matches every decay channel of this mother. This
+  // leaves PHOTOS enabled globally and suppresses only the selected species.
+  Photospp::Photos::suppressBremForDecay(0, pdgCode);
 }

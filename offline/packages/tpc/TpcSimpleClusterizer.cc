@@ -1,4 +1,5 @@
 #include "TpcSimpleClusterizer.h"
+#include "TpcAdcBaselineCorrection.h"
 
 #include <trackbase/TpcDefs.h>
 
@@ -442,6 +443,14 @@ int TpcSimpleClusterizer::InitRun(PHCompositeNode *topNode)
 
 int TpcSimpleClusterizer::process_event(PHCompositeNode *topNode)
 {
+  const auto baseline = TpcAdcBaseline::normalizeIfMetadata(topNode, Name());
+  if (!baseline.ok)
+  {
+    std::cerr << Name() << ": " << baseline.error << std::endl;
+    return Fun4AllReturnCodes::ABORTRUN;
+  }
+  const double effectivePedestal = baseline.has_metadata ? 0.0 : pedestal;
+
   //  int print_layer = 18;
 
   if (Verbosity() > 1000)
@@ -543,7 +552,7 @@ int TpcSimpleClusterizer::process_event(PHCompositeNode *topNode)
     thread_pair.data.layergeom = layergeom;
     thread_pair.data.hitset = hitset;
     thread_pair.data.layer = layer;
-    thread_pair.data.pedestal = pedestal;
+    thread_pair.data.pedestal = effectivePedestal;
     thread_pair.data.sector = sector;
     thread_pair.data.side = side;
     thread_pair.data.do_assoc = do_hit_assoc;

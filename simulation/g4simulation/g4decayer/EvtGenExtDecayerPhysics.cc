@@ -33,6 +33,8 @@
 #include "EvtGenExtDecayerPhysics.hh"
 
 #include <Geant4/G4Decay.hh>
+#include <Geant4/G4DecayTable.hh>
+#include <Geant4/G4Exception.hh>
 #include <Geant4/G4ParticleDefinition.hh>
 #include <Geant4/G4ParticleTable.hh>  // for G4ParticleTable::G4PTblDi...
 #include <Geant4/G4ProcessManager.hh>
@@ -47,7 +49,9 @@
 #include <cstddef>  // for size_t
 #include <fstream>
 #include <iostream>  // for operator<<, endl, basic_o...
-#include <string>    // for operator<<
+#include <set>
+#include <sstream>
+#include <string>  // for operator<<
 
 //....oooOO0OOooo........oooOO0OOooo........oooOO0OOooo........oooOO0OOooo......
 // hack for Geant 10.03.p03
@@ -81,13 +85,13 @@ void EvtGenExtDecayerPhysics::ConstructProcess()
   extDecayer = new G4EvtGenDecayer();
   extDecayer->SetVerboseLevel(0);
 
-  if (!DecayFile.empty())
+  if (!m_decayFile.empty())
   {
-    std::ifstream f_local(DecayFile);
+    std::ifstream f_local(m_decayFile);
 
     if (f_local.good())
     {
-      extDecayer->SetDecayTable(DecayFile, false);
+      extDecayer->SetDecayTable(m_decayFile, false);
     }
     else
     {
@@ -96,7 +100,7 @@ void EvtGenExtDecayerPhysics::ConstructProcess()
       {
         exit(1);
       }
-      std::string DecayFileCalibrationRepo = std::string(CALIBRATIONROOT) + "/EvtGen/" + DecayFile;
+      std::string DecayFileCalibrationRepo = std::string(CALIBRATIONROOT) + "/EvtGen/" + m_decayFile;
 
       std::ifstream f_calib(DecayFileCalibrationRepo);
 
@@ -107,19 +111,32 @@ void EvtGenExtDecayerPhysics::ConstructProcess()
       else
       {
         std::cout << __PRETTY_FUNCTION__ << " : Fatal error. Decay file can not be found at "
-                  << DecayFile << " nor at " << DecayFileCalibrationRepo << std::endl;
+                  << m_decayFile << " nor at " << DecayFileCalibrationRepo << std::endl;
 
         exit(1);
       }
     }
   }
 
+  for (const int pdgCode : m_suppressPhotosPdgCodes)
+  {
+    extDecayer->SuppressPhotosForPdg(pdgCode);
+    std::cout << "Suppressing PHOTOS radiation for EvtGen mother PDG "
+              << pdgCode << std::endl;
+  }
+
   aParticleIterator->reset();
   int decayer_used = 0;
+  std::set<int> unresolvedOverridePdgCodes = m_overrideNativeDecayPdgCodes;
   while ((*aParticleIterator)())
   {
     G4ParticleDefinition* particle = aParticleIterator->value();
     G4ProcessManager* pmanager = particle->GetProcessManager();
+    const int pdgCode = particle->GetPDGEncoding();
+    const bool overrideNativeDecay =
+        m_overrideNativeDecayPdgCodes.find(pdgCode) !=
+        m_overrideNativeDecayPdgCodes.end();
+    bool foundDecayProcess = false;
 
     if (verboseLevel > 1)
     {
@@ -138,15 +155,44 @@ void EvtGenExtDecayerPhysics::ConstructProcess()
       G4Decay* decay = dynamic_cast<G4Decay*>((*processVector)[i]);
       if (decay)
       {
+        foundDecayProcess = true;
         // The extDecayer will be deleted in G4Decay destructor
         // increment counter in case we want to print out stats
         // for whatever reason (non null means it is used and
         // must not be deleted)
-        //       particle->SetDecayTable(NULL);
         decay->SetExtDecayer(extDecayer);
         decayer_used++;
       }
     }
+
+    if (overrideNativeDecay && foundDecayProcess)
+    {
+      // G4Decay invokes its external decayer only when GetDecayTable() is
+      // null. Delete and clear this explicitly selected particle's native
+      // table; all other particle definitions are left unchanged.
+      G4DecayTable* nativeDecayTable = particle->GetDecayTable();
+      particle->SetDecayTable(nullptr);
+      delete nativeDecayTable;
+      unresolvedOverridePdgCodes.erase(pdgCode);
+
+      std::cout << "Using EvtGen instead of the native decay table for "
+                << particle->GetParticleName()
+                << " (PDG " << pdgCode << ")" << std::endl;
+    }
+  }
+
+  if (!unresolvedOverridePdgCodes.empty())
+  {
+    std::ostringstream message;
+    message << "Could not override the native decay table with EvtGen for PDG code(s):";
+    for (const int pdgCode : unresolvedOverridePdgCodes)
+    {
+      message << ' ' << pdgCode;
+    }
+    message << ". The particle definition or its G4Decay process is missing.";
+    G4Exception("EvtGenExtDecayerPhysics::ConstructProcess",
+                "EvtGenExtDecayerPhysics001", FatalException,
+                message.str().c_str());
   }
 
   // If the extDecayer isn't used for this particle we need to delete it here

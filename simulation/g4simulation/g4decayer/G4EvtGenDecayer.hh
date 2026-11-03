@@ -74,6 +74,9 @@ class G4EvtGenDecayer : public G4VExtDecayer
   //  int ImportParticles(std::vector<int>& DecayPDGID, std::vector<int>& DecayStatus, std::vector<G4LorentzVector>& DecayMom, std::vector<G4LorentzVector>& DecayVtx);
   void SetVertex(G4LorentzVector* r);
   void SetDecayTable(const std::string& decayTable, bool useXml);
+  /// Suppress PHOTOS final-state radiation for decays of this mother species.
+  /// Other PHOTOS modes retain their configured behavior.
+  void SuppressPhotosForPdg(int pdgCode);
   // void ClearEvent();
   // void AppendParticle(int pdg, std::unique_ptr<G4LorentzVector> _p);
 

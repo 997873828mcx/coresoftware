@@ -11,6 +11,7 @@
 #include "Tpc_ModuleTrackContainer.h"
 
 #include <fun4all/Fun4AllReturnCodes.h>
+#include <tpc/TpcAdcBaselineCorrection.h>
 
 #include <phool/PHCompositeNode.h>
 #include <phool/PHIODataNode.h>
@@ -1714,8 +1715,14 @@ Tpc_AssembledTrackReco::make_seed_parameters(const Candidate& c) const
   return seed;
 }
 
-int Tpc_AssembledTrackReco::process_event(PHCompositeNode* /*unused*/)
+int Tpc_AssembledTrackReco::process_event(PHCompositeNode* topNode)
 {
+  const auto baseline = TpcAdcBaseline::normalizeIfMetadata(topNode, Name());
+  if (!baseline.ok)
+  {
+    std::cerr << Name() << ": " << baseline.error << std::endl;
+    return Fun4AllReturnCodes::ABORTRUN;
+  }
   reset_tree_vars();
   if (m_assembledTrackContainer)
   {

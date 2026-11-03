@@ -1,6 +1,7 @@
 #include "Tpc_PolyClusterizer.h"
 
 #include "IdealPadMap.h"
+#include "TpcDriftTimePolicy.h"
 #include "TpcCrossingDecision.h"
 #include "TpcCrossingDecisionContainer.h"
 #include "Tpc_AssembledTrack.h"
@@ -10,6 +11,7 @@
 
 #include <cdbobjects/CDBTTree.h>
 #include <fun4all/Fun4AllReturnCodes.h>
+#include <tpc/TpcAdcBaselineCorrection.h>
 
 #include <ffamodules/CDBInterface.h>
 #include <phool/PHCompositeNode.h>
@@ -42,6 +44,7 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 #include <map>
 #include <memory>
 #include <set>
@@ -120,6 +123,13 @@ Tpc_PolyClusterizer::~Tpc_PolyClusterizer()
 {
   delete m_idealPadMap;
   m_idealPadMap = nullptr;
+}
+
+void Tpc_PolyClusterizer::setCentralMembraneTailToleranceNs(const double value)
+{
+  if (!std::isfinite(value) || value<0.0)
+  { throw std::invalid_argument("central-membrane tail tolerance must be finite and nonnegative"); }
+  m_centralMembraneTailToleranceNs=value;
 }
 
 bool Tpc_PolyClusterizer::load_cdb_inputs()
@@ -302,6 +312,18 @@ int Tpc_PolyClusterizer::InitRun(PHCompositeNode* topNode)
     return Fun4AllReturnCodes::ABORTRUN;
   }
 
+  if (m_useTpcGeometryAdcClock)
+  {
+    const double adc_clock = layergeom->get_adc_clock();
+    if (!std::isfinite(adc_clock) || adc_clock <= 0.0)
+    {
+      std::cerr << Name() << "::InitRun - invalid TPC geometry ADC clock "
+                << adc_clock << std::endl;
+      return Fun4AllReturnCodes::ABORTRUN;
+    }
+    m_tpcAdcClock = adc_clock;
+  }
+
   if (!m_usePHGarfieldDefaults && use_survey_geometry)
   {
     // apply survey geometry
@@ -317,9 +339,12 @@ int Tpc_PolyClusterizer::InitRun(PHCompositeNode* topNode)
     m_tpcRotations = {{{rot_x, rot_y, rot_z}, {0.0, 0.0, 0.0}}};
   }
 
-  // update m_startZSouth and m_startZNorth, based on TPC geometry
-  m_startZSouth = -(layergeom->get_max_driftlength() + layergeom->get_CM_halfwidth());
-  m_startZNorth = layergeom->get_max_driftlength() + layergeom->get_CM_halfwidth();
+  // Use geometry unless the transport configuration explicitly pins the readout plane.
+  if (!m_startZOverride)
+  {
+    m_startZSouth = -(layergeom->get_max_driftlength() + layergeom->get_CM_halfwidth());
+    m_startZNorth = layergeom->get_max_driftlength() + layergeom->get_CM_halfwidth();
+  }
 
   // printout
   std::cout << Name() << "::InitRun - m_startZSouth: " << m_startZSouth << " cm" << std::endl;
@@ -431,6 +456,19 @@ void Tpc_PolyClusterizer::reconfigure_garfield(PHGarfield* garfield) const
   if (!garfield)
   {
     return;
+  }
+
+  if (!m_gasFile.empty())
+  {
+    garfield->SetGasFile(m_gasFile);
+  }
+  if (m_centralMembraneHalfWidthOverride)
+  {
+    garfield->SetCentralMembraneHalfWidth(m_centralMembraneHalfWidth);
+  }
+  if (m_driftVolumeRadiiOverride)
+  {
+    garfield->SetDriftVolumeRadii(m_driftInnerRadius, m_driftOuterRadius);
   }
 
   if (garfield->GetCMVoltageDefault() != m_cmVoltageDefault)
@@ -617,7 +655,19 @@ void Tpc_PolyClusterizer::configure_garfield(PHGarfield* garfield) const
   {
     garfield->RotateTpc(rotation[0], rotation[1], rotation[2]);
   }
+  if (!m_gasFile.empty())
+  {
+    garfield->SetGasFile(m_gasFile);
+  }
   garfield->SetCMVoltageDefault(m_cmVoltageDefault);
+  if (m_centralMembraneHalfWidthOverride)
+  {
+    garfield->SetCentralMembraneHalfWidth(m_centralMembraneHalfWidth);
+  }
+  if (m_driftVolumeRadiiOverride)
+  {
+    garfield->SetDriftVolumeRadii(m_driftInnerRadius, m_driftOuterRadius);
+  }
 }
 
 int Tpc_PolyClusterizer::getNodes(PHCompositeNode* topNode)
@@ -713,9 +763,12 @@ bool Tpc_PolyClusterizer::build_drift_lookup()
     return false;
   }
 
+  m_cmTerminatedPolylines=0;
+  m_minLookupEndTimeNs=std::numeric_limits<double>::max();
   for (DriftPolyline& polyline : m_driftLookup)
   {
     polyline.phi = 0.0;
+    polyline.terminal_is_central_membrane=false;
     polyline.points.clear();
   }
 
@@ -773,7 +826,8 @@ bool Tpc_PolyClusterizer::build_drift_lookup()
           const double phi = phi_local;
           const double x0 = radius * std::cos(phi);
           const double y0 = radius * std::sin(phi);
-          TPolyLine3D* drift = m_garfield->ReverseDrift(x0, y0, z0, m_reverseDriftStepNs, nullptr, m_reverseDriftSubsteps);
+          PHGarfield::ReverseDriftStatus terminal_status=PHGarfield::ReverseDriftStatus::Running;
+          TPolyLine3D* drift = m_garfield->ReverseDrift(x0, y0, z0, m_reverseDriftStepNs, &terminal_status, m_reverseDriftSubsteps);
           if (!drift || drift->GetN() <= 0)
           {
             delete drift;
@@ -794,6 +848,9 @@ bool Tpc_PolyClusterizer::build_drift_lookup()
 
           DriftPolyline& polyline = m_driftLookup[drift_lookup_index(layer_index, side, sector, sample)];
           polyline.phi = phi;
+          polyline.terminal_is_central_membrane=terminal_status==PHGarfield::ReverseDriftStatus::CentralMembrane;
+          if (polyline.terminal_is_central_membrane) { ++m_cmTerminatedPolylines; }
+          m_minLookupEndTimeNs=std::min(m_minLookupEndTimeNs,static_cast<double>(npoints-1)*m_reverseDriftStepNs);
           polyline.points.resize(static_cast<std::size_t>(npoints));
           for (int ipoint = 0; ipoint < npoints; ++ipoint)
           {
@@ -1013,12 +1070,15 @@ bool Tpc_PolyClusterizer::sample_drift_lookup(const unsigned int layer,
     }
 
     const double max_time_ns = static_cast<double>(npoints - 1) * m_reverseDriftStepNs;
-    if (target_time_ns > max_time_ns)
+    const auto time=resolve_tpc_drift_time(target_time_ns,max_time_ns,0.0,
+        m_centralMembraneTailToleranceNs,polyline.terminal_is_central_membrane);
+    if (!time.accepted)
     {
+      ++m_outOfTimeRejectedSamples;
       return false;
     }
 
-    const double fbin = target_time_ns / m_reverseDriftStepNs;
+    const double fbin = time.time_ns / m_reverseDriftStepNs;
     const int i0 = std::min(static_cast<int>(std::floor(fbin)), npoints - 1);
     const int i1 = std::min(i0 + 1, npoints - 1);
     const double frac = fbin - static_cast<double>(i0);
@@ -1030,7 +1090,9 @@ bool Tpc_PolyClusterizer::sample_drift_lookup(const unsigned int layer,
     delta_r = static_cast<double>(p0.delta_r) + frac * static_cast<double>(p1.delta_r - p0.delta_r);
     delta_phi = dphi0 + frac * (dphi1 - dphi0);
     point_z = static_cast<double>(p0.z) + frac * static_cast<double>(p1.z - p0.z);
-    return std::isfinite(delta_r) && std::isfinite(delta_phi) && std::isfinite(point_z);
+    const bool finite_sample=std::isfinite(delta_r) && std::isfinite(delta_phi) && std::isfinite(point_z);
+    if (finite_sample && time.central_membrane_clamped) { ++m_cmTailClampedSamples; }
+    return finite_sample;
   };
 
   double delta_r0 = 0.0;
@@ -1243,6 +1305,14 @@ Tpc_PolyClusterizer::make_centroid(const std::vector<Point>& points)
 
 int Tpc_PolyClusterizer::process_event(PHCompositeNode* topNode)
 {
+  const auto baseline = TpcAdcBaseline::normalizeIfMetadata(topNode, Name());
+  if (!baseline.ok)
+  {
+    std::cerr << Name() << ": " << baseline.error << std::endl;
+    return Fun4AllReturnCodes::ABORTRUN;
+  }
+  m_cmTailClampedSamples=0;
+  m_outOfTimeRejectedSamples=0;
   if (!m_assembledTracks || !m_clusters || !m_crossingDecisions || !m_garfield)
   {
     return Fun4AllReturnCodes::EVENT_OK;

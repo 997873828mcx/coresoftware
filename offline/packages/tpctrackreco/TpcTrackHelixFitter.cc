@@ -176,9 +176,16 @@ bool TpcTrackHelixFitter::parse_point_order(const std::string &mode, TpcTrackPoi
     order = TpcTrackPointOrder::Input;
     return true;
   }
-  if (mode == "radius" || mode == "r")
+  if (mode == "radius" || mode == "r" || mode == "radius-ascending" || mode == "radius_ascending")
   {
     order = TpcTrackPointOrder::Radius;
+    return true;
+  }
+  if (mode == "radius-descending" || mode == "radius_descending" ||
+      mode == "radius-decreasing" || mode == "radius_decreasing" ||
+      mode == "outer-to-inner" || mode == "outer_to_inner")
+  {
+    order = TpcTrackPointOrder::RadiusDescending;
     return true;
   }
   if (mode == "theta-z" || mode == "thetaz" || mode == "theta_z")
@@ -396,6 +403,13 @@ void TpcTrackHelixFitter::order_points(std::vector<TpcTrackPoint> &points,
   case TpcTrackPointOrder::Radius:
     apply_order(radius_indices());
     break;
+  case TpcTrackPointOrder::RadiusDescending:
+  {
+    auto indices = radius_indices();
+    std::reverse(indices.begin(), indices.end());
+    apply_order(indices);
+    break;
+  }
   case TpcTrackPointOrder::ThetaZ:
     apply_order(theta_z_indices());
     break;

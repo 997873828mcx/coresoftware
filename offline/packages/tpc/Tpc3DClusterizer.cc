@@ -1,4 +1,5 @@
 #include "Tpc3DClusterizer.h"
+#include "TpcAdcBaselineCorrection.h"
 
 #include <trackbase/LaserCluster.h>
 #include <trackbase/LaserClusterContainer.h>
@@ -146,6 +147,16 @@ int Tpc3DClusterizer::InitRun(PHCompositeNode *topNode)
 
 int Tpc3DClusterizer::process_event(PHCompositeNode *topNode)
 {
+  // This consumer weights clusters directly by ADC and does not apply an
+  // internal pedestal offset. Normalize metadata-marked simulation once;
+  // unmarked data keeps its established input convention.
+  const auto baseline = TpcAdcBaseline::normalizeIfMetadata(topNode, Name());
+  if (!baseline.ok)
+  {
+    std::cerr << Name() << ": " << baseline.error << std::endl;
+    return Fun4AllReturnCodes::ABORTRUN;
+  }
+
   ++m_event;
   recoConsts *rc = recoConsts::instance();
   if (rc->FlagExist("RANDOMSEED"))

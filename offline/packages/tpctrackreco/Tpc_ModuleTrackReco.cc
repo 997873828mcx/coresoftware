@@ -2,6 +2,7 @@
 #include "Tpc_FittingTools.h"
 
 #include <fun4all/Fun4AllReturnCodes.h>
+#include <tpc/TpcAdcBaselineCorrection.h>
 
 #include <phool/PHCompositeNode.h>
 #include <phool/PHIODataNode.h>
@@ -1181,8 +1182,15 @@ void Tpc_ModuleTrackReco::reset_tree_vars()
   m_tree_hit_hitkey.clear();
 }
 
-int Tpc_ModuleTrackReco::process_event(PHCompositeNode* /*unused*/)
+int Tpc_ModuleTrackReco::process_event(PHCompositeNode* topNode)
 {
+  const auto baseline = TpcAdcBaseline::normalizeIfMetadata(topNode, Name());
+  if (!baseline.ok)
+  {
+    std::cerr << Name() << ": " << baseline.error << std::endl;
+    return Fun4AllReturnCodes::ABORTRUN;
+  }
+  const double effectivePedestal = baseline.has_metadata ? 0.0 : m_pedestal;
   reset_tree_vars();
 
   if (m_tpcModuleTrackContainer)
@@ -1206,7 +1214,7 @@ int Tpc_ModuleTrackReco::process_event(PHCompositeNode* /*unused*/)
         td.module_key = TpcDefs::genModuleHitSetKey(static_cast<uint8_t>(region),
                                                     static_cast<uint8_t>(sector),
                                                     static_cast<uint8_t>(side));
-        td.pedestal = m_pedestal;
+        td.pedestal = effectivePedestal;
         td.verbosity = Verbosity();
         td.noise_max_consecutive_timebins = m_noiseMaxConsecutiveTimebins;
         td.noise_keep_first_timebins = m_noiseKeepFirstTimebins;

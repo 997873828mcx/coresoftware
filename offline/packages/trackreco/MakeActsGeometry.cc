@@ -88,18 +88,124 @@
 #include <TVector3.h>
 
 #include <cmath>
+#include <algorithm>
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
+#include <set>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
 namespace
 {
+  // MVTX_SENSOR_LAYOUT_HELPERS_BEGIN
+  struct MvtxLayerLayout
+  {
+    unsigned int layer;
+    unsigned int staves;
+    double radius_cm;
+  };
+
+  using MvtxSensorLayout = std::vector<MvtxLayerLayout>;
+
+  std::array<unsigned int, 3> mvtx_sensor_address(
+      const MvtxSensorLayout &layers, const std::uint64_t sensitive_id,
+      const unsigned int chips_per_stave)
+  {
+    if (sensitive_id == 0 || chips_per_stave == 0)
+    {
+      throw std::runtime_error("MVTX sensitive IDs are one-based and chip count must be positive");
+    }
+    std::uint64_t remaining = sensitive_id - 1;
+    for (const auto &layer : layers)
+    {
+      const auto sensors = static_cast<std::uint64_t>(layer.staves) * chips_per_stave;
+      if (remaining < sensors)
+      {
+        return {layer.layer, static_cast<unsigned int>(remaining / chips_per_stave),
+                static_cast<unsigned int>(remaining % chips_per_stave)};
+      }
+      remaining -= sensors;
+    }
+    throw std::runtime_error("MVTX sensitive ID exceeds the physical sensor count");
+  }
+
+  std::vector<MvtxSensorLayout> mvtx_group_layouts(
+      const MvtxSensorLayout &layers, const std::vector<std::size_t> &group_counts,
+      const std::vector<double> &group_radii, const unsigned int chips_per_stave)
+  {
+    if (layers.empty() || group_counts.empty() || group_counts.size() != group_radii.size() || chips_per_stave == 0 ||
+        !std::all_of(group_radii.begin(), group_radii.end(), [](const double radius) { return std::isfinite(radius) && radius > 0.0; }))
+    {
+      throw std::runtime_error("Missing MVTX physical geometry or ACTS sensitive surface groups");
+    }
+    std::uint64_t total = 0;
+    std::set<unsigned int> physical_layers;
+    for (const auto &layer : layers)
+    {
+      if (!physical_layers.insert(layer.layer).second || layer.staves == 0 ||
+          !std::isfinite(layer.radius_cm) || !(layer.radius_cm > 0.0))
+      {
+        throw std::runtime_error("Invalid or duplicate physical MVTX layer geometry");
+      }
+      total += static_cast<std::uint64_t>(layer.staves) * chips_per_stave;
+    }
+    // Current ACTS JSON: all physical MVTX layers share one ACTS layer and
+    // sensitive IDs run cumulatively over all staves and chips.
+    if (group_counts.size() == 1 && group_counts.front() == total)
+    {
+      return {layers};
+    }
+    // Legacy JSON: one ACTS layer per physical layer; sensitive IDs restart
+    // at one in each group. Counts identify the physical layer; geometry
+    // radius resolves any equal-count ambiguity without an ACTS layer-ID rule.
+    if (group_counts.size() != layers.size())
+    {
+      throw std::runtime_error("Unsupported or incomplete MVTX ACTS layer grouping");
+    }
+    std::vector<MvtxSensorLayout> result;
+    std::set<unsigned int> assigned;
+    for (std::size_t group = 0; group < group_counts.size(); ++group)
+    {
+      const MvtxLayerLayout *selected = nullptr;
+      double distance = std::numeric_limits<double>::infinity();
+      bool tied = false;
+      for (const auto &layer : layers)
+      {
+        if (static_cast<std::uint64_t>(layer.staves) * chips_per_stave != group_counts[group])
+        {
+          continue;
+        }
+        const double candidate = std::abs(group_radii[group] - layer.radius_cm);
+        if (candidate + 1.0e-8 < distance)
+        {
+          selected = &layer;
+          distance = candidate;
+          tied = false;
+        }
+        else if (std::abs(candidate - distance) < 1.0e-8)
+        {
+          tied = true;
+        }
+      }
+      if (!selected || tied || !std::isfinite(group_radii[group]) || !assigned.insert(selected->layer).second)
+      {
+        throw std::runtime_error("Ambiguous, duplicate or incomplete MVTX physical-layer surface group");
+      }
+      result.push_back({*selected});
+    }
+    return result;
+  }
+  // MVTX_SENSOR_LAYOUT_HELPERS_END
+
   // navigate Acts volumes to find one matching a given name (recursive)
   // NOLINTNEXTLINE(misc-no-recursion)
   TrackingVolumePtr find_volume_by_name(const Acts::TrackingVolume *master, const std::string &name)
@@ -1140,14 +1246,47 @@ void MakeActsGeometry::makeMvtxMapPairs(TrackingVolumePtr &mvtxVolume)
     std::cout << "MakeActsGeometry::makeMvtxMapPairs - mvtxVolume: " << mvtxVolume->volumeName() << std::endl;
   }
 
+  if (!m_geomContainerMvtx || mvtx_chips_per_stave == 0)
+  {
+    throw std::runtime_error("MakeActsGeometry: missing physical MVTX geometry");
+  }
+  MvtxSensorLayout physical_layout;
+  const auto geometry_range = m_geomContainerMvtx->get_begin_end();
+  for (auto geometry = geometry_range.first; geometry != geometry_range.second; ++geometry)
+  {
+    const auto *layer = dynamic_cast<const CylinderGeom_Mvtx *>(geometry->second);
+    if (!layer || geometry->first < 0 || layer->get_N_staves() <= 0)
+    {
+      throw std::runtime_error("MakeActsGeometry: invalid physical MVTX layer");
+    }
+    physical_layout.push_back({static_cast<unsigned int>(geometry->first),
+        static_cast<unsigned int>(layer->get_N_staves()), layer->get_radius()});
+  }
+  if (m_mvtxapplymisalign)
+  {
+    PHG4MvtxMisalignment mvtxmisalignment;
+    mvtxmisalignment.setAlignmentFile(CDBInterface::instance()->getUrl("MVTX_ALIGNMENT"));
+    mvtxmisalignment.LoadMvtxStaveAlignmentParameters();
+    v_globaldisplacement = mvtxmisalignment.get_GlobalDisplacement();
+  }
+  else
+  {
+    v_globaldisplacement.assign(3, 0.0);
+  }
+  if (v_globaldisplacement.size() != 3)
+  {
+    throw std::runtime_error("MakeActsGeometry: invalid MVTX global displacement");
+  }
+
   // Now get the LayerArrays corresponding to each volume
   auto mvtxBarrelLayerArray = mvtxVolume->confinedLayers();  // the barrel is all we care about
 
   // This is a BinnedArray<LayerPtr>, but we care only about the sensitive surfaces
   auto mvtxLayerVector1 = mvtxBarrelLayerArray->arrayObjects();  // the barrel is all we care about
 
-  // mvtxLayerVector has size 3, but only index 1 has any surfaces since the clayersplits option was removed
-  // the layer number has to be deduced from the radius
+  std::vector<std::vector<Surface>> groups;
+  std::vector<std::size_t> group_counts;
+  std::vector<double> group_radii;
   for (auto &i : mvtxLayerVector1)
   {
     // Get the Acts::SurfaceArray from each MVTX LayerPtr being iterated over
@@ -1157,27 +1296,29 @@ void MakeActsGeometry::makeMvtxMapPairs(TrackingVolumePtr &mvtxVolume)
       continue;
     }
 
-    if (m_mvtxapplymisalign)
+    std::vector<Surface> group;
+    double radius_sum = 0.0;
+    for (const auto *surface : surfaceArray->surfaces())
     {
-      std::cout << "MakeActsGeometry::makeMvtxMapPairs - apply misalignment" << std::endl;
-      PHG4MvtxMisalignment *mvtxmisalignment = new PHG4MvtxMisalignment();
-      mvtxmisalignment->setAlignmentFile(CDBInterface::instance()->getUrl("MVTX_ALIGNMENT"));
-      mvtxmisalignment->LoadMvtxStaveAlignmentParameters();
-      v_globaldisplacement = mvtxmisalignment->get_GlobalDisplacement();
-
-
-      delete mvtxmisalignment;
+      const auto center = surface->center(m_geoCtxt);
+      radius_sum += std::hypot(center[0] - v_globaldisplacement[0], center[1] - v_globaldisplacement[1]) / 10.0;
+      group.push_back(surface->getSharedPtr());
     }
+    if (group.empty()) { continue; }
+    group_counts.push_back(group.size());
+    group_radii.push_back(radius_sum / group.size());
+    groups.push_back(std::move(group));
+  }
+  const auto layouts = mvtx_group_layouts(physical_layout, group_counts, group_radii, mvtx_chips_per_stave);
+  std::map<TrkrDefs::hitsetkey, Surface> mapped_surfaces;
+  std::set<std::uint64_t> geometry_ids;
+  for (std::size_t group = 0; group < groups.size(); ++group)
+  {
 
     std::cout << "MakeActsGeometry::makeMvtxMapPairs - Apply misalignment: " << m_mvtxapplymisalign << "; Global displacement: (" << v_globaldisplacement[0] << ", " << v_globaldisplacement[1] << ", " << v_globaldisplacement[2] << ")" << std::endl;
 
-    // surfaceVector is an Acts::SurfaceVector, vector of surfaces
-    // std::vector<const Surface*>
-    auto surfaceVector = surfaceArray->surfaces();
-    for (auto &j : surfaceVector)
+    for (const auto &surf : groups[group])
     {
-      auto surf = j->getSharedPtr();
-
       auto vec3d = surf->center(m_geoCtxt);
       std::vector<double> world_center = {(vec3d(0) - v_globaldisplacement[0]) / 10.0, (vec3d(1) - v_globaldisplacement[1]) / 10.0, (vec3d(2) - v_globaldisplacement[2]) / 10.0};  // convert from mm to cm
       double layer_rad = sqrt(pow(world_center[0], 2) + pow(world_center[1], 2));
@@ -1198,32 +1339,23 @@ void MakeActsGeometry::makeMvtxMapPairs(TrackingVolumePtr &mvtxVolume)
       unsigned int volume = id.volume();
       unsigned int actslayer = id.layer();
 
-      unsigned int sphlayer = 0;
-      unsigned int stave = 0;
-      unsigned int chip = 0;
-      unsigned int sensor = id.sensitive() - 1;  // Acts sensor ID starts at 1;
+      if (!geometry_ids.insert(id.value()).second)
+      {
+        throw std::runtime_error("MakeActsGeometry: duplicate MVTX ACTS geometry ID");
+      }
+      const auto address = mvtx_sensor_address(layouts[group], id.sensitive(), mvtx_chips_per_stave);
+      const auto [sphlayer, stave, chip] = address;
+      const auto sensor = id.sensitive() - 1;
       if (!m_mvtxapplymisalign)
       {
-        sphlayer = base_layer_map.find(volume)->second + actslayer / 2 - 1;
-        stave = sensor / 9;
-        chip = sensor % 9;
-      }
-      else
-      {
-        stave = sensor / mvtx_chips_per_stave;
-        chip = sensor % mvtx_chips_per_stave;
-        if(sensor > 107 && sensor < 252)
-	      {
-	        sphlayer = 1;
-	        stave = (sensor-108) / mvtx_chips_per_stave;
-	        chip = (sensor-108) % mvtx_chips_per_stave;
-	      }
-        else if(sensor > 251)
-	      {
-	        sphlayer = 2;
-	        stave = (sensor-252) / mvtx_chips_per_stave;
-	        chip = (sensor-252) % mvtx_chips_per_stave;
-	      }
+        auto *physical = dynamic_cast<CylinderGeom_Mvtx *>(m_geomContainerMvtx->GetLayerGeom(sphlayer));
+        unsigned int coordinate_stave = 0, coordinate_chip = 0;
+        physical->get_sensor_indices_from_world_coords(world_center, coordinate_stave, coordinate_chip);
+        coordinate_stave %= static_cast<unsigned int>(physical->get_N_staves());
+        if (coordinate_stave != stave || coordinate_chip != chip)
+        {
+          throw std::runtime_error("MakeActsGeometry: nominal MVTX sensitive ID disagrees with physical stave/chip coordinates");
+        }
       }
       int dummy_strobe = 0;
       TrkrDefs::hitsetkey hitsetkey= MvtxDefs::genHitSetKey(sphlayer, stave, chip, dummy_strobe);
@@ -1236,7 +1368,10 @@ void MakeActsGeometry::makeMvtxMapPairs(TrackingVolumePtr &mvtxVolume)
 
       // Add this surface to the map
       std::pair<TrkrDefs::hitsetkey, Surface> tmp = std::make_pair(hitsetkey, surf);
-      m_clusterSurfaceMapSilicon.insert(tmp);
+      if (!mapped_surfaces.insert(tmp).second)
+      {
+        throw std::runtime_error("MakeActsGeometry: duplicate MVTX physical sensor hitset key");
+      }
 
       if (Verbosity() > 10)
       {
@@ -1252,7 +1387,7 @@ void MakeActsGeometry::makeMvtxMapPairs(TrackingVolumePtr &mvtxVolume)
                   << " recover surface from m_clusterSurfaceMapSilicon "
                   << std::endl;
 
-        std::map<TrkrDefs::hitsetkey, Surface>::iterator surf_iter = m_clusterSurfaceMapSilicon.find(hitsetkey);
+        const auto surf_iter = mapped_surfaces.find(hitsetkey);
         std::cout << " surface type " << surf_iter->second->type()
                   << std::endl;
         auto assoc_layer = surf->associatedLayer();
@@ -1277,6 +1412,30 @@ void MakeActsGeometry::makeMvtxMapPairs(TrackingVolumePtr &mvtxVolume)
       }
     }
   }
+  for (const auto &layer : physical_layout)
+  {
+    for (unsigned int stave = 0; stave < layer.staves; ++stave)
+    {
+      for (unsigned int chip = 0; chip < mvtx_chips_per_stave; ++chip)
+      {
+        if (mapped_surfaces.count(MvtxDefs::genHitSetKey(layer.layer, stave, chip, 0)) != 1)
+        {
+          throw std::runtime_error("MakeActsGeometry: incomplete MVTX physical sensor surface coverage");
+        }
+      }
+    }
+    std::cout << "MakeActsGeometry::makeMvtxMapPairs - validated layer " << layer.layer << ": "
+              << layer.staves * mvtx_chips_per_stave << " sensor surfaces" << std::endl;
+  }
+  // Refresh only this detector after complete validation, including InitRun
+  // reuse. Never hide duplicates within the newly constructed ACTS geometry.
+  for (auto surface = m_clusterSurfaceMapSilicon.begin(); surface != m_clusterSurfaceMapSilicon.end();)
+  {
+    if (TrkrDefs::getTrkrId(surface->first) == TrkrDefs::TrkrId::mvtxId)
+    { surface = m_clusterSurfaceMapSilicon.erase(surface); }
+    else { ++surface; }
+  }
+  m_clusterSurfaceMapSilicon.insert(mapped_surfaces.begin(), mapped_surfaces.end());
 }
 
 TrkrDefs::hitsetkey MakeActsGeometry::getTpcHitSetKeyFromCoords(std::vector<double> &world)

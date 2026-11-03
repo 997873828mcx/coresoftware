@@ -7,6 +7,7 @@
 #include <trackbase/TrkrDefs.h>
 
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -49,6 +50,8 @@ class Tpc_PolyClusterizer : public SubsysReco
     m_tpcAdcClockOverride = true;
   }
 
+  void setUseTpcGeometryAdcClock(bool v) { m_useTpcGeometryAdcClock = v; }
+
   void setCrossingPeriodNs(double v)
   {
     m_crossingPeriodNs = v;
@@ -62,6 +65,17 @@ class Tpc_PolyClusterizer : public SubsysReco
   void setReverseDriftSubsteps(unsigned int n) {
     m_reverseDriftSubsteps = std::max(1U, n);
   }
+  double getReverseDriftStepNs() const { return m_reverseDriftStepNs; }
+  unsigned int getReverseDriftSubsteps() const { return m_reverseDriftSubsteps; }
+  double getT0() const { return m_t0; }
+  double getTpcAdcClock() const { return m_tpcAdcClock; }
+  void setCentralMembraneTailToleranceNs(double value);
+  double getCentralMembraneTailToleranceNs() const { return m_centralMembraneTailToleranceNs; }
+  // Per-event lookup-sample counts, not unique hits or accepted clusters.
+  std::uint64_t getCentralMembraneTailClampedSamples() const { return m_cmTailClampedSamples; }
+  std::uint64_t getOutOfTimeRejectedSamples() const { return m_outOfTimeRejectedSamples; }
+  double getMinimumLookupEndTimeNs() const { return m_minLookupEndTimeNs; }
+  std::uint64_t getCentralMembraneTerminatedPolylines() const { return m_cmTerminatedPolylines; }
 
   void setKEffSide0(double v)
   {
@@ -85,6 +99,20 @@ class Tpc_PolyClusterizer : public SubsysReco
   {
     m_electricFieldMap = n;
     m_electricFieldMapOverride = true;
+    m_use2DElectricFieldMap = true;
+  }
+
+  void setGasFile(const std::string& v) { m_gasFile = v; }
+  void setCentralMembraneHalfWidth(double v)
+  {
+    m_centralMembraneHalfWidth = v;
+    m_centralMembraneHalfWidthOverride = true;
+  }
+  void setDriftVolumeRadii(double inner, double outer)
+  {
+    m_driftInnerRadius = inner;
+    m_driftOuterRadius = outer;
+    m_driftVolumeRadiiOverride = true;
   }
 
   void setElectricFieldMap3DSide0(const std::string& n)
@@ -142,6 +170,7 @@ class Tpc_PolyClusterizer : public SubsysReco
   {
     m_startZSouth = south_z;
     m_startZNorth = north_z;
+    m_startZOverride = true;
   }
 
   void setFrameChargeScale(double v)
@@ -220,6 +249,9 @@ class Tpc_PolyClusterizer : public SubsysReco
   struct DriftPolyline
   {
     double phi{0.0};
+    // ReverseDrift omits the terminal (possibly partial) Euler interval.
+    // The last stored point remains a full output step inside the gas.
+    bool terminal_is_central_membrane{false};
     std::vector<DriftPoint> points;
   };
 
@@ -271,6 +303,18 @@ class Tpc_PolyClusterizer : public SubsysReco
   double m_tpcAdcClock{56.881262};
   double m_crossingPeriodNs{106.56};
   double m_reverseDriftStepNs{56.881262};
+  double m_centralMembraneTailToleranceNs{0.0};
+  double m_minLookupEndTimeNs{0.0};
+  std::uint64_t m_cmTerminatedPolylines{0};
+  mutable std::uint64_t m_cmTailClampedSamples{0}, m_outOfTimeRejectedSamples{0};
+  bool m_useTpcGeometryAdcClock{false};
+  std::string m_gasFile;
+  double m_centralMembraneHalfWidth{0.0};
+  double m_driftInnerRadius{18.0};
+  double m_driftOuterRadius{82.0};
+  bool m_centralMembraneHalfWidthOverride{false};
+  bool m_driftVolumeRadiiOverride{false};
+  bool m_startZOverride{false};
   unsigned int m_reverseDriftSubsteps{10};
 
   //! starting z position for primary electron backward drift

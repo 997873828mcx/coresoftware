@@ -10,6 +10,7 @@
 #include <phfield/PHFieldConfig.h>
 
 #include <list>
+#include <set>
 #include <string>  // for string
 
 // Forward declerations
@@ -146,6 +147,20 @@ class PHG4Reco : public SubsysReco
     if (!EvtGenDecayFile.empty()) CustomizeDecay = true;
   }
 
+  /// Make EvtGen authoritative for this particle species even when Geant4
+  /// supplies a native decay table. No species is overridden by default.
+  void OverrideNativeDecayWithEvtGenForPdg(const int pdgCode)
+  {
+    m_EvtGenOverridePdgCodes.insert(pdgCode);
+  }
+
+  /// Suppress PHOTOS final-state radiation for EvtGen decays of this mother
+  /// species without changing PHOTOS behavior for other particles.
+  void SuppressEvtGenPhotosForPdg(const int pdgCode)
+  {
+    m_EvtGenSuppressPhotosPdgCodes.insert(pdgCode);
+  }
+
  private:
   static void g4guithread(void *ptr);
   int InitUImanager();
@@ -214,6 +229,8 @@ class PHG4Reco : public SubsysReco
 
   DecayerOptions m_Decayer{kEvtGenDecayer};  // Here we use EvtGen as default
   std::string EvtGenDecayFile;
+  std::set<int> m_EvtGenOverridePdgCodes;
+  std::set<int> m_EvtGenSuppressPhotosPdgCodes;
   bool CustomizeDecay{false};
 
   EDecayType m_ForceDecayType{kAll};  //< forced decay channel setting

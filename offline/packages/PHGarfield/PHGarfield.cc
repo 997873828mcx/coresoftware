@@ -1,19 +1,22 @@
 #include "PHGarfield.h"
 
 #include <cdbobjects/CDBTTree.h>
+#include <phool/phool.h>
+
+#include <phfield/PHField.h>
+#include <phfield/PHField3DCartesian.h>
+#include <phfield/PHFieldUtility.h>
+
 #include <ffamodules/CDBInterface.h>
 #include <fun4all/Fun4AllReturnCodes.h>
 #include <g4detectors/PHG4TpcGeom.h>
 #include <g4detectors/PHG4TpcGeomContainer.h>
-#include <phfield/PHField3DCartesian.h>
 #include <phfield/PHFieldConfig.h>
-#include <phfield/PHFieldUtility.h>
 #include <phool/PHCompositeNode.h>
 #include <phool/PHDataNode.h>
 #include <phool/PHNodeIterator.h>
 #include <phool/RunnumberRange.h>
 #include <phool/getClass.h>
-#include <phool/phool.h>
 #include <phool/recoConsts.h>
 #include <tpcconditions/TpcConditions.h>
 
@@ -23,6 +26,7 @@
 #include <TH3.h>
 #include <TPolyLine3D.h>
 #include <TRotation.h>
+#include <TTree.h>
 #include <TVector3.h>
 
 #include <CLHEP/Units/SystemOfUnits.h>
@@ -36,10 +40,12 @@
 #include <functional>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>  // for basic_ostream, operat...
 #include <regex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -104,6 +110,10 @@ PHGarfield::PHGarfield(const std::string& name,
 PHGarfield::~PHGarfield()
 {
   //  Housekeeping.
+  if (m_ownsField)
+  {
+    delete m_field;
+  }
   delete m_cdbTPCMAPttree;
   delete m_component;
   delete m_gas;
@@ -151,7 +161,7 @@ bool PHGarfield::LoadCDBInputs(PHCompositeNode* topNode)
 
   bool ok = true;
 
-  if (use_survey_geometry && !m_tpcGeometryOverride)
+  if (use_survey_geometry && !m_tpcGeometryOverride && topNode)
   {
     auto* geomContainer =
         findNode::getClass<PHG4TpcGeomContainer>(topNode, "TPCGEOMCONTAINER");
@@ -217,7 +227,9 @@ bool PHGarfield::LoadCDBInputs(PHCompositeNode* topNode)
     std::cout << Name() << "::LoadCDBInputs - manual 2D frame electric-field map: "
               << m_frameElectricFieldMap << std::endl;
   }
-  else
+  else if (!m_electricFieldMapOverride ||
+           m_frameElectricFieldMap3DOverride[0] ||
+           m_frameElectricFieldMap3DOverride[1])
   {
     if (!resolve_file(CdbModuleFrames3DSide0, m_frameElectricFieldMap3D[0], m_frameElectricFieldMap3DOverride[0]))
     {
@@ -372,8 +384,6 @@ bool PHGarfield::LoadCDBInputs(PHCompositeNode* topNode)
 
 void PHGarfield::ConfigureRunDependentFieldCage()
 {
-  const int runnumber = recoConsts::instance()->get_IntFlag("RUNNUMBER");
-
   if (m_fieldCageConfigurationOverride)
   {
     std::cout << Name()
@@ -387,6 +397,8 @@ void PHGarfield::ConfigureRunDependentFieldCage()
               << std::endl;
     return;
   }
+
+  const int runnumber = recoConsts::instance()->get_IntFlag("RUNNUMBER", 0);
 
   m_useIFCVoltageDistortion = false;
   m_useOFCVoltageDistortion = false;
@@ -536,53 +548,144 @@ void PHGarfield::ConfigureRunDriftCorrections()
 
 int PHGarfield::InitRun(PHCompositeNode* topNode)
 {
+  // Rebind all run-dependent payloads. The magnetic field borrowed from a node
+  // tree is not owned here; the standalone fallback is.
+  if (m_ownsField)
+  {
+    delete m_field;
+  }
+  m_field = nullptr;
+  m_ownsField = false;
+  m_hasMagneticFieldDomain = false;
+  delete m_cdbTPCMAPttree;
+  m_cdbTPCMAPttree = nullptr;
+  delete m_component;
+  m_component = nullptr;
+  delete m_gas;
+  m_gas = nullptr;
+  m_GasFilesLoaded = false;
+  delete m_erCorrection;
+  m_erCorrection = nullptr;
+  delete m_ezCorrection;
+  m_ezCorrection = nullptr;
+  ClearElectricFieldCorrections3D(0);
+  ClearElectricFieldCorrections3D(1);
+  delete m_frameErCorrection;
+  m_frameErCorrection = nullptr;
+  delete m_frameEzCorrection;
+  m_frameEzCorrection = nullptr;
+  ClearFrameElectricFieldCorrections3D(0);
+  ClearFrameElectricFieldCorrections3D(1);
+
+  // Switching to a 2D selection must not reload previously resolved CDB
+  // maps. Keep side-specific files only when the caller explicitly pinned
+  // them; those retain the upstream per-side 3D precedence.
+  if (m_electricFieldMapOverride || m_use2DElectricFieldMap)
+  {
+    for (std::size_t side = 0; side < m_electricFieldMap3D.size(); ++side)
+    {
+      if (!m_electricFieldMap3DOverride[side])
+      {
+        m_electricFieldMap3D[side].clear();
+      }
+    }
+  }
+  const bool suppressAutomaticFrames = m_frameElectricFieldMapOverride ||
+      (m_electricFieldMapOverride &&
+       !m_frameElectricFieldMap3DOverride[0] &&
+       !m_frameElectricFieldMap3DOverride[1]);
+  if (suppressAutomaticFrames)
+  {
+    for (std::size_t side = 0; side < m_frameElectricFieldMap3D.size(); ++side)
+    {
+      if (!m_frameElectricFieldMap3DOverride[side])
+      {
+        m_frameElectricFieldMap3D[side].clear();
+      }
+    }
+  }
+
   if (Verbosity() > 1)
   {
     std::cout << "PHGarfield::InitRun(PHCompositeNode *topNode) Initializing" << std::endl;
   }
   CDBInterface* m_cdb = CDBInterface::instance();
 
-  //  Here we use the CDBInterface to set up the magnetic field map:
-  m_field = PHFieldUtility::GetFieldMapNode(nullptr, topNode);
-  auto* fieldConfig = PHFieldUtility::GetFieldConfigNode(nullptr, topNode);
-
-  std::cout << "Magnetic field map: " << fieldConfig->get_filename()
-            << "\nField type: " << fieldConfig->get_field_config_description()
-            << "\nField rescale: " << fieldConfig->get_magfield_rescale()
-            << std::endl;
-
-  if (!m_field)
+  // In a Fun4All job, use the existing field node so that the map type,
+  // rescaling, and uniform/custom field configuration exactly match the
+  // simulation. Standalone PHGarfield tests retain the historical CDB fallback.
+  if (m_zeroMagneticField)
   {
-    std::cerr << PHWHERE
-              << " ERROR: magnetic field map not available"
-              << std::endl;
-    return Fun4AllReturnCodes::ABORTRUN;
+    m_resolvedMagneticFieldMap = "ZERO_UNIFORM_FIELD";
+  }
+  else if (!m_magneticFieldMapOverride.empty())
+  {
+    m_resolvedMagneticFieldMap = m_magneticFieldMapOverride;
+    if (!LoadMagneticFieldDomain(m_resolvedMagneticFieldMap))
+    {
+      return Fun4AllReturnCodes::ABORTRUN;
+    }
+    m_field = new PHField3DCartesian(
+        m_magneticFieldMapOverride,
+        m_magneticFieldMapScale);
+    m_ownsField = true;
+  }
+  else if (topNode)
+  {
+    m_field = PHFieldUtility::GetFieldMapNode(nullptr, topNode, Verbosity());
+    m_ownsField = false;
+    m_resolvedMagneticFieldMap = "FIELD_MAP node";
+  }
+  else
+  {
+    const std::string url = m_cdb->getUrl("FIELDMAP_TRACKING");
+    m_resolvedMagneticFieldMap = url;
+    if (!LoadMagneticFieldDomain(m_resolvedMagneticFieldMap))
+    {
+      return Fun4AllReturnCodes::ABORTRUN;
+    }
+    m_field = new PHField3DCartesian(url, m_magneticFieldMapScale);
+    m_ownsField = true;
   }
 
-  //  Here we use the CDBInterface to set up the channel making of the TPC:
-  std::string text = m_cdb->getUrl("TPC_FEE_CHANNEL_MAP");
-  m_cdbTPCMAPttree = new CDBTTree(text);
-  m_cdbTPCMAPttree->LoadCalibrations();
+  // The pad map is used only by the legacy plotting helpers. Standalone
+  // forward-map generation can omit this unrelated CDB dependency.
+  if (m_loadTpcFeeMap)
+  {
+    const std::string text = m_cdb->getUrl("TPC_FEE_CHANNEL_MAP");
+    m_cdbTPCMAPttree = new CDBTTree(text);
+    m_cdbTPCMAPttree->LoadCalibrations();
+  }
 
-  if (!LoadCDBInputs(topNode))
+  // The standalone forward-map generator pins its field model and geometry
+  // without an event node tree. Gas is resolved independently below; avoid
+  // adding unrelated reconstruction CDB inputs to this configuration.
+  const bool pinnedStandalone = !topNode && m_spaceChargeScaleOverride[0] &&
+                                m_spaceChargeScaleOverride[1];
+  if (!pinnedStandalone && !LoadCDBInputs(topNode))
   {
     std::cout << PHWHERE << " Failed to load PHGarfield CDB inputs"
               << std::endl;
     return Fun4AllReturnCodes::ABORTRUN;
   }
 
-  ConfigureRunDependentFieldCage();
+  if (!pinnedStandalone)
+  {
+    ConfigureRunDependentFieldCage();
+  }
   ConfigurePTCorrectedField(topNode);
   ConfigureRunDriftCorrections();
 
-  // Load the optional axisymmetric space-charge correction map.
-  // Failure is non-fatal: Garfield then uses only the nominal 400 V/cm field.
+  // Load the optional axisymmetric space-charge correction map. A nonempty
+  // filename is an explicit request; never silently replace a requested map
+  // with the nominal electric field when the payload cannot be loaded.
   if (!m_electricFieldMap.empty())
   {
     if (!LoadElectricFieldCorrections(m_electricFieldMap))
     {
       std::cout << PHWHERE << " Failed to load electric-field correction map: "
                 << m_electricFieldMap << std::endl;
+      return Fun4AllReturnCodes::ABORTRUN;
     }
   }
 
@@ -596,6 +699,7 @@ int PHGarfield::InitRun(PHCompositeNode* topNode)
       std::cout << PHWHERE << " Failed to load side " << side
                 << " 3D electric-field correction map: "
                 << m_electricFieldMap3D[side] << std::endl;
+      return Fun4AllReturnCodes::ABORTRUN;
     }
   }
 
@@ -606,6 +710,7 @@ int PHGarfield::InitRun(PHCompositeNode* topNode)
   {
     std::cout << PHWHERE << " Failed to load frame electric-field correction map: "
               << m_frameElectricFieldMap << std::endl;
+      return Fun4AllReturnCodes::ABORTRUN;
   }
 
   for (std::size_t side = 0; side < m_frameElectricFieldMap3D.size(); ++side)
@@ -616,6 +721,7 @@ int PHGarfield::InitRun(PHCompositeNode* topNode)
       std::cout << PHWHERE << " Failed to load side " << side
                 << " 3D frame electric-field correction map: "
                 << m_frameElectricFieldMap3D[side] << std::endl;
+      return Fun4AllReturnCodes::ABORTRUN;
     }
   }
 
@@ -644,25 +750,50 @@ int PHGarfield::InitRun(PHCompositeNode* topNode)
                                 { GetElectricFieldVcm(x, y, z, ex, ey, ez); });
 
   // Here we fetch the gas from the CDB
-  std::string gasfile = m_cdb->getUrl("PHGARFIELD_GAS");
-
+  std::string gasfile;
+  if (!m_gasFileOverride.empty())
+  {
+    gasfile = m_gasFileOverride;
+    if (!fs::exists(gasfile))
+    {
+      std::cerr << PHWHERE << " Explicit Garfield gas path does not exist: "
+                << gasfile << std::endl;
+      return Fun4AllReturnCodes::ABORTRUN;
+    }
+  }
+  else
+  {
+    gasfile = m_cdb->getUrl("PHGARFIELD_GAS");
+  }
   if (gasfile.empty() || !fs::exists(gasfile))
   {
     std::cout << PHWHERE << " Missing CDB gasfile: " << gasfile << std::endl;
     std::cout << PHWHERE << " Using default gasfile: " << m_defaultGasfile << std::endl;
     gasfile = m_defaultGasfile;
   }
+  m_resolvedGasFile = gasfile;
   InitializeGas(gasfile);
-  if (!m_GasFilesLoaded)
+  if (!IsReady())
   {
-    std::cerr << PHWHERE << " Failed to initialize Garfield gas" << std::endl;
+    std::cerr << PHWHERE << " Failed to initialize the magnetic field or Garfield gas"
+              << std::endl;
     return Fun4AllReturnCodes::ABORTRUN;
   }
+
   //  Diagnostic during code development...
-  FillRadii();
-  if (Verbosity() > 1)
+  if (m_cdbTPCMAPttree)
   {
-    PrintMaps();
+    FillRadii();
+    if (Verbosity() > 1)
+    {
+      PrintMaps();
+    }
+  }
+
+  // Standalone forward transport has no node tree to publish into.
+  if (!topNode)
+  {
+    return Fun4AllReturnCodes::EVENT_OK;
   }
 
   auto* existing = findNode::getClass<PHGarfield>(topNode, "PHGarfield");
@@ -858,6 +989,12 @@ void PHGarfield::RotateTpc(double theta_x, double theta_y, double theta_z)
   }
 }
 
+void PHGarfield::SetTpcRotation(double theta_x, double theta_y, double theta_z)
+{
+  m_tpcrot = TRotation();
+  RotateTpc(theta_x, theta_y, theta_z);
+}
+
 TVector3 PHGarfield::TpcPointToGlobalPoint(double x_cm, double y_cm, double z_cm) const
 {
   // Transform a point from the local TPC/Garfield frame to the global detector frame.
@@ -891,6 +1028,14 @@ TVector3 PHGarfield::MagnetFieldMapVectorToTpcVector(double bx, double by, doubl
 
 void PHGarfield::GetMagneticFieldTesla(double x_cm, double y_cm, double z_cm, double& bx_t, double& by_t, double& bz_t) const
 {
+  if (m_zeroMagneticField)
+  {
+    bx_t = 0.0;
+    by_t = 0.0;
+    bz_t = 0.0;
+    return;
+  }
+
   // NOTE: Garfield uses cm, V/cm, and Tesla.
   //       PHField3DCartesian/CLHEP coordinates use CLHEP length units and
   //       magnetic fields in CLHEP field units.
@@ -911,10 +1056,8 @@ void PHGarfield::GetMagneticFieldTesla(double x_cm, double y_cm, double z_cm, do
   double bfield_map[3] = {0.0, 0.0, 0.0};
 
   // Get the magnetic field via the PHField3DCartesian object constructed using
-  if (!m_zerofield)
-  {
-    m_field->GetFieldValue(point, bfield_map);
-  }
+  // the CDB url reference.
+  m_field->GetFieldValue(point, bfield_map);
 
   const TVector3 b_tpc = MagnetFieldMapVectorToTpcVector(
       bfield_map[0], bfield_map[1], bfield_map[2]);
@@ -924,17 +1067,18 @@ void PHGarfield::GetMagneticFieldTesla(double x_cm, double y_cm, double z_cm, do
   bz_t = b_tpc.Z() / CLHEP::tesla;
 }
 
-void PHGarfield::GetElectricFieldVcm(double x_cm, double y_cm, double z_cm, double& ex_vcm, double& ey_vcm, double& ez_vcm) const
+void PHGarfield::GetElectricFieldVcm(double x_cm, double y_cm, double z_cm, double& ex_vcm, double& ey_vcm, double& ez_vcm, const double correction_scale) const
 {
   // NOTE: Garfield uses cm, V/cm, and Tesla.
-  // The correction maps use cm (and rad for phi) on their axes and V/m in
-  // their bins. The maps are produced for one TPC half using s = |z|,
-  // measured from the central membrane toward the readout plane.
-  //
-  // SetZeroField only disables B. The electric field, including space-charge
-  // corrections, is intentionally identical in zero-field and field-on runs.
+  // The notebook maps use cm on their axes and V/m in their bins.
+  // The map is produced for one TPC half using s measured from the central
+  // membrane gas surface toward the readout plane. Garfield drift coordinates
+  // are physical local TPC-envelope coordinates, whose origin is at the center
+  // of the central membrane.
 
   const double r_cm = std::hypot(x_cm, y_cm);
+  const double drift_z_cm =
+      std::max(0.0, std::abs(z_cm) - m_centralMembraneHalfWidth);
   const double phi_rad = std::atan2(y_cm, x_cm);
   const double abs_z_cm = std::abs(z_cm);
   const std::size_t side = z_cm < 0.0 ? 0 : 1;
@@ -946,8 +1090,15 @@ void PHGarfield::GetElectricFieldVcm(double x_cm, double y_cm, double z_cm, doub
   const double nominal_vcm = m_CMVoltageDefault * m_cmFieldFactor[side];
   ez_vcm = z_cm > 0.0 ? -nominal_vcm : nominal_vcm;
 
-  const double spaceChargeScale = side == 0 ? m_spaceChargeScale_side0
-                                            : m_spaceChargeScale_side1;
+  // A forward scale-zero reference must disable all optional corrections,
+  // including the upstream frame and field-cage terms.
+  if (correction_scale == 0.0)
+  {
+    return;
+  }
+
+  const double spaceChargeScale = correction_scale *
+      (side == 0 ? m_spaceChargeScale_side0 : m_spaceChargeScale_side1);
   if (spaceChargeScale == 0.0)
   {
     AddFrameElectricFieldCorrections(r_cm, phi_rad, z_cm, ex_vcm, ey_vcm, ez_vcm);
@@ -983,9 +1134,9 @@ void PHGarfield::GetElectricFieldVcm(double x_cm, double y_cm, double z_cm, doub
   }
 
   const double delta_er_vcm = spaceChargeScale *
-                              InterpolateCorrectionVcm(m_erCorrection, r_cm, abs_z_cm);
+                              InterpolateCorrectionVcm(m_erCorrection, r_cm, drift_z_cm);
   const double delta_ez_local_vcm = spaceChargeScale *
-                                    InterpolateCorrectionVcm(m_ezCorrection, r_cm, abs_z_cm);
+                                    InterpolateCorrectionVcm(m_ezCorrection, r_cm, drift_z_cm);
 
   // Convert the cylindrical radial correction to Cartesian components.
   if (r_cm > 0.0)
@@ -1350,6 +1501,291 @@ double PHGarfield::InterpolateCorrectionVcm(
 
   // Input histogram is in V/m. Garfield expects V/cm.
   return 0.01 * hist->Interpolate(r_eval, z_eval);
+}
+
+bool PHGarfield::ElectricFieldMapCovers(
+    const double inner_radius_cm,
+    const double outer_radius_cm,
+    const double max_drift_distance_cm) const
+{
+  if (!m_erCorrection || !m_ezCorrection ||
+      !std::isfinite(inner_radius_cm) ||
+      !std::isfinite(outer_radius_cm) ||
+      !std::isfinite(max_drift_distance_cm))
+  {
+    return false;
+  }
+
+  constexpr double tolerance_cm = 1.0e-6;
+  const auto covers = [=](const TH2* hist)
+  {
+    const TAxis* r_axis = hist->GetXaxis();
+    const TAxis* z_axis = hist->GetYaxis();
+    return r_axis && z_axis &&
+           r_axis->GetXmin() <= inner_radius_cm + tolerance_cm &&
+           r_axis->GetXmax() >= outer_radius_cm - tolerance_cm &&
+           z_axis->GetXmin() <= tolerance_cm &&
+           z_axis->GetXmax() >=
+               max_drift_distance_cm - tolerance_cm;
+  };
+
+  return covers(m_erCorrection) && covers(m_ezCorrection);
+}
+
+bool PHGarfield::LoadMagneticFieldDomain(const std::string& filename)
+{
+  m_hasMagneticFieldDomain = false;
+  if (filename.empty())
+  {
+    std::cerr << PHWHERE << " Magnetic-field map filename is empty"
+              << std::endl;
+    return false;
+  }
+
+  std::unique_ptr<TFile> input(TFile::Open(filename.c_str(), "READ"));
+  if (!input || input->IsZombie())
+  {
+    std::cerr << PHWHERE << " Could not inspect magnetic-field map: "
+              << filename << std::endl;
+    return false;
+  }
+
+  auto* field_map = dynamic_cast<TTree*>(input->Get("fieldmap"));
+  if (!field_map)
+  {
+    std::cerr << PHWHERE
+              << " Magnetic-field map has no fieldmap tree: "
+              << filename << std::endl;
+    return false;
+  }
+
+  const std::array<const char*, 6> branch_names =
+      {{"x", "y", "z", "bx", "by", "bz"}};
+  for (const char* branch_name : branch_names)
+  {
+    if (!field_map->GetLeaf(branch_name))
+    {
+      std::cerr << PHWHERE << " Magnetic-field map is missing branch "
+                << branch_name << ": " << filename
+                << std::endl;
+      return false;
+    }
+  }
+
+  Float_t x_cm = 0.0F;
+  Float_t y_cm = 0.0F;
+  Float_t z_cm = 0.0F;
+  Float_t bx_t = 0.0F;
+  Float_t by_t = 0.0F;
+  Float_t bz_t = 0.0F;
+  if (field_map->SetBranchAddress("x", &x_cm) < 0 ||
+      field_map->SetBranchAddress("y", &y_cm) < 0 ||
+      field_map->SetBranchAddress("z", &z_cm) < 0 ||
+      field_map->SetBranchAddress("bx", &bx_t) < 0 ||
+      field_map->SetBranchAddress("by", &by_t) < 0 ||
+      field_map->SetBranchAddress("bz", &bz_t) < 0)
+  {
+    std::cerr << PHWHERE
+              << " Failed to bind magnetic-field map branches: "
+              << filename << std::endl;
+    return false;
+  }
+
+  const Long64_t entries = field_map->GetEntries();
+  constexpr Long64_t maximum_supported_entries = 100000000;
+  if (entries <= 0 || entries > maximum_supported_entries)
+  {
+    std::cerr << PHWHERE
+              << " Unsupported magnetic-field grid size " << entries
+              << ": " << filename << std::endl;
+    return false;
+  }
+
+  std::array<std::set<float>, 3> axis_values;
+  std::vector<std::array<float, 3>> coordinates;
+  coordinates.reserve(static_cast<std::size_t>(entries));
+  for (Long64_t entry = 0; entry < entries; ++entry)
+  {
+    if (field_map->GetEntry(entry) <= 0 ||
+        !std::isfinite(x_cm) ||
+        !std::isfinite(y_cm) ||
+        !std::isfinite(z_cm) ||
+        !std::isfinite(bx_t) ||
+        !std::isfinite(by_t) ||
+        !std::isfinite(bz_t))
+    {
+      std::cerr << PHWHERE
+                << " Invalid magnetic-field grid entry " << entry
+                << ": " << filename
+                << std::endl;
+      return false;
+    }
+    axis_values[0].insert(x_cm);
+    axis_values[1].insert(y_cm);
+    axis_values[2].insert(z_cm);
+    coordinates.push_back({{x_cm, y_cm, z_cm}});
+  }
+
+  const auto is_uniform_axis =
+      [](const std::set<float>& values)
+  {
+    if (values.size() < 2)
+    {
+      return false;
+    }
+    const double expected_spacing =
+        (static_cast<double>(*values.rbegin()) -
+         static_cast<double>(*values.begin())) /
+        static_cast<double>(values.size() - 1);
+    auto previous = values.begin();
+    for (auto current = std::next(previous);
+         current != values.end();
+         ++current)
+    {
+      const double spacing =
+          static_cast<double>(*current) -
+          static_cast<double>(*previous);
+      const double scale =
+          std::max(1.0, std::abs(expected_spacing));
+      if (!std::isfinite(spacing) ||
+          std::abs(spacing - expected_spacing) > 1.0e-6 * scale)
+      {
+        return false;
+      }
+      previous = current;
+    }
+    return true;
+  };
+  if (!std::all_of(
+          axis_values.begin(),
+          axis_values.end(),
+          is_uniform_axis))
+  {
+    std::cerr << PHWHERE
+              << " Magnetic-field coordinates do not form uniform axes: "
+              << filename << std::endl;
+    return false;
+  }
+
+  std::size_t expected_entries = 1;
+  for (const auto& values : axis_values)
+  {
+    if (expected_entries >
+        std::numeric_limits<std::size_t>::max() / values.size())
+    {
+      std::cerr << PHWHERE
+                << " Magnetic-field grid dimensions overflow: "
+                << filename << std::endl;
+      return false;
+    }
+    expected_entries *= values.size();
+  }
+  if (expected_entries != coordinates.size())
+  {
+    std::cerr << PHWHERE
+              << " Magnetic-field map is not a complete Cartesian lattice: "
+              << filename << std::endl;
+    return false;
+  }
+
+  std::array<std::map<float, std::size_t>, 3> axis_index;
+  for (unsigned int axis = 0; axis < axis_values.size(); ++axis)
+  {
+    std::size_t index = 0;
+    for (const float value : axis_values[axis])
+    {
+      axis_index[axis].emplace(value, index++);
+    }
+    m_magneticFieldMinimumCm[axis] =
+        static_cast<double>(*axis_values[axis].begin());
+    m_magneticFieldMaximumCm[axis] =
+        static_cast<double>(*axis_values[axis].rbegin());
+  }
+
+  std::vector<unsigned char> occupied(expected_entries, 0);
+  const std::size_t ny = axis_values[1].size();
+  const std::size_t nz = axis_values[2].size();
+  for (const auto& coordinate : coordinates)
+  {
+    const std::size_t linear_index =
+        (axis_index[0].at(coordinate[0]) * ny +
+         axis_index[1].at(coordinate[1])) *
+            nz +
+        axis_index[2].at(coordinate[2]);
+    if (occupied[linear_index] != 0)
+    {
+      std::cerr << PHWHERE
+                << " Magnetic-field map contains a duplicate grid point: "
+                << filename << std::endl;
+      return false;
+    }
+    occupied[linear_index] = 1;
+  }
+
+  m_hasMagneticFieldDomain = true;
+  return true;
+}
+
+bool PHGarfield::MagneticFieldDomainContains(
+    const double x_cm,
+    const double y_cm,
+    const double z_cm) const
+{
+  if (m_zeroMagneticField || !m_hasMagneticFieldDomain)
+  {
+    return true;
+  }
+
+  const TVector3 point =
+      TpcPointToMagnetFieldMapPoint(x_cm, y_cm, z_cm);
+  const std::array<double, 3> coordinate = {
+      {point.X(), point.Y(), point.Z()}};
+  for (unsigned int axis = 0; axis < coordinate.size(); ++axis)
+  {
+    if (coordinate[axis] < m_magneticFieldMinimumCm[axis] ||
+        coordinate[axis] > m_magneticFieldMaximumCm[axis])
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool PHGarfield::MagneticFieldMapCoversTpcDriftVolume(
+    const double outer_radius_cm,
+    const double readout_abs_z_cm) const
+{
+  if (!std::isfinite(outer_radius_cm) ||
+      !std::isfinite(readout_abs_z_cm) ||
+      outer_radius_cm <= 0.0 ||
+      readout_abs_z_cm <= 0.0 ||
+      !HasKnownMagneticFieldDomain())
+  {
+    return false;
+  }
+  if (m_zeroMagneticField)
+  {
+    return true;
+  }
+
+  // The local box encloses the full cylindrical gas volume. Requiring every
+  // corner to lie inside the Cartesian field grid is conservative and, since
+  // both boxes and the rigid transform are convex, guarantees full coverage.
+  for (const double x_cm : {-outer_radius_cm, outer_radius_cm})
+  {
+    for (const double y_cm : {-outer_radius_cm, outer_radius_cm})
+    {
+      for (const double z_cm :
+           {-readout_abs_z_cm, readout_abs_z_cm})
+      {
+        if (!MagneticFieldDomainContains(x_cm, y_cm, z_cm))
+        {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
 }
 
 bool PHGarfield::LoadElectricFieldCorrections3D(const std::string& filename, const std::size_t side)
@@ -1926,18 +2362,26 @@ void PHGarfield::InitializeGas(const std::string& name)
     bool firstE = true;
     for (const auto& [key, filepath] : FilesToMerge)
     {
+      (void) key;
       if (firstE)
       {
-        m_gas->LoadGasFile(filepath);
+        if (!m_gas->LoadGasFile(filepath))
+        {
+          std::cerr << "Failed to load " << filepath << std::endl;
+          return;
+        }
         firstE = false;
-        m_GasFilesLoaded = true;
       }
       else
       {
-        m_gas->MergeGasFile(filepath, true);
-        m_GasFilesLoaded = true;
+        if (!m_gas->MergeGasFile(filepath, true))
+        {
+          std::cerr << "Failed to merge " << filepath << std::endl;
+          return;
+        }
       }
     }
+    m_GasFilesLoaded = !firstE;
   }
 
   PrintGasSummary();
@@ -2103,16 +2547,274 @@ TPolyLine3D* PHGarfield::ReverseDriftGlobalCoords(double x_cm, double y_cm, doub
   return poly;
 }
 
+bool PHGarfield::GetForwardDriftVelocity(double x_cm, double y_cm, double z_cm,
+    double& vx_cm_ns, double& vy_cm_ns, double& vz_cm_ns,
+    bool include_electric_field_corrections) const
+{
+  vx_cm_ns=vy_cm_ns=vz_cm_ns=0.;
+  if (!IsReady() || !std::isfinite(x_cm) || !std::isfinite(y_cm) ||
+      !std::isfinite(z_cm) || !MagneticFieldDomainContains(x_cm,y_cm,z_cm)) return false;
+  double ex=0.,ey=0.,ez=0.,bx=0.,by=0.,bz=0.;
+  GetMagneticFieldTesla(x_cm,y_cm,z_cm,bx,by,bz);
+  GetElectricFieldVcm(x_cm,y_cm,z_cm,ex,ey,ez,include_electric_field_corrections?1.:0.);
+  return m_gas->ElectronVelocity(ex,ey,ez,bx,by,bz,vx_cm_ns,vy_cm_ns,vz_cm_ns) &&
+      std::isfinite(vx_cm_ns) && std::isfinite(vy_cm_ns) && std::isfinite(vz_cm_ns) &&
+      (vx_cm_ns!=0. || vy_cm_ns!=0. || vz_cm_ns!=0.);
+}
+
+bool PHGarfield::ForwardDrift(double x_cm,
+                              double y_cm,
+                              double z_cm,
+                              const double readout_abs_z_cm,
+                              const double step_ns,
+                              ForwardDriftResult& result,
+                              const bool include_electric_field_corrections,
+                              const bool stop_at_radial_boundary) const
+{
+  result = ForwardDriftResult{};
+  result.x_cm = x_cm;
+  result.y_cm = y_cm;
+  result.z_cm = z_cm;
+
+  if (!IsReady())
+  {
+    result.status = ForwardDriftStatus::NotInitialized;
+    return false;
+  }
+
+  if (!std::isfinite(x_cm) ||
+      !std::isfinite(y_cm) ||
+      !std::isfinite(z_cm) ||
+      !std::isfinite(readout_abs_z_cm) ||
+      !std::isfinite(step_ns) ||
+      readout_abs_z_cm <= m_centralMembraneHalfWidth ||
+      step_ns <= 0.0)
+  {
+    result.status = ForwardDriftStatus::InvalidInput;
+    return false;
+  }
+
+  // Keep the side fixed for the entire drift. The active gas does not include
+  // the central membrane, so z == 0 is not a valid forward-drift start.
+  constexpr double z_tolerance_cm = 1.0e-9;
+  if (z_cm == 0.0 ||
+      std::abs(z_cm) <
+          m_centralMembraneHalfWidth - z_tolerance_cm)
+  {
+    result.status = ForwardDriftStatus::OutsideDriftVolume;
+    return false;
+  }
+
+  const double side_sign = z_cm > 0.0 ? 1.0 : -1.0;
+  const double target_z_cm = side_sign * readout_abs_z_cm;
+  constexpr double radial_tolerance_cm = 1.0e-9;
+
+  // Reject points beyond the readout plane and points outside the drift cage.
+  const double start_radius_cm = std::hypot(x_cm, y_cm);
+  if (side_sign * (z_cm - target_z_cm) > z_tolerance_cm ||
+      start_radius_cm < m_driftInnerRadius - radial_tolerance_cm ||
+      start_radius_cm > m_driftOuterRadius + radial_tolerance_cm)
+  {
+    result.status = ForwardDriftStatus::OutsideDriftVolume;
+    return false;
+  }
+  if (!MagneticFieldDomainContains(x_cm, y_cm, z_cm))
+  {
+    result.status = ForwardDriftStatus::LeftMagneticFieldMap;
+    return false;
+  }
+
+  if (std::abs(target_z_cm - z_cm) <= z_tolerance_cm)
+  {
+    result.z_cm = target_z_cm;
+    result.status = ForwardDriftStatus::ReachedReadout;
+    result.reached_readout = true;
+    return true;
+  }
+
+  double drift_time_ns = 0.0;
+
+  for (unsigned int step = 0; step < MaxForwardDriftSteps; ++step)
+  {
+    double ex = 0.0;
+    double ey = 0.0;
+    double ez = 0.0;
+    double bx = 0.0;
+    double by = 0.0;
+    double bz = 0.0;
+    double vx = 0.0;
+    double vy = 0.0;
+    double vz = 0.0;
+
+    GetMagneticFieldTesla(x_cm, y_cm, z_cm, bx, by, bz);
+    GetElectricFieldVcm(
+        x_cm,
+        y_cm,
+        z_cm,
+        ex,
+        ey,
+        ez,
+        include_electric_field_corrections ? 1.0 : 0.0);
+
+    const bool velocity_ok =
+        m_gas->ElectronVelocity(ex, ey, ez, bx, by, bz, vx, vy, vz);
+    if (!velocity_ok ||
+        !std::isfinite(vx) ||
+        !std::isfinite(vy) ||
+        !std::isfinite(vz) ||
+        (vx == 0.0 && vy == 0.0 && vz == 0.0))
+    {
+      result.status = ForwardDriftStatus::InvalidVelocity;
+      return false;
+    }
+
+    const double remaining_z_cm = target_z_cm - z_cm;
+    const double time_to_readout_ns = remaining_z_cm / vz;
+    if (!std::isfinite(time_to_readout_ns) || time_to_readout_ns <= 0.0)
+    {
+      result.status = ForwardDriftStatus::WrongDirection;
+      return false;
+    }
+
+    const bool reaches_readout = time_to_readout_ns <= step_ns;
+    const double this_step_ns =
+        reaches_readout ? time_to_readout_ns : step_ns;
+
+    const double previous_x_cm = x_cm;
+    const double previous_y_cm = y_cm;
+    x_cm += vx * this_step_ns;
+    y_cm += vy * this_step_ns;
+    z_cm += vz * this_step_ns;
+    drift_time_ns += this_step_ns;
+
+    if (reaches_readout)
+    {
+      // Avoid leaving a small floating-point offset from the physical plane.
+      z_cm = target_z_cm;
+    }
+
+    result.x_cm = x_cm;
+    result.y_cm = y_cm;
+    result.z_cm = z_cm;
+    result.drift_time_ns = drift_time_ns;
+    result.steps = step + 1;
+
+    const double radius_cm = std::hypot(x_cm, y_cm);
+    if (!std::isfinite(radius_cm))
+    {
+      result.status = ForwardDriftStatus::InvalidVelocity;
+      return false;
+    }
+    if (!MagneticFieldDomainContains(x_cm, y_cm, z_cm))
+    {
+      result.status = ForwardDriftStatus::LeftMagneticFieldMap;
+      return false;
+    }
+    if (stop_at_radial_boundary)
+    {
+      // The Euler step is a straight segment. Test the whole segment rather
+      // than only its endpoint: a chord can cross the inner cage and return
+      // to an allowed endpoint.
+      const double delta_x_cm = x_cm - previous_x_cm;
+      const double delta_y_cm = y_cm - previous_y_cm;
+      const double segment_length_squared =
+          delta_x_cm * delta_x_cm + delta_y_cm * delta_y_cm;
+      double closest_fraction = 0.0;
+      if (segment_length_squared > 0.0)
+      {
+        closest_fraction = std::clamp(
+            -(previous_x_cm * delta_x_cm +
+              previous_y_cm * delta_y_cm) /
+                segment_length_squared,
+            0.0,
+            1.0);
+      }
+      const double closest_x_cm =
+          previous_x_cm + closest_fraction * delta_x_cm;
+      const double closest_y_cm =
+          previous_y_cm + closest_fraction * delta_y_cm;
+      const double minimum_segment_radius_cm =
+          std::hypot(closest_x_cm, closest_y_cm);
+      const double previous_radius_cm =
+          std::hypot(previous_x_cm, previous_y_cm);
+      const double maximum_segment_radius_cm =
+          std::max(previous_radius_cm, radius_cm);
+
+      if (!std::isfinite(minimum_segment_radius_cm) ||
+          !std::isfinite(maximum_segment_radius_cm))
+      {
+        result.status = ForwardDriftStatus::InvalidVelocity;
+        return false;
+      }
+      if (minimum_segment_radius_cm <
+              m_driftInnerRadius - radial_tolerance_cm ||
+          maximum_segment_radius_cm >
+              m_driftOuterRadius + radial_tolerance_cm)
+      {
+        result.status = ForwardDriftStatus::LeftDriftVolume;
+        return false;
+      }
+    }
+
+    if (reaches_readout)
+    {
+      result.status = ForwardDriftStatus::ReachedReadout;
+      result.reached_readout = true;
+      return true;
+    }
+  }
+
+  if (Verbosity() > 0)
+  {
+    std::cerr << PHWHERE << " ForwardDrift reached max_steps="
+              << MaxForwardDriftSteps
+              << " at p_tpc=(" << x_cm << ", " << y_cm << ", " << z_cm
+              << ") cm" << std::endl;
+  }
+
+  result.status = ForwardDriftStatus::MaxSteps;
+  return false;
+}
+
+const char* PHGarfield::ForwardDriftStatusName(
+    const ForwardDriftStatus status)
+{
+  switch (status)
+  {
+  case ForwardDriftStatus::NotRun:
+    return "not run";
+  case ForwardDriftStatus::ReachedReadout:
+    return "reached readout";
+  case ForwardDriftStatus::NotInitialized:
+    return "not initialized";
+  case ForwardDriftStatus::InvalidInput:
+    return "invalid input";
+  case ForwardDriftStatus::OutsideDriftVolume:
+    return "outside drift volume";
+  case ForwardDriftStatus::InvalidVelocity:
+    return "invalid Garfield velocity";
+  case ForwardDriftStatus::WrongDirection:
+    return "wrong longitudinal direction";
+  case ForwardDriftStatus::LeftDriftVolume:
+    return "left drift volume";
+  case ForwardDriftStatus::LeftMagneticFieldMap:
+    return "left magnetic-field map domain";
+  case ForwardDriftStatus::MaxSteps:
+    return "maximum steps reached";
+  }
+  return "unknown";
+}
+
 PHGarfield::ReverseDriftStatus PHGarfield::StopHere(const double x, const double y, const double z,
                                                     const double zPrevious)
 {
   const double r = std::hypot(x, y);
 
-  if (r < 18.0)
+  if (r < m_driftInnerRadius)
   {
     return ReverseDriftStatus::RadialBoundary;
   }
-  if (r > 82.0)
+  if (r > m_driftOuterRadius)
   {
     return ReverseDriftStatus::RadialBoundary;
   }
@@ -2123,6 +2825,14 @@ PHGarfield::ReverseDriftStatus PHGarfield::StopHere(const double x, const double
   if (z < -120.0)
   {
     return ReverseDriftStatus::ZBoundary;
+  }
+
+  // When physical envelope coordinates are in use, stop a reverse drift on
+  // reaching the gas-facing surface of the central membrane.
+  if (m_centralMembraneHalfWidth > 0.0 &&
+      std::abs(z) < m_centralMembraneHalfWidth)
+  {
+    return ReverseDriftStatus::CentralMembrane;
   }
 
   // The first step passes zPrevious=NaN.  Do not apply crossing/stuck checks then.

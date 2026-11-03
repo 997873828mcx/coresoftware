@@ -15,6 +15,8 @@ pkginclude_HEADERS = \
   Tpc_AssembledTrackDisplay.h \
   Tpc_PolyClusterDisplay.h \
   Tpc_PolyClusterResiduals.h \
+  TpcPolyTrackTruthEvaluator.h \
+  TpcSingleTrackDiagnostics.h \
   TpcV0CandidateTree.h \
   BeamCrossingAnalysis.h \
   helixResiduals.h \
@@ -32,6 +34,8 @@ libTrackingDiagnostics_la_SOURCES = \
   Tpc_AssembledTrackDisplay.cc \
   Tpc_PolyClusterDisplay.cc \
   Tpc_PolyClusterResiduals.cc \
+  TpcPolyTrackTruthEvaluator.cc \
+  TpcSingleTrackDiagnostics.cc \
   TpcV0CandidateTree.cc \
   BeamCrossingAnalysis.cc \
   helixResiduals.cc \
@@ -58,6 +62,7 @@ libTrackingDiagnostics_la_LIBADD = \
   -lmicromegas_io \
   -lSubsysReco \
   -ltpc_io \
+  -ltrack \
   -ltrack_io \
   -ltrackeralign \
   -ltrackbase_historic_io \
@@ -70,6 +75,12 @@ noinst_PROGRAMS = \
 
 testexternals_SOURCES = testexternals.cc
 testexternals_LDADD   = libTrackingDiagnostics.la
+
+check_PROGRAMS = test_TpcSingleTrackDiagnostics
+TESTS = $(check_PROGRAMS)
+test_TpcSingleTrackDiagnostics_SOURCES = tests/test_TpcSingleTrackDiagnostics.cc
+test_TpcSingleTrackDiagnostics_CPPFLAGS = $(AM_CPPFLAGS) -I$(srcdir)
+test_TpcSingleTrackDiagnostics_LDADD = libTrackingDiagnostics.la -ltpctrackreco_io -lg4detectors_io -lphg4hit -ltrack_io
 
 testexternals.cc:
 	echo "//*** this is a generated file. Do not commit, do not edit" > $@

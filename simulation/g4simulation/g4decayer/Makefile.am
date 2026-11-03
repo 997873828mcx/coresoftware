@@ -28,6 +28,7 @@ libg4decayer_la_LIBADD = \
   -lPythia6 \
   -lEvtGen \
   -lEvtGenExternal \
+  -lPhotospp \
   -lHepMC3 \
   -lgsl \
   -lgslcblas \

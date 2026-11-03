@@ -135,7 +135,16 @@ std::string CDBInterface::getUrl(const std::string &domain, const std::string &f
   {
     if (m_Payload_Url_Cache.contains(domain_noconst))
     {
-      return m_Payload_Url_Cache[domain_noconst];
+      const auto& cached_url = m_Payload_Url_Cache.at(domain_noconst);
+      // Offline requests need the same RUN provenance as live CDB requests.
+      // Preserve legacy cache use without a timestamp, marking it unknown (0).
+      if (!cached_url.empty())
+      {
+        const auto* rc = recoConsts::instance();
+        const uint64_t timestamp = rc->FlagExist("TIMESTAMP") ? rc->get_uint64Flag("TIMESTAMP") : 0;
+        m_UrlVector.emplace(domain_noconst, cached_url, timestamp);
+      }
+      return cached_url;
     }
     std::cout << "calibration " << domain << " not found in local cache" << std::endl;
     return "";

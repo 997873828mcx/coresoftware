@@ -2,13 +2,15 @@
 #define TPCTRACKRECO_TPCCROSSINGFINDER_H
 
 
+#include "TpcCrossingDecision.h"
+
 #include <fun4all/SubsysReco.h>
 
-#include "TpcCrossingDecision.h"
 #include <trackbase/TrkrDefs.h>
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <limits>
 #include <map>
 #include <memory>
@@ -32,6 +34,7 @@ class TpcCrossingFinder : public SubsysReco
 {
  public:
   explicit TpcCrossingFinder(const std::string& name = "TpcCrossingFinder");
+  ~TpcCrossingFinder() override;
 
   int InitRun(PHCompositeNode*) override;
   int process_event(PHCompositeNode*) override;
@@ -51,15 +54,39 @@ class TpcCrossingFinder : public SubsysReco
     m_tpcAdcClock = v;
     m_tpcAdcClockOverride = true;
   }
+  void setUseTpcGeometryAdcClock(bool v) { m_useTpcGeometryAdcClock = v; }
   void setCrossingPeriodNs(double v) { m_crossingPeriodNs = v; }
   void setReverseDriftStepNs(double v) { m_reverseDriftStepNs = v; }
-  void setKEffSide0(double v) { m_kEffSide0 = v; }
-  void setKEffSide1(double v) { m_kEffSide1 = v; }
+  double getReverseDriftStepNs() const { return m_reverseDriftStepNs; }
+  double getT0() const { return m_t0; }
+  double getTpcAdcClock() const { return m_tpcAdcClock; }
+  double getEdgeToleranceTbins() const { return m_edgeToleranceTbins; }
+  void setCentralMembraneTailToleranceNs(double value);
+  double getCentralMembraneTailToleranceNs() const { return m_centralMembraneTailToleranceNs; }
+  std::uint64_t getCentralMembraneTailClampedSamples() const { return m_cmTailClampedSamples; }
+  std::uint64_t getOutOfTimeRejectedSamples() const { return m_outOfTimeRejectedSamples; }
+  double getMinimumLookupEndTimeNs() const { return m_maxLookupTimeNs; }
+  std::uint64_t getCentralMembraneTerminatedPolylines() const { return m_cmTerminatedPolylines; }
+  void setKEffSide0(double v) { m_kEffSide0 = v; m_kEffSide0Override = true; }
+  void setKEffSide1(double v) { m_kEffSide1 = v; m_kEffSide1Override = true; }
   void setCMVoltageDefault(double v) { m_cmVoltageDefault = v; }
+  void setElectricFieldMap(const std::string& v) { m_electricFieldMap = v; m_electricFieldMapOverride = true; }
+  void setGasFile(const std::string& v) { m_gasFile = v; }
+  void setCentralMembraneHalfWidth(double v) { m_centralMembraneHalfWidth = v; }
+  void setDriftVolumeRadii(double inner, double outer)
+  {
+    m_driftInnerRadius = inner;
+    m_driftOuterRadius = outer;
+  }
   void setRequireSiliconVertex(bool v) { m_requireSiliconVertex = v; }
   void setResolveAmbiguousWithoutVertex(bool v) { m_resolveAmbiguousWithoutVertex = v; }
   void setPreferTriggeredCrossing(bool v) { m_preferTriggeredCrossing = v; }
   void setTriggeredCrossing(short v) { m_triggeredCrossing = v; }
+  // Controlled simulations can provide their known relative bunch crossing
+  // without fabricating INTT clusters or a reconstructed silicon vertex.
+  // Real-data reconstruction should leave this disabled.
+  void setUseConfiguredCrossing(bool v) { m_useConfiguredCrossing = v; }
+  void setConfiguredCrossing(short v) { m_configuredCrossing = v; }
   void setTriggeredMode(bool v) { m_triggeredMode = v; }
   void setCollisionZ(double v) { m_collisionZ = v; }
   void setMaxVertexDz(double v) { m_maxVertexDz = v; }
@@ -104,6 +131,7 @@ class TpcCrossingFinder : public SubsysReco
   struct DriftPolyline
   {
     double phi {0.0};
+    bool terminal_is_central_membrane {false};
     std::vector<DriftPoint> points;
   };
 
@@ -173,7 +201,8 @@ class TpcCrossingFinder : public SubsysReco
                            short crossing,
                            double& x,
                            double& y,
-                           double& z) const;
+                           double& z,
+                           bool* central_membrane_clamped = nullptr) const;
   bool make_xyz_point(TrkrDefs::hitsetkey hsk, TrkrDefs::hitkey hk, short crossing, Point& p) const;
   bool find_time_extrema(const Tpc_AssembledTrack* track,
                          TrkrDefs::hitsetkey& min_hsk,
@@ -232,10 +261,21 @@ class TpcCrossingFinder : public SubsysReco
   bool m_startZOverride {false};
   double m_tpcHalfLength {105.5};
   double m_edgeToleranceTbins {1.0};
+  double m_centralMembraneTailToleranceNs {0.0};
+  std::uint64_t m_cmTerminatedPolylines {0};
+  mutable std::uint64_t m_cmTailClampedSamples {0}, m_outOfTimeRejectedSamples {0};
   double m_radialTolerance {2.0};
   double m_zTolerance {1.0};
   double m_centralMembraneTolerance {1.0};
   double m_cmVoltageDefault {380.0};
+  std::string m_electricFieldMap;
+  bool m_electricFieldMapOverride {false};
+  bool m_kEffSide0Override {false};
+  bool m_kEffSide1Override {false};
+  std::string m_gasFile;
+  double m_centralMembraneHalfWidth {0.0};
+  double m_driftInnerRadius {18.0};
+  double m_driftOuterRadius {82.0};
   double m_kEffSide0 {0.0};
   double m_kEffSide1 {-1.5};
   double m_maxVertexDz {2.0};
@@ -245,8 +285,11 @@ class TpcCrossingFinder : public SubsysReco
   double m_maxCandidateVertexZ {20.0};
   bool m_requireSiliconVertex {false};
   bool m_resolveAmbiguousWithoutVertex {true};
+  bool m_useTpcGeometryAdcClock {false};
   bool m_preferTriggeredCrossing {false};
   short m_triggeredCrossing {0};
+  bool m_useConfiguredCrossing {false};
+  short m_configuredCrossing {0};
   bool use_survey_geometry {false};
   bool m_triggeredMode {false};
   bool m_isNonDistortedMC{false};

@@ -4,6 +4,7 @@
 #define TPCTRACKRECO_TPCTRACKFIT_H
 
 #include <array>
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,14 @@ struct TpcTrackPoint
   TpcTrackVec3 momentum;
   double t{0.0};
   double path{0.0};
+
+  // Optional per-measurement metadata. Zero uncertainties select the global
+  // values from TpcKalmanConfig, preserving the legacy caller behavior.
+  std::size_t original_index{0};
+  double sigma_rphi_cm{0.0};
+  double sigma_r_cm{0.0};
+  double sigma_z_cm{0.0};
+  bool use_in_kalman{true};
 };
 
 struct TpcTrackHelix
@@ -78,6 +87,7 @@ enum class TpcTrackPointOrder
   Path,
   Input,
   Radius,
+  RadiusDescending,
   ThetaZ,
   Auto
 };
@@ -101,6 +111,9 @@ struct TpcKalmanConfig
   double rkn_step_tolerance{1.0e-4};
   int rkn_max_step_trials{12};
   int rkn_max_total_steps{2000};
+  // Keep the legacy behavior by default: sample the field at every RKN stage.
+  // Setting this false reuses the field at the beginning of a short RKN step.
+  bool rkn_variable_field_within_step{true};
   bool rkn_fast_field_jacobian{true};
   bool rkn_fast_field_pca{true};
   int rkn_field_pca_refine_iterations{6};
@@ -112,12 +125,29 @@ struct TpcKalmanConfig
   double initial_sigma_pos_cm{0.1};
   double initial_sigma_phi{0.2};
   double initial_sigma_qop_t{0.2};
+  // Optional momentum-relative q/pT prior. Disabled by default for backward
+  // compatibility with the original absolute initial_sigma_qop_t prior.
+  bool use_relative_initial_sigma_qop_t{false};
+  double initial_sigma_qop_t_relative{0.05};
+  double initial_sigma_qop_t_floor{5.0e-4};
   double initial_sigma_tanl{0.2};
   double process_sigma_pos_cm{1.0e-4};
   double process_sigma_phi{1.0e-5};
   double process_sigma_qop_t{1.0e-6};
   double process_sigma_tanl{1.0e-6};
   bool collect_innovation_components{false};
+
+  // Robust measurement handling. Between the two thresholds the measurement
+  // covariance is inflated; above the hard threshold the state is propagated
+  // without using that measurement. Disabled by default to preserve legacy
+  // fits unless explicitly requested by a caller.
+  bool robust_measurement_updates{false};
+  double robust_chi2_soft{16.0};
+  double robust_chi2_hard{100.0};
+
+  // Number of EKF/RTS passes. Later passes restart from the preceding
+  // smoothed state. A value of one reproduces the original single pass.
+  int fit_iterations{1};
   double material_x0_per_cm{0.0};
   double multiple_scattering_scale{1.0};
   double energy_loss_gev_per_cm{0.0};
@@ -140,7 +170,14 @@ struct TpcKalmanResult
   std::vector<std::array<double, 6>> states_smoothed;
   std::vector<std::array<double, 36>> covs_smoothed;
   std::vector<double> measurement_chi2;
+  std::vector<double> measurement_chi2_raw;
   std::vector<unsigned char> measurement_used;
+  std::vector<unsigned char> measurement_rejection_reason;
+  std::vector<double> measurement_weight_scale;
+  std::vector<double> measurement_sigma_r_used;
+  std::vector<double> measurement_sigma_rphi_used;
+  std::vector<double> measurement_sigma_z_used;
+  std::vector<std::size_t> measurement_original_index;
   std::vector<unsigned char> measurement_in_seed;
   std::vector<double> innovation_residual_r;
   std::vector<double> innovation_residual_rphi;
@@ -168,6 +205,17 @@ struct TpcKalmanResult
   std::size_t rkn_max_trial_accepts{0};
   std::size_t rkn_failures{0};
   double rkn_seconds{0.0};
+};
+
+struct TpcKalmanVertexConstraintResult
+{
+  bool success{false};
+  std::string message;
+  std::array<double, 6> state{};
+  std::array<double, 36> covariance{};
+  double path_cm{0.0};
+  double chi2{0.0};
+  int ndof{0};
 };
 
 #endif

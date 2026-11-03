@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <functional>
 
 namespace
 {
@@ -65,6 +66,20 @@ namespace
       {
         const auto offset = static_cast<std::size_t>(row) * 6U + static_cast<std::size_t>(col);
         output[offset] = matrix(row, col);
+      }
+    }
+    return output;
+  }
+
+  StateMatrix to_eigen(const std::array<double, 36> &matrix)
+  {
+    StateMatrix output;
+    for (int row = 0; row < 6; ++row)
+    {
+      for (int col = 0; col < 6; ++col)
+      {
+        const auto offset = static_cast<std::size_t>(row) * 6U + static_cast<std::size_t>(col);
+        output(row, col) = matrix[offset];
       }
     }
     return output;
@@ -209,12 +224,18 @@ namespace
     const Vector3 k1 = rkn_acceleration(direction, b_first, q_over_p);
 
     const Vector3 pos1 = position_cm + half_h * direction + 0.125 * h2 * k1;
-    const Vector3 b_middle = magnetic_field_tesla(pos1, config);
+    const Vector3 b_middle =
+        config.rkn_variable_field_within_step
+            ? magnetic_field_tesla(pos1, config)
+            : b_first;
     const Vector3 k2 = rkn_acceleration(direction + half_h * k1, b_middle, q_over_p);
     const Vector3 k3 = rkn_acceleration(direction + half_h * k2, b_middle, q_over_p);
 
     const Vector3 pos2 = position_cm + h_cm * direction + 0.5 * h2 * k3;
-    const Vector3 b_last = magnetic_field_tesla(pos2, config);
+    const Vector3 b_last =
+        config.rkn_variable_field_within_step
+            ? magnetic_field_tesla(pos2, config)
+            : b_first;
     const Vector3 k4 = rkn_acceleration(direction + h_cm * k3, b_last, q_over_p);
 
     RknStep output;
@@ -663,7 +684,21 @@ namespace
                  std::vector<double> &theta_values,
                  std::vector<double> &path_s)
   {
-    if (!TpcTrackHelixFitter::fit(points, 0, config.bfield_t, seed))
+    // Points explicitly disabled for the Kalman update (for example the TPC
+    // module-transition layers) are also excluded from the global helix seed.
+    // They remain in the ordered sequence so predicted states and residual QA
+    // are still produced at their locations.
+    std::vector<TpcTrackPoint> seed_points;
+    seed_points.reserve(points.size());
+    for (const auto &point : points)
+    {
+      if (point.use_in_kalman)
+      {
+        seed_points.push_back(point);
+      }
+    }
+    if (seed_points.size() < 5 ||
+        !TpcTrackHelixFitter::fit(seed_points, 0, config.bfield_t, seed))
     {
       return false;
     }
@@ -773,217 +808,431 @@ bool TpcTrackKalmanFitter::fit(const std::vector<TpcTrackPoint> &input_points,
     return false;
   }
 
-  StateVector state;
-  if (!initial_state(points, result.seed, theta_values, config, state))
+  StateVector seed_state;
+  if (!initial_state(points, result.seed, theta_values, config, seed_state))
   {
     result.message = "initial state failed";
     return false;
   }
 
   const std::size_t npoints = points.size();
-  std::vector<StateVector> states_filtered(npoints);
-  std::vector<StateVector> states_predicted(npoints);
-  std::vector<StateMatrix> covs_filtered(npoints);
-  std::vector<StateMatrix> covs_predicted(npoints);
-  std::vector<StateMatrix> transport(npoints);
-
   const double min_meas = std::max(config.min_measurement_sigma_cm, 1.0e-12);
-  const double sigma_rphi = std::max(config.meas_sigma_rphi_cm, min_meas);
-  const double sigma_r = std::max(config.meas_sigma_r_cm, min_meas);
-  const double sigma_z = std::max(config.meas_sigma_z_cm, min_meas);
-  const double var_rphi = square(sigma_rphi);
-  const double var_r = square(sigma_r);
-  const double var_z = square(sigma_z);
 
   MeasurementMatrix hmat = MeasurementMatrix::Zero();
   hmat(0, X) = 1.0;
   hmat(1, Y) = 1.0;
   hmat(2, Z) = 1.0;
-
-  StateMatrix cov = StateMatrix::Zero();
-  cov(X, X) = square(config.initial_sigma_pos_cm);
-  cov(Y, Y) = square(config.initial_sigma_pos_cm);
-  cov(Z, Z) = square(config.initial_sigma_pos_cm);
-  cov(Phi, Phi) = square(config.initial_sigma_phi);
-  cov(QOverPt, QOverPt) = square(config.initial_sigma_qop_t);
-  cov(TanLambda, TanLambda) = square(config.initial_sigma_tanl);
-
-  double chi2 = 0.0;
-  int ndof = 0;
   const StateMatrix eye = StateMatrix::Identity();
-  RknDiagnostics rkn_diagnostics;
 
-  result.measurement_chi2.reserve(npoints);
-  result.measurement_used.reserve(npoints);
-  if (config.collect_innovation_components)
+  auto prior_covariance = [&](const StateVector &state)
   {
-    result.measurement_in_seed.reserve(npoints);
-    result.innovation_residual_r.reserve(npoints);
-    result.innovation_residual_rphi.reserve(npoints);
-    result.innovation_residual_z.reserve(npoints);
-    result.prediction_sigma_r.reserve(npoints);
-    result.prediction_sigma_rphi.reserve(npoints);
-    result.prediction_sigma_z.reserve(npoints);
-    result.innovation_sigma_r.reserve(npoints);
-    result.innovation_sigma_rphi.reserve(npoints);
-    result.innovation_sigma_z.reserve(npoints);
-    result.innovation_rho_r_rphi.reserve(npoints);
-    result.innovation_rho_r_z.reserve(npoints);
-    result.innovation_rho_rphi_z.reserve(npoints);
-    result.innovation_whitened_0.reserve(npoints);
-    result.innovation_whitened_1.reserve(npoints);
-    result.innovation_whitened_2.reserve(npoints);
-  }
+    StateMatrix covariance = StateMatrix::Zero();
+    covariance(X, X) = square(std::max(config.initial_sigma_pos_cm, 1.0e-12));
+    covariance(Y, Y) = square(std::max(config.initial_sigma_pos_cm, 1.0e-12));
+    covariance(Z, Z) = square(std::max(config.initial_sigma_pos_cm, 1.0e-12));
+    covariance(Phi, Phi) = square(std::max(config.initial_sigma_phi, 1.0e-12));
 
-  const auto copy_rkn_diagnostics = [&]()
-  {
-    result.rkn_propagations = rkn_diagnostics.propagations;
-    result.rkn_accepted_steps = rkn_diagnostics.accepted_steps;
-    result.rkn_rejected_trials = rkn_diagnostics.rejected_trials;
-    result.rkn_max_trial_accepts = rkn_diagnostics.max_trial_accepts;
-    result.rkn_failures = rkn_diagnostics.failures;
-    result.rkn_seconds = rkn_diagnostics.seconds;
+    double sigma_qop = std::max(config.initial_sigma_qop_t, 1.0e-12);
+    if (config.use_relative_initial_sigma_qop_t)
+    {
+      sigma_qop = std::max(
+          std::max(config.initial_sigma_qop_t_floor, 1.0e-12),
+          std::abs(state(QOverPt)) * std::max(config.initial_sigma_qop_t_relative, 0.0));
+    }
+    covariance(QOverPt, QOverPt) = square(sigma_qop);
+    covariance(TanLambda, TanLambda) =
+        square(std::max(config.initial_sigma_tanl, 1.0e-12));
+    return covariance;
   };
 
-  for (std::size_t index = 0; index < npoints; ++index)
+  RknDiagnostics rkn_diagnostics;
+  StateVector iteration_initial_state = seed_state;
+
+  std::vector<StateVector> final_states_filtered;
+  std::vector<StateVector> final_states_smoothed;
+  std::vector<StateMatrix> final_covs_filtered;
+  std::vector<StateMatrix> final_covs_smoothed;
+  std::vector<double> final_measurement_chi2;
+  std::vector<double> final_measurement_chi2_raw;
+  std::vector<unsigned char> final_measurement_used;
+  std::vector<unsigned char> final_measurement_rejection_reason;
+  std::vector<double> final_measurement_weight_scale;
+  std::vector<double> final_measurement_sigma_r_used;
+  std::vector<double> final_measurement_sigma_rphi_used;
+  std::vector<double> final_measurement_sigma_z_used;
+  std::vector<unsigned char> final_measurement_in_seed;
+  std::vector<double> final_innovation_residual_r;
+  std::vector<double> final_innovation_residual_rphi;
+  std::vector<double> final_innovation_residual_z;
+  std::vector<double> final_prediction_sigma_r;
+  std::vector<double> final_prediction_sigma_rphi;
+  std::vector<double> final_prediction_sigma_z;
+  std::vector<double> final_innovation_sigma_r;
+  std::vector<double> final_innovation_sigma_rphi;
+  std::vector<double> final_innovation_sigma_z;
+  std::vector<double> final_innovation_rho_r_rphi;
+  std::vector<double> final_innovation_rho_r_z;
+  std::vector<double> final_innovation_rho_rphi_z;
+  std::vector<double> final_innovation_whitened_0;
+  std::vector<double> final_innovation_whitened_1;
+  std::vector<double> final_innovation_whitened_2;
+  std::size_t final_naccepted = 0;
+  std::size_t final_nrejected = 0;
+  double final_chi2 = 0.0;
+  int final_ndof = 0;
+
+  const int number_of_iterations = std::max(1, config.fit_iterations);
+  for (int iteration = 0; iteration < number_of_iterations; ++iteration)
   {
-    StateVector pred_state = state;
-    StateMatrix pred_cov = cov;
-    StateMatrix fmat = eye;
-    if (index > 0)
-    {
-      const double ds = result.path_s[index] - result.path_s[index - 1];
-      fmat = transport_jacobian(state, ds, config, mass_gev, &rkn_diagnostics);
-      pred_state = (config.magnetic_field == nullptr && config.analytic_uniform_propagation)
-                       ? propagate_uniform_bz(state, ds, config.bfield_t, config, mass_gev)
-                       : propagate_rkn4(state, ds, config, mass_gev, &rkn_diagnostics);
-      if (!fmat.allFinite() || !pred_state.allFinite())
-      {
-        copy_rkn_diagnostics();
-        result.message = "RK propagation exceeded its step budget or became non-finite";
-        return false;
-      }
-      pred_cov = fmat * cov * fmat.transpose() + process_noise(state, ds, config, mass_gev);
-      pred_cov = 0.5 * (pred_cov + pred_cov.transpose()).eval();
-    }
+    StateVector state = iteration_initial_state;
+    StateMatrix cov = prior_covariance(state);
 
-    MeasurementVector measurement;
-    measurement << points[index].position.x, points[index].position.y, points[index].position.z;
-    const MeasurementCov meas_cov = measurement_covariance(points[index], var_rphi, var_r, var_z);
-    const MeasurementVector meas_residual = measurement - hmat * pred_state;
-    const MeasurementCov innovation = hmat * pred_cov * hmat.transpose() + meas_cov;
-    const MeasurementCov innovation_inv =
-        innovation.completeOrthogonalDecomposition().solve(MeasurementCov::Identity());
-    const double step_chi2 =
-        (meas_residual.transpose() * innovation_inv * meas_residual)(0, 0);
+    std::vector<StateVector> states_filtered(npoints);
+    std::vector<StateVector> states_predicted(npoints);
+    std::vector<StateMatrix> covs_filtered(npoints);
+    std::vector<StateMatrix> covs_predicted(npoints);
+    std::vector<StateMatrix> transport(npoints, StateMatrix::Identity());
 
+    std::vector<double> measurement_chi2;
+    std::vector<double> measurement_chi2_raw;
+    std::vector<unsigned char> measurement_used;
+    std::vector<unsigned char> measurement_rejection_reason;
+    std::vector<double> measurement_weight_scale;
+    std::vector<double> measurement_sigma_r_used;
+    std::vector<double> measurement_sigma_rphi_used;
+    std::vector<double> measurement_sigma_z_used;
+    std::vector<unsigned char> measurement_in_seed;
+    std::vector<double> innovation_residual_r;
+    std::vector<double> innovation_residual_rphi;
+    std::vector<double> innovation_residual_z;
+    std::vector<double> prediction_sigma_r;
+    std::vector<double> prediction_sigma_rphi;
+    std::vector<double> prediction_sigma_z;
+    std::vector<double> innovation_sigma_r;
+    std::vector<double> innovation_sigma_rphi;
+    std::vector<double> innovation_sigma_z;
+    std::vector<double> innovation_rho_r_rphi;
+    std::vector<double> innovation_rho_r_z;
+    std::vector<double> innovation_rho_rphi_z;
+    std::vector<double> innovation_whitened_0;
+    std::vector<double> innovation_whitened_1;
+    std::vector<double> innovation_whitened_2;
+
+    measurement_chi2.reserve(npoints);
+    measurement_chi2_raw.reserve(npoints);
+    measurement_used.reserve(npoints);
+    measurement_rejection_reason.reserve(npoints);
+    measurement_weight_scale.reserve(npoints);
+    measurement_sigma_r_used.reserve(npoints);
+    measurement_sigma_rphi_used.reserve(npoints);
+    measurement_sigma_z_used.reserve(npoints);
     if (config.collect_innovation_components)
     {
-      const MeasurementCov local_rotation = measurement_local_rotation(points[index]);
-      const MeasurementVector local_residual = local_rotation * meas_residual;
-      const MeasurementCov predicted_position_cov = hmat * pred_cov * hmat.transpose();
-      const MeasurementCov local_prediction_cov =
-          local_rotation * predicted_position_cov * local_rotation.transpose();
-      const MeasurementCov local_innovation =
-          local_rotation * innovation * local_rotation.transpose();
-
-      const double prediction_sigma_r = covariance_sigma(local_prediction_cov, 0);
-      const double prediction_sigma_rphi = covariance_sigma(local_prediction_cov, 1);
-      const double prediction_sigma_z = covariance_sigma(local_prediction_cov, 2);
-      const double innovation_sigma_r = covariance_sigma(local_innovation, 0);
-      const double innovation_sigma_rphi = covariance_sigma(local_innovation, 1);
-      const double innovation_sigma_z = covariance_sigma(local_innovation, 2);
-      const MeasurementVector whitened = whiten_innovation(local_innovation, local_residual);
-
-      // The current seed is a global helix fit, so every measurement contributes
-      // to it. This marker will distinguish bootstrap seed points once the seed
-      // is restricted to an initial consecutive subset.
-      result.measurement_in_seed.push_back(1U);
-      result.innovation_residual_r.push_back(local_residual(0));
-      result.innovation_residual_rphi.push_back(local_residual(1));
-      result.innovation_residual_z.push_back(local_residual(2));
-      result.prediction_sigma_r.push_back(prediction_sigma_r);
-      result.prediction_sigma_rphi.push_back(prediction_sigma_rphi);
-      result.prediction_sigma_z.push_back(prediction_sigma_z);
-      result.innovation_sigma_r.push_back(innovation_sigma_r);
-      result.innovation_sigma_rphi.push_back(innovation_sigma_rphi);
-      result.innovation_sigma_z.push_back(innovation_sigma_z);
-      result.innovation_rho_r_rphi.push_back(
-          covariance_correlation(local_innovation, 0, 1,
-                                 innovation_sigma_r, innovation_sigma_rphi));
-      result.innovation_rho_r_z.push_back(
-          covariance_correlation(local_innovation, 0, 2,
-                                 innovation_sigma_r, innovation_sigma_z));
-      result.innovation_rho_rphi_z.push_back(
-          covariance_correlation(local_innovation, 1, 2,
-                                 innovation_sigma_rphi, innovation_sigma_z));
-      result.innovation_whitened_0.push_back(whitened(0));
-      result.innovation_whitened_1.push_back(whitened(1));
-      result.innovation_whitened_2.push_back(whitened(2));
+      measurement_in_seed.reserve(npoints);
+      innovation_residual_r.reserve(npoints);
+      innovation_residual_rphi.reserve(npoints);
+      innovation_residual_z.reserve(npoints);
+      prediction_sigma_r.reserve(npoints);
+      prediction_sigma_rphi.reserve(npoints);
+      prediction_sigma_z.reserve(npoints);
+      innovation_sigma_r.reserve(npoints);
+      innovation_sigma_rphi.reserve(npoints);
+      innovation_sigma_z.reserve(npoints);
+      innovation_rho_r_rphi.reserve(npoints);
+      innovation_rho_r_z.reserve(npoints);
+      innovation_rho_rphi_z.reserve(npoints);
+      innovation_whitened_0.reserve(npoints);
+      innovation_whitened_1.reserve(npoints);
+      innovation_whitened_2.reserve(npoints);
     }
 
-    const Eigen::Matrix<double, 6, 3> gain = pred_cov * hmat.transpose() * innovation_inv;
-    state = pred_state + gain * meas_residual;
-    state(Phi) = normalize_phi(state(Phi));
-    cov = (eye - gain * hmat) * pred_cov * (eye - gain * hmat).transpose() +
-          gain * meas_cov * gain.transpose();
-    cov = 0.5 * (cov + cov.transpose()).eval();
+    std::size_t naccepted = 0;
+    std::size_t nrejected = 0;
+    double chi2 = 0.0;
+    int ndof = 0;
 
-    result.measurement_chi2.push_back(step_chi2);
-    result.measurement_used.push_back(1U);
-    ++result.naccepted;
-    chi2 += step_chi2;
-    ndof += 3;
+    for (std::size_t index = 0; index < npoints; ++index)
+    {
+      StateVector pred_state = state;
+      StateMatrix pred_cov = cov;
+      StateMatrix fmat = eye;
+      if (index > 0)
+      {
+        const double ds = result.path_s[index] - result.path_s[index - 1];
+        fmat = transport_jacobian(state, ds, config, mass_gev, &rkn_diagnostics);
+        pred_state = (config.magnetic_field == nullptr && config.analytic_uniform_propagation)
+                         ? propagate_uniform_bz(state, ds, config.bfield_t, config, mass_gev)
+                         : propagate_rkn4(state, ds, config, mass_gev, &rkn_diagnostics);
+        if (!fmat.allFinite() || !pred_state.allFinite())
+        {
+          result.message = "RK propagation exceeded its step budget or became non-finite";
+          result.rkn_propagations = rkn_diagnostics.propagations;
+          result.rkn_accepted_steps = rkn_diagnostics.accepted_steps;
+          result.rkn_rejected_trials = rkn_diagnostics.rejected_trials;
+          result.rkn_max_trial_accepts = rkn_diagnostics.max_trial_accepts;
+          result.rkn_failures = rkn_diagnostics.failures;
+          result.rkn_seconds = rkn_diagnostics.seconds;
+          return false;
+        }
+        pred_cov = fmat * cov * fmat.transpose() + process_noise(state, ds, config, mass_gev);
+        pred_cov = 0.5 * (pred_cov + pred_cov.transpose()).eval();
+      }
 
-    states_predicted[index] = pred_state;
-    covs_predicted[index] = pred_cov;
-    transport[index] = fmat;
-    states_filtered[index] = state;
-    covs_filtered[index] = cov;
-  }
+      const double sigma_rphi_base = std::max(
+          points[index].sigma_rphi_cm > 0.0
+              ? points[index].sigma_rphi_cm
+              : config.meas_sigma_rphi_cm,
+          min_meas);
+      const double sigma_r_base = std::max(
+          points[index].sigma_r_cm > 0.0
+              ? points[index].sigma_r_cm
+              : config.meas_sigma_r_cm,
+          min_meas);
+      const double sigma_z_base = std::max(
+          points[index].sigma_z_cm > 0.0
+              ? points[index].sigma_z_cm
+              : config.meas_sigma_z_cm,
+          min_meas);
 
-  std::vector<StateVector> states_smoothed = states_filtered;
-  std::vector<StateMatrix> covs_smoothed = covs_filtered;
-  for (std::size_t next_index = npoints - 1; next_index > 0; --next_index)
-  {
-    const std::size_t index = next_index - 1;
-    const StateMatrix pred_inv = covs_predicted[next_index]
-                                     .completeOrthogonalDecomposition()
-                                     .solve(StateMatrix::Identity());
-    const StateMatrix smoother_gain =
-        covs_filtered[index] *
-        transport[next_index].transpose() *
-        pred_inv;
-    const StateVector smooth_residual = residual(states_smoothed[next_index],
-                                                 states_predicted[next_index]);
-    states_smoothed[index] = states_filtered[index] + smoother_gain * smooth_residual;
-    states_smoothed[index](Phi) = normalize_phi(states_smoothed[index](Phi));
-    covs_smoothed[index] =
-        covs_filtered[index] +
-        smoother_gain *
-            (covs_smoothed[next_index] - covs_predicted[next_index]) *
-            smoother_gain.transpose();
-    covs_smoothed[index] =
-        0.5 * (covs_smoothed[index] +
-               covs_smoothed[index].transpose())
-                  .eval();
+      MeasurementVector measurement;
+      measurement << points[index].position.x,
+          points[index].position.y,
+          points[index].position.z;
+      const MeasurementVector meas_residual = measurement - hmat * pred_state;
+      const MeasurementCov base_meas_cov = measurement_covariance(
+          points[index], square(sigma_rphi_base), square(sigma_r_base), square(sigma_z_base));
+      const MeasurementCov base_innovation = hmat * pred_cov * hmat.transpose() + base_meas_cov;
+      const MeasurementCov base_innovation_inv =
+          base_innovation.completeOrthogonalDecomposition().solve(MeasurementCov::Identity());
+      const double raw_step_chi2 =
+          (meas_residual.transpose() * base_innovation_inv * meas_residual)(0, 0);
+
+      bool use_measurement = points[index].use_in_kalman;
+      unsigned char rejection_reason = use_measurement ? 0U : 3U;
+      double weight_scale = use_measurement ? 1.0 : 0.0;
+      double covariance_scale = 1.0;
+
+      if (use_measurement && config.robust_measurement_updates)
+      {
+        const double soft = std::max(config.robust_chi2_soft, 0.0);
+        const double hard = config.robust_chi2_hard > 0.0
+                                ? std::max(config.robust_chi2_hard, soft)
+                                : 0.0;
+        if (hard > 0.0 && std::isfinite(raw_step_chi2) && raw_step_chi2 > hard)
+        {
+          use_measurement = false;
+          rejection_reason = 2U;
+          weight_scale = 0.0;
+        }
+        else if (soft > 0.0 && std::isfinite(raw_step_chi2) && raw_step_chi2 > soft)
+        {
+          covariance_scale = std::max(1.0, raw_step_chi2 / soft);
+          weight_scale = 1.0 / covariance_scale;
+          rejection_reason = 1U;
+        }
+      }
+
+      const MeasurementCov effective_meas_cov = covariance_scale * base_meas_cov;
+      const MeasurementCov effective_innovation =
+          hmat * pred_cov * hmat.transpose() + effective_meas_cov;
+      const MeasurementCov effective_innovation_inv =
+          effective_innovation.completeOrthogonalDecomposition().solve(MeasurementCov::Identity());
+      const double effective_step_chi2 =
+          (meas_residual.transpose() * effective_innovation_inv * meas_residual)(0, 0);
+
+      if (config.collect_innovation_components)
+      {
+        const MeasurementCov local_rotation = measurement_local_rotation(points[index]);
+        const MeasurementVector local_residual = local_rotation * meas_residual;
+        const MeasurementCov predicted_position_cov = hmat * pred_cov * hmat.transpose();
+        const MeasurementCov local_prediction_cov =
+            local_rotation * predicted_position_cov * local_rotation.transpose();
+        const MeasurementCov local_innovation =
+            local_rotation * effective_innovation * local_rotation.transpose();
+
+        const double pred_sigma_r = covariance_sigma(local_prediction_cov, 0);
+        const double pred_sigma_rphi = covariance_sigma(local_prediction_cov, 1);
+        const double pred_sigma_z = covariance_sigma(local_prediction_cov, 2);
+        const double innov_sigma_r = covariance_sigma(local_innovation, 0);
+        const double innov_sigma_rphi = covariance_sigma(local_innovation, 1);
+        const double innov_sigma_z = covariance_sigma(local_innovation, 2);
+        const MeasurementVector whitened = whiten_innovation(local_innovation, local_residual);
+
+        measurement_in_seed.push_back(points[index].use_in_kalman ? 1U : 0U);
+        innovation_residual_r.push_back(local_residual(0));
+        innovation_residual_rphi.push_back(local_residual(1));
+        innovation_residual_z.push_back(local_residual(2));
+        prediction_sigma_r.push_back(pred_sigma_r);
+        prediction_sigma_rphi.push_back(pred_sigma_rphi);
+        prediction_sigma_z.push_back(pred_sigma_z);
+        innovation_sigma_r.push_back(innov_sigma_r);
+        innovation_sigma_rphi.push_back(innov_sigma_rphi);
+        innovation_sigma_z.push_back(innov_sigma_z);
+        innovation_rho_r_rphi.push_back(
+            covariance_correlation(local_innovation, 0, 1, innov_sigma_r, innov_sigma_rphi));
+        innovation_rho_r_z.push_back(
+            covariance_correlation(local_innovation, 0, 2, innov_sigma_r, innov_sigma_z));
+        innovation_rho_rphi_z.push_back(
+            covariance_correlation(local_innovation, 1, 2, innov_sigma_rphi, innov_sigma_z));
+        innovation_whitened_0.push_back(whitened(0));
+        innovation_whitened_1.push_back(whitened(1));
+        innovation_whitened_2.push_back(whitened(2));
+      }
+
+      if (use_measurement)
+      {
+        const Eigen::Matrix<double, 6, 3> gain =
+            pred_cov * hmat.transpose() * effective_innovation_inv;
+        state = pred_state + gain * meas_residual;
+        state(Phi) = normalize_phi(state(Phi));
+        cov = (eye - gain * hmat) * pred_cov * (eye - gain * hmat).transpose() +
+              gain * effective_meas_cov * gain.transpose();
+        cov = 0.5 * (cov + cov.transpose()).eval();
+        ++naccepted;
+        chi2 += effective_step_chi2;
+        ndof += 3;
+      }
+      else
+      {
+        state = pred_state;
+        cov = pred_cov;
+        ++nrejected;
+      }
+
+      measurement_chi2.push_back(use_measurement ? effective_step_chi2 : raw_step_chi2);
+      measurement_chi2_raw.push_back(raw_step_chi2);
+      measurement_used.push_back(use_measurement ? 1U : 0U);
+      measurement_rejection_reason.push_back(rejection_reason);
+      measurement_weight_scale.push_back(weight_scale);
+      measurement_sigma_r_used.push_back(sigma_r_base * std::sqrt(covariance_scale));
+      measurement_sigma_rphi_used.push_back(sigma_rphi_base * std::sqrt(covariance_scale));
+      measurement_sigma_z_used.push_back(sigma_z_base * std::sqrt(covariance_scale));
+
+      states_predicted[index] = pred_state;
+      covs_predicted[index] = pred_cov;
+      transport[index] = fmat;
+      states_filtered[index] = state;
+      covs_filtered[index] = cov;
+    }
+
+    if (naccepted < 5)
+    {
+      result.message = "fewer than five Kalman measurements were accepted";
+      result.rkn_propagations = rkn_diagnostics.propagations;
+      result.rkn_accepted_steps = rkn_diagnostics.accepted_steps;
+      result.rkn_rejected_trials = rkn_diagnostics.rejected_trials;
+      result.rkn_max_trial_accepts = rkn_diagnostics.max_trial_accepts;
+      result.rkn_failures = rkn_diagnostics.failures;
+      result.rkn_seconds = rkn_diagnostics.seconds;
+      return false;
+    }
+
+    std::vector<StateVector> states_smoothed = states_filtered;
+    std::vector<StateMatrix> covs_smoothed = covs_filtered;
+    for (std::size_t next_index = npoints - 1; next_index > 0; --next_index)
+    {
+      const std::size_t index = next_index - 1;
+      const StateMatrix pred_inv = covs_predicted[next_index]
+                                       .completeOrthogonalDecomposition()
+                                       .solve(StateMatrix::Identity());
+      const StateMatrix smoother_gain =
+          covs_filtered[index] * transport[next_index].transpose() * pred_inv;
+      const StateVector smooth_residual =
+          residual(states_smoothed[next_index], states_predicted[next_index]);
+      states_smoothed[index] = states_filtered[index] + smoother_gain * smooth_residual;
+      states_smoothed[index](Phi) = normalize_phi(states_smoothed[index](Phi));
+      covs_smoothed[index] =
+          covs_filtered[index] +
+          smoother_gain * (covs_smoothed[next_index] - covs_predicted[next_index]) *
+              smoother_gain.transpose();
+      covs_smoothed[index] =
+          0.5 * (covs_smoothed[index] + covs_smoothed[index].transpose()).eval();
+    }
+
+    final_states_filtered = std::move(states_filtered);
+    final_states_smoothed = std::move(states_smoothed);
+    final_covs_filtered = std::move(covs_filtered);
+    final_covs_smoothed = std::move(covs_smoothed);
+    final_measurement_chi2 = std::move(measurement_chi2);
+    final_measurement_chi2_raw = std::move(measurement_chi2_raw);
+    final_measurement_used = std::move(measurement_used);
+    final_measurement_rejection_reason = std::move(measurement_rejection_reason);
+    final_measurement_weight_scale = std::move(measurement_weight_scale);
+    final_measurement_sigma_r_used = std::move(measurement_sigma_r_used);
+    final_measurement_sigma_rphi_used = std::move(measurement_sigma_rphi_used);
+    final_measurement_sigma_z_used = std::move(measurement_sigma_z_used);
+    final_measurement_in_seed = std::move(measurement_in_seed);
+    final_innovation_residual_r = std::move(innovation_residual_r);
+    final_innovation_residual_rphi = std::move(innovation_residual_rphi);
+    final_innovation_residual_z = std::move(innovation_residual_z);
+    final_prediction_sigma_r = std::move(prediction_sigma_r);
+    final_prediction_sigma_rphi = std::move(prediction_sigma_rphi);
+    final_prediction_sigma_z = std::move(prediction_sigma_z);
+    final_innovation_sigma_r = std::move(innovation_sigma_r);
+    final_innovation_sigma_rphi = std::move(innovation_sigma_rphi);
+    final_innovation_sigma_z = std::move(innovation_sigma_z);
+    final_innovation_rho_r_rphi = std::move(innovation_rho_r_rphi);
+    final_innovation_rho_r_z = std::move(innovation_rho_r_z);
+    final_innovation_rho_rphi_z = std::move(innovation_rho_rphi_z);
+    final_innovation_whitened_0 = std::move(innovation_whitened_0);
+    final_innovation_whitened_1 = std::move(innovation_whitened_1);
+    final_innovation_whitened_2 = std::move(innovation_whitened_2);
+    final_naccepted = naccepted;
+    final_nrejected = nrejected;
+    final_chi2 = chi2;
+    final_ndof = ndof - StateDim;
+
+    iteration_initial_state = final_states_smoothed.front();
   }
 
   result.states_filtered.reserve(npoints);
   result.covs_filtered.reserve(npoints);
   result.states_smoothed.reserve(npoints);
   result.covs_smoothed.reserve(npoints);
+  result.measurement_original_index.reserve(npoints);
   for (std::size_t index = 0; index < npoints; ++index)
   {
-    result.states_filtered.push_back(to_array(states_filtered[index]));
-    result.covs_filtered.push_back(to_array(covs_filtered[index]));
-    result.states_smoothed.push_back(to_array(states_smoothed[index]));
-    result.covs_smoothed.push_back(to_array(covs_smoothed[index]));
+    result.states_filtered.push_back(to_array(final_states_filtered[index]));
+    result.covs_filtered.push_back(to_array(final_covs_filtered[index]));
+    result.states_smoothed.push_back(to_array(final_states_smoothed[index]));
+    result.covs_smoothed.push_back(to_array(final_covs_smoothed[index]));
+    result.measurement_original_index.push_back(points[index].original_index);
   }
 
-  result.chi2 = chi2;
-  result.ndof = ndof - StateDim;
-  copy_rkn_diagnostics();
+  result.measurement_chi2 = std::move(final_measurement_chi2);
+  result.measurement_chi2_raw = std::move(final_measurement_chi2_raw);
+  result.measurement_used = std::move(final_measurement_used);
+  result.measurement_rejection_reason = std::move(final_measurement_rejection_reason);
+  result.measurement_weight_scale = std::move(final_measurement_weight_scale);
+  result.measurement_sigma_r_used = std::move(final_measurement_sigma_r_used);
+  result.measurement_sigma_rphi_used = std::move(final_measurement_sigma_rphi_used);
+  result.measurement_sigma_z_used = std::move(final_measurement_sigma_z_used);
+  result.measurement_in_seed = std::move(final_measurement_in_seed);
+  result.innovation_residual_r = std::move(final_innovation_residual_r);
+  result.innovation_residual_rphi = std::move(final_innovation_residual_rphi);
+  result.innovation_residual_z = std::move(final_innovation_residual_z);
+  result.prediction_sigma_r = std::move(final_prediction_sigma_r);
+  result.prediction_sigma_rphi = std::move(final_prediction_sigma_rphi);
+  result.prediction_sigma_z = std::move(final_prediction_sigma_z);
+  result.innovation_sigma_r = std::move(final_innovation_sigma_r);
+  result.innovation_sigma_rphi = std::move(final_innovation_sigma_rphi);
+  result.innovation_sigma_z = std::move(final_innovation_sigma_z);
+  result.innovation_rho_r_rphi = std::move(final_innovation_rho_r_rphi);
+  result.innovation_rho_r_z = std::move(final_innovation_rho_r_z);
+  result.innovation_rho_rphi_z = std::move(final_innovation_rho_rphi_z);
+  result.innovation_whitened_0 = std::move(final_innovation_whitened_0);
+  result.innovation_whitened_1 = std::move(final_innovation_whitened_1);
+  result.innovation_whitened_2 = std::move(final_innovation_whitened_2);
+  result.naccepted = final_naccepted;
+  result.nrejected = final_nrejected;
+  result.chi2 = final_chi2;
+  result.ndof = final_ndof;
+  result.rkn_propagations = rkn_diagnostics.propagations;
+  result.rkn_accepted_steps = rkn_diagnostics.accepted_steps;
+  result.rkn_rejected_trials = rkn_diagnostics.rejected_trials;
+  result.rkn_max_trial_accepts = rkn_diagnostics.max_trial_accepts;
+  result.rkn_failures = rkn_diagnostics.failures;
+  result.rkn_seconds = rkn_diagnostics.seconds;
   result.success = true;
   result.message = "ok";
   return true;
@@ -1010,6 +1259,293 @@ TpcTrackVec3 TpcTrackKalmanFitter::state_tangent(const std::array<double, StateD
       std::cos(state[Phi]),
       std::sin(state[Phi]),
       state[TanLambda]};
+}
+
+bool TpcTrackKalmanFitter::physical_endpoint(
+    const TpcKalmanResult &fit, std::array<double, StateDim> &state,
+    std::array<double, StateDim * StateDim> &covariance)
+{
+  if (!fit.success || fit.states_smoothed.empty() ||
+      fit.states_smoothed.size() != fit.covs_smoothed.size())
+  {
+    return false;
+  }
+  const double physical_sign = fit.charge > 0 ? -1.0 : 1.0;
+  const bool reversed = fit.charge != 0 &&
+                        fit.states_smoothed.front()[QOverPt] * physical_sign < 0.0;
+  const std::size_t endpoint = reversed ? fit.states_smoothed.size() - 1 : 0;
+  const auto &raw = fit.states_smoothed[endpoint];
+  state = propagation_state(fit, {});
+  StateMatrix orientation = StateMatrix::Identity();
+  for (const int index : {QOverPt, TanLambda})
+  {
+    if (std::abs(state[index] + raw[index]) < std::abs(state[index] - raw[index]))
+    {
+      orientation(index, index) = -1.0;
+    }
+  }
+  const StateMatrix physical_covariance = orientation * to_eigen(fit.covs_smoothed[endpoint]) *
+                                           orientation.transpose();
+  covariance = to_array(physical_covariance);
+  return to_eigen(state).allFinite() && to_eigen(covariance).allFinite();
+}
+
+namespace
+{
+  using SurfaceFunction = std::function<double(const StateVector &)>;
+
+  StateVector surface_propagate(const StateVector &state, const double path,
+                                const TpcKalmanConfig &config, const double mass)
+  {
+    return config.magnetic_field == nullptr && config.analytic_uniform_propagation
+               ? propagate_uniform_bz(state, path, config.bfield_t, config, mass)
+               : propagate_rkn4(state, path, config, mass);
+  }
+
+  bool refine_surface(const StateVector &initial, const SurfaceFunction &surface,
+                       const double hint, const double path_min, const double path_max,
+                       const TpcKalmanConfig &config, const double mass,
+                       double &path, StateVector &prediction)
+  {
+    path = std::clamp(hint, path_min, path_max);
+    for (int iteration = 0; iteration < 30; ++iteration)
+    {
+      prediction = surface_propagate(initial, path, config, mass);
+      const double value = surface(prediction);
+      if (!prediction.allFinite() || !std::isfinite(value))
+      {
+        return false;
+      }
+      if (std::abs(value) < 1.0e-7)
+      {
+        return true;
+      }
+      const double epsilon = 1.0e-3;
+      const double derivative =
+          (surface(surface_propagate(initial, path + epsilon, config, mass)) -
+           surface(surface_propagate(initial, path - epsilon, config, mass))) /
+          (2.0 * epsilon);
+      if (!std::isfinite(derivative) || std::abs(derivative) < 1.0e-10)
+      {
+        return false;
+      }
+      const double step = std::clamp(value / derivative, -10.0, 10.0);
+      const double next = path - step;
+      if (next < path_min - 1.0e-6 || next > path_max + 1.0e-6)
+      {
+        return false;
+      }
+      path = std::clamp(next, path_min, path_max);
+    }
+    return false;
+  }
+
+  bool surface_covariance(const StateVector &initial, const StateMatrix &input_cov,
+                           const SurfaceFunction &surface, const double nominal_path,
+                           const double path_min, const double path_max,
+                           const TpcKalmanConfig &config, const double mass,
+                           TpcKalmanSurfaceResult &result)
+  {
+    StateMatrix jacobian;
+    for (int column = 0; column < 6; ++column)
+    {
+      const double epsilon = column < 3 ? 1.0e-4 :
+                              std::max(1.0e-7, std::abs(initial(column)) * 1.0e-5);
+      StateVector plus = initial;
+      StateVector minus = initial;
+      plus(column) += epsilon;
+      minus(column) -= epsilon;
+      StateVector prediction_plus;
+      StateVector prediction_minus;
+      double path_plus = nominal_path;
+      double path_minus = nominal_path;
+      if (!refine_surface(plus, surface, nominal_path, path_min, path_max,
+                           config, mass, path_plus, prediction_plus) ||
+          !refine_surface(minus, surface, nominal_path, path_min, path_max,
+                           config, mass, path_minus, prediction_minus))
+      {
+        result.message = "surface covariance perturbation failed or branch changed";
+        return false;
+      }
+      StateVector difference = prediction_plus - prediction_minus;
+      difference(TpcTrackKalmanFitter::Phi) = normalize_phi(difference(TpcTrackKalmanFitter::Phi));
+      jacobian.col(column) = difference / (2.0 * epsilon);
+    }
+    StateMatrix prediction_cov = jacobian * input_cov * jacobian.transpose();
+    // Process noise is added at the endpoint and projected onto the surface.
+    // The frozen Yuri recipe has zero process noise, but support nonzero
+    // diagnostic configurations without pretending path is independent.
+    const StateVector nominal = to_eigen(result.state);
+    const double path_epsilon = 1.0e-3;
+    StateVector flow = (surface_propagate(initial, nominal_path + path_epsilon, config, mass) -
+                        surface_propagate(initial, nominal_path - path_epsilon, config, mass)) /
+                       (2.0 * path_epsilon);
+    StateVector normal;
+    for (int column = 0; column < 6; ++column)
+    {
+      StateVector plus = nominal;
+      StateVector minus = nominal;
+      const double epsilon = column < 3 ? 1.0e-4 : 1.0e-6;
+      plus(column) += epsilon;
+      minus(column) -= epsilon;
+      normal(column) = (surface(plus) - surface(minus)) / (2.0 * epsilon);
+    }
+    const double denominator = normal.dot(flow);
+    if (!std::isfinite(denominator) || std::abs(denominator) < 1.0e-10)
+    {
+      result.message = "surface is tangent or PCA is singular";
+      return false;
+    }
+    const StateMatrix projection = StateMatrix::Identity() -
+                                   flow * normal.transpose() / denominator;
+    prediction_cov += projection * process_noise(initial, nominal_path, config, mass) *
+                      projection.transpose();
+    prediction_cov = 0.5 * (prediction_cov + prediction_cov.transpose()).eval();
+    if (!jacobian.allFinite() || !prediction_cov.allFinite())
+    {
+      result.message = "nonfinite surface covariance";
+      return false;
+    }
+    result.jacobian = to_array(jacobian);
+    result.covariance = to_array(prediction_cov);
+    result.success = true;
+    result.message = "ok";
+    return true;
+  }
+}  // namespace
+
+bool TpcTrackKalmanFitter::predict_to_cylinder(
+    const std::array<double, StateDim> &state,
+    const std::array<double, StateDim * StateDim> &covariance,
+    const double radius_cm, const double path_hint_cm, const double path_min_cm,
+    const double path_max_cm, const TpcKalmanConfig &config,
+    TpcKalmanSurfaceResult &result, const double mass_gev,
+    const TpcTrackVec3 &cylinder_origin, const TpcTrackVec3 &cylinder_axis)
+{
+  result = {};
+  result.message = "invalid cylinder prediction input";
+  const StateVector initial = to_eigen(state);
+  if (!initial.allFinite() || !to_eigen(covariance).allFinite() ||
+      !(radius_cm > 0.0) || !(path_max_cm > path_min_cm) ||
+      !std::isfinite(path_hint_cm) || path_max_cm - path_min_cm > 2000.0)
+  {
+    return false;
+  }
+  const Vector3 origin(cylinder_origin.x, cylinder_origin.y, cylinder_origin.z);
+  const Vector3 raw_axis(cylinder_axis.x, cylinder_axis.y, cylinder_axis.z);
+  if (!origin.allFinite() || !raw_axis.allFinite() || raw_axis.norm() < 1.0e-12)
+  {
+    return false;
+  }
+  const Vector3 axis = raw_axis.normalized();
+  const SurfaceFunction surface = [radius_cm, origin, axis](const StateVector &value)
+  {
+    const Vector3 relative = value.head<3>() - origin;
+    return (relative - axis * relative.dot(axis)).norm() - radius_cm;
+  };
+  // Incremental scanning is inexpensive even for mapped propagation. Roots
+  // are refined from the original state so scan discretization never defines
+  // the prediction. Tangencies are explicitly invalid prediction surfaces.
+  const int steps = std::max(1, static_cast<int>(std::ceil((path_max_cm - path_min_cm) / 2.0)));
+  const double increment = (path_max_cm - path_min_cm) / steps;
+  StateVector scan = surface_propagate(initial, path_min_cm, config, mass_gev);
+  double previous = surface(scan);
+  std::vector<double> roots;
+  for (int index = 0; index <= steps; ++index)
+  {
+    const double scan_path = path_min_cm + index * increment;
+    const double value = surface(scan);
+    if (std::isfinite(value) && (std::abs(value) < 1.0e-5 ||
+                                (index > 0 && previous * value < 0.0)))
+    {
+      double root = scan_path;
+      StateVector prediction;
+      if (refine_surface(initial, surface, scan_path, path_min_cm, path_max_cm,
+                           config, mass_gev, root, prediction) &&
+          (roots.empty() || std::abs(roots.back() - root) > 1.0e-4))
+      {
+        roots.push_back(root);
+      }
+    }
+    previous = value;
+    if (index < steps)
+    {
+      scan = surface_propagate(scan, increment, config, mass_gev);
+    }
+  }
+  result.intersections = static_cast<unsigned int>(roots.size());
+  if (roots.empty())
+  {
+    result.message = "no cylinder crossing in declared path interval";
+    return false;
+  }
+  const double selected = *std::min_element(roots.begin(), roots.end(),
+      [path_hint_cm](const double left, const double right)
+      {
+        return std::make_pair(std::abs(left - path_hint_cm), left) <
+               std::make_pair(std::abs(right - path_hint_cm), right);
+      });
+  result.path_cm = selected;
+  result.state = to_array(surface_propagate(initial, selected, config, mass_gev));
+  return surface_covariance(initial, to_eigen(covariance), surface, selected,
+                             path_min_cm, path_max_cm, config, mass_gev, result);
+}
+
+bool TpcTrackKalmanFitter::predict_to_beamline_pca(
+    const TpcKalmanResult &fit, const TpcTrackVec3 &beamline,
+    const TpcKalmanConfig &input_config, TpcKalmanSurfaceResult &result,
+    const double max_path_cm)
+{
+  result = {};
+  result.message = "missing physical fit state/covariance";
+  std::array<double, StateDim> state{};
+  std::array<double, StateDim * StateDim> covariance{};
+  if (!(max_path_cm > 0.0) || !physical_endpoint(fit, state, covariance))
+  {
+    return false;
+  }
+  TpcKalmanConfig config = input_config;
+  config.bfield_t = fit.bfield_t;
+  config.magnetic_field = fit.magnetic_field;
+  config.analytic_uniform_propagation = fit.analytic_uniform_propagation;
+  const StateVector initial = to_eigen(state);
+  const SurfaceFunction surface = [beamline](const StateVector &value)
+  {
+    return (value(0) - beamline.x) * std::cos(value(3)) +
+           (value(1) - beamline.y) * std::sin(value(3));
+  };
+  const double omega = kCurvaturePerCm * fit.bfield_t * state[QOverPt];
+  double hint = -surface(initial);
+  if (std::abs(omega) > 1.0e-10)
+  {
+    const double cx = state[X] - std::sin(state[Phi]) / omega;
+    const double cy = state[Y] + std::cos(state[Phi]) / omega;
+    const double theta0 = std::atan2(state[Y] - cy, state[X] - cx);
+    const double theta_pca = std::atan2(beamline.y - cy, beamline.x - cx);
+    hint = normalize_phi(theta_pca - theta0) / omega;
+  }
+  StateVector prediction;
+  double path = hint;
+  if (!refine_surface(initial, surface, hint, -max_path_cm, max_path_cm,
+                        config, fit.mass_gev, path, prediction))
+  {
+    result.message = "mapped beamline PCA did not converge within path interval";
+    return false;
+  }
+  const double epsilon = 1.0e-3;
+  const double derivative = (surface(surface_propagate(initial, path + epsilon, config, fit.mass_gev)) -
+                             surface(surface_propagate(initial, path - epsilon, config, fit.mass_gev))) /
+                            (2.0 * epsilon);
+  if (!(derivative > 1.0e-8))
+  {
+    result.message = "stationary point is not a transverse minimum";
+    return false;
+  }
+  result.path_cm = path;
+  result.intersections = 1;
+  result.state = to_array(prediction);
+  return surface_covariance(initial, to_eigen(covariance), surface, path,
+                             -max_path_cm, max_path_cm, config, fit.mass_gev, result);
 }
 
 std::array<double, TpcTrackKalmanFitter::StateDim> TpcTrackKalmanFitter::propagation_state(
@@ -1098,6 +1634,165 @@ std::array<double, TpcTrackKalmanFitter::StateDim> TpcTrackKalmanFitter::propaga
     return to_array(propagate_uniform_bz(input, ds_cm, config.bfield_t, config, mass_gev));
   }
   return to_array(propagate_rkn4(input, ds_cm, config, mass_gev));
+}
+
+bool TpcTrackKalmanFitter::constrain_to_vertex(
+    const TpcKalmanResult &fit,
+    const TpcTrackVec3 &vertex,
+    const TpcKalmanConfig &input_config,
+    const double sigma_xy_cm,
+    const double sigma_z_cm,
+    const bool constrain_z,
+    TpcKalmanVertexConstraintResult &result)
+{
+  result = TpcKalmanVertexConstraintResult{};
+  if (!fit.success || fit.states_smoothed.empty() || fit.covs_smoothed.empty())
+  {
+    result.message = "missing smoothed Kalman state or covariance";
+    return false;
+  }
+
+  const double charge_sign = static_cast<double>((fit.charge > 0) ? 1 : -1);
+  const double physical_qop_sign = -charge_sign;
+  const double sequence_qop = fit.states_smoothed.front()[QOverPt];
+  const bool sequence_runs_against_physical =
+      fit.charge != 0 && sequence_qop * physical_qop_sign < 0.0;
+  const std::size_t endpoint = sequence_runs_against_physical
+                                   ? fit.states_smoothed.size() - 1
+                                   : 0;
+
+  const auto raw_state_array = fit.states_smoothed[endpoint];
+  StateVector state = to_eigen(propagation_state(fit, vertex));
+  StateMatrix covariance = to_eigen(fit.covs_smoothed[endpoint]);
+
+  // Apply the sign changes introduced by propagation_state to the covariance.
+  StateMatrix orientation_jacobian = StateMatrix::Identity();
+  if (std::abs(state(QOverPt) + raw_state_array[QOverPt]) <
+      std::abs(state(QOverPt) - raw_state_array[QOverPt]))
+  {
+    orientation_jacobian(QOverPt, QOverPt) = -1.0;
+  }
+  if (std::abs(state(TanLambda) + raw_state_array[TanLambda]) <
+      std::abs(state(TanLambda) - raw_state_array[TanLambda]))
+  {
+    orientation_jacobian(TanLambda, TanLambda) = -1.0;
+  }
+  covariance = orientation_jacobian * covariance * orientation_jacobian.transpose();
+
+  double path_cm = 0.0;
+  const double omega = omega_from_state(state, fit.bfield_t);
+  if (std::abs(omega) >= 1.0e-10)
+  {
+    const double radius = std::abs(1.0 / omega);
+    const double center_x = state(X) - std::sin(state(Phi)) / omega;
+    const double center_y = state(Y) + std::cos(state(Phi)) / omega;
+    const double dx = vertex.x - center_x;
+    const double dy = vertex.y - center_y;
+    const double center_distance = std::hypot(dx, dy);
+    if (center_distance > 1.0e-12)
+    {
+      const double closest_x = center_x + radius * dx / center_distance;
+      const double closest_y = center_y + radius * dy / center_distance;
+      const double theta0 = std::atan2(state(Y) - center_y, state(X) - center_x);
+      const double theta_closest = std::atan2(closest_y - center_y, closest_x - center_x);
+      path_cm = normalize_phi(theta_closest - theta0) / omega;
+    }
+  }
+  else
+  {
+    const double dx = state(X) - vertex.x;
+    const double dy = state(Y) - vertex.y;
+    path_cm = -(dx * std::cos(state(Phi)) + dy * std::sin(state(Phi)));
+  }
+
+  TpcKalmanConfig config = input_config;
+  config.bfield_t = fit.bfield_t;
+  config.magnetic_field = fit.magnetic_field;
+  config.analytic_uniform_propagation = fit.analytic_uniform_propagation;
+
+  RknDiagnostics diagnostics;
+  const StateMatrix propagation_jacobian =
+      transport_jacobian(state, path_cm, config, fit.mass_gev, &diagnostics);
+  const StateVector propagated_state =
+      (config.magnetic_field == nullptr && config.analytic_uniform_propagation)
+          ? propagate_uniform_bz(state, path_cm, config.bfield_t, config, fit.mass_gev)
+          : propagate_rkn4(state, path_cm, config, fit.mass_gev, &diagnostics);
+  if (!propagation_jacobian.allFinite() || !propagated_state.allFinite())
+  {
+    result.message = "vertex-constraint propagation failed";
+    return false;
+  }
+
+  StateMatrix propagated_covariance =
+      propagation_jacobian * covariance * propagation_jacobian.transpose() +
+      process_noise(state, path_cm, config, fit.mass_gev);
+  propagated_covariance =
+      0.5 * (propagated_covariance + propagated_covariance.transpose()).eval();
+
+  const int measurement_dimension = constrain_z ? 3 : 2;
+  Eigen::MatrixXd hmat = Eigen::MatrixXd::Zero(measurement_dimension, StateDim);
+  hmat(0, X) = 1.0;
+  hmat(1, Y) = 1.0;
+  if (constrain_z)
+  {
+    hmat(2, Z) = 1.0;
+  }
+
+  Eigen::VectorXd measurement(measurement_dimension);
+  measurement(0) = vertex.x;
+  measurement(1) = vertex.y;
+  if (constrain_z)
+  {
+    measurement(2) = vertex.z;
+  }
+
+  const double safe_sigma_xy = std::max(std::abs(sigma_xy_cm), 1.0e-6);
+  const double safe_sigma_z = std::max(std::abs(sigma_z_cm), 1.0e-6);
+  Eigen::MatrixXd measurement_covariance =
+      Eigen::MatrixXd::Zero(measurement_dimension, measurement_dimension);
+  measurement_covariance(0, 0) = square(safe_sigma_xy);
+  measurement_covariance(1, 1) = square(safe_sigma_xy);
+  if (constrain_z)
+  {
+    measurement_covariance(2, 2) = square(safe_sigma_z);
+  }
+
+  const Eigen::VectorXd measurement_residual = measurement - hmat * propagated_state;
+  const Eigen::MatrixXd innovation =
+      hmat * propagated_covariance * hmat.transpose() + measurement_covariance;
+  const Eigen::MatrixXd innovation_inverse =
+      innovation.completeOrthogonalDecomposition().solve(
+          Eigen::MatrixXd::Identity(measurement_dimension, measurement_dimension));
+  const double chi2 =
+      (measurement_residual.transpose() * innovation_inverse * measurement_residual)(0, 0);
+  const Eigen::MatrixXd gain =
+      propagated_covariance * hmat.transpose() * innovation_inverse;
+
+  StateVector constrained_state = propagated_state + gain * measurement_residual;
+  constrained_state(Phi) = normalize_phi(constrained_state(Phi));
+  const StateMatrix identity = StateMatrix::Identity();
+  StateMatrix constrained_covariance =
+      (identity - gain * hmat) * propagated_covariance *
+          (identity - gain * hmat).transpose() +
+      gain * measurement_covariance * gain.transpose();
+  constrained_covariance =
+      0.5 * (constrained_covariance + constrained_covariance.transpose()).eval();
+
+  if (!constrained_state.allFinite() || !constrained_covariance.allFinite() ||
+      !std::isfinite(chi2))
+  {
+    result.message = "vertex constraint produced a non-finite state";
+    return false;
+  }
+
+  result.state = to_array(constrained_state);
+  result.covariance = to_array(constrained_covariance);
+  result.path_cm = path_cm;
+  result.chi2 = chi2;
+  result.ndof = measurement_dimension;
+  result.success = true;
+  result.message = "ok";
+  return true;
 }
 
 std::pair<double, double> TpcTrackKalmanFitter::dca_to_vertex(const TpcKalmanResult &fit,

@@ -222,6 +222,14 @@ libtrack_reco_la_LIBADD = \
 ################################################
 # linking tests
 
+# The layout fixture compiles the exact marked production helper block, so it
+# checks both merged and legacy ACTS sensor IDs without ROOT/ACTS setup.
+TESTS = tests/test_MvtxSensorLayout.py
+AM_TESTS_ENVIRONMENT = export CXX='$(CXX)';
+EXTRA_DIST = \
+  tests/test_MvtxSensorLayout.py \
+  tests/test_MvtxSensorLayout.cc
+
 BUILT_SOURCES = \
   testexternals.cc
 

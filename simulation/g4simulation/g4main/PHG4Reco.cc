@@ -241,6 +241,14 @@ int PHG4Reco::Init(PHCompositeNode *topNode)
     {
       decayer->CustomizeEvtGenDecay(EvtGenDecayFile);
     }
+    for (const int pdgCode : m_EvtGenOverridePdgCodes)
+    {
+      decayer->OverrideNativeDecayForPdg(pdgCode);
+    }
+    for (const int pdgCode : m_EvtGenSuppressPhotosPdgCodes)
+    {
+      decayer->SuppressPhotosForPdg(pdgCode);
+    }
 
     myphysicslist->RegisterPhysics(decayer);
   }

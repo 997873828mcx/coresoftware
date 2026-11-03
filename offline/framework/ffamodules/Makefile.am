@@ -1,4 +1,4 @@
-AUTOMAKE_OPTIONS = foreign
+AUTOMAKE_OPTIONS = foreign subdir-objects
 
 lib_LTLIBRARIES = \
   libffamodules.la
@@ -45,6 +45,12 @@ testexternals_SOURCES = \
 
 testexternals_LDADD = \
   libffamodules.la
+
+check_PROGRAMS = test_CDBInterfaceCache
+TESTS = $(check_PROGRAMS)
+test_CDBInterfaceCache_SOURCES = tests/test_CDBInterfaceCache.cc
+test_CDBInterfaceCache_LDFLAGS = $(AM_LDFLAGS) `root-config --libs`
+test_CDBInterfaceCache_LDADD = libffamodules.la -lphool -lffaobjects
 
 testexternals.cc:
 	echo "//*** this is a generated file. Do not commit, do not edit" > $@

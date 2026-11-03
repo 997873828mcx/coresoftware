@@ -1,4 +1,5 @@
 #include "PHG4TpcDigitizer.h"
+#include "TpcSampaResponse.h"
 
 #include <trackbase/TpcDefs.h>
 #include <trackbase/TrkrDefs.h>
@@ -15,21 +16,26 @@
 #include <fun4all/SubsysReco.h>  // for SubsysReco
 #
 #include <phool/PHCompositeNode.h>
+#include <phool/PHIODataNode.h>
 #include <phool/PHNode.h>  // for PHNode
 #include <phool/PHNodeIterator.h>
 #include <phool/PHRandomSeed.h>
 #include <phool/getClass.h>
 #include <phool/phool.h>  // for PHWHERE
+#include <pdbcalbase/PdbParameterMap.h>
+#include <phparameter/PHParameters.h>
 
 #include <gsl/gsl_randist.h>
 #include <gsl/gsl_rng.h>  // for gsl_rng_alloc
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdlib>  // for exit
 #include <iostream>
 #include <limits>
 #include <memory>  // for allocator_tra...
+#include <stdexcept>
 
 PHG4TpcDigitizer::PHG4TpcDigitizer(const std::string &name)
   : SubsysReco(name)
@@ -51,18 +57,54 @@ PHG4TpcDigitizer::~PHG4TpcDigitizer()
   gsl_rng_free(RandomGenerator);
 }
 
+void PHG4TpcDigitizer::SetPedestalADC(const double pedestal)
+{
+  if (!std::isfinite(pedestal) || pedestal < 0.0 || pedestal > 1023.0)
+  {
+    throw std::invalid_argument("PHG4TpcDigitizer pedestal must be in [0,1023] ADC");
+  }
+  m_pedestalADC = pedestal;
+}
+
+double PHG4TpcDigitizer::GetPedestalADC() const
+{
+  return std::isfinite(m_pedestalADC)
+             ? m_pedestalADC
+             : static_cast<double>(Pedestal) * ChargeToPeakVolts * 1.60e-04 * 1024.0 / 2200.0;
+}
+
 int PHG4TpcDigitizer::InitRun(PHCompositeNode *topNode)
 {
-  ADCThreshold += Pedestal;
-
-  // Factor that converts the charge in each z bin into a voltage in each z bin
-  // ChargeToPeakVolts relates TOTAL charge collected to peak voltage, while the cell maker actually distributes the signal
-  // GEM output charge in Z bins using the shaper time response. For 80 ns shaping, the scaleup factor of 2.4 gets the peak voltage right.
-  ADCSignalConversionGain = ChargeToPeakVolts * 1.60e-04 * 2.4;  // 20 (or 30) mV/fC * fC/electron * scaleup factor
+  // A coupled pad-readout/digitizer chain must agree on its pre-ADC units.
+  // Standalone users may provide equivalent-electron amplitudes directly
+  // without a pad-plane parameter node. Legacy unit-area charge shares need
+  // their original digitizer and must not silently enter this conversion.
+  const auto* readout = findNode::getClass<PHParameters>(topNode, "G4TPCPADPLANEPAR");
+  if (readout &&
+      (!readout->exist_string_param("tpc_sampa_response_model") ||
+       !readout->exist_int_param("tpc_sampa_response_version") ||
+       readout->get_string_param("tpc_sampa_response_model") != TpcSampaResponse::Mode ||
+       readout->get_int_param("tpc_sampa_response_version") != TpcSampaResponse::Version))
+  {
+    std::cerr << PHWHERE << "incompatible pad-readout SAMPA response representation" << std::endl;
+    return Fun4AllReturnCodes::ABORTRUN;
+  }
+  // The pad readout already applies the peak-normalized SAMPA response averaged
+  // over each ADC clock bin. Its stored value is an equivalent-electron signal
+  // amplitude, not a unit-area share of the total GEM charge. Only the physical
+  // charge-to-analog-peak gain is needed here; an extra empirical multiplier
+  // would count the response normalization twice.
+  ADCSignalConversionGain = ChargeToPeakVolts * 1.60e-04;  // mV/fC * fC/electron
   // The noise is by definition the RMS noise width voltage divided by ChargeToPeakVolts
   ADCNoiseConversionGain = ChargeToPeakVolts * 1.60e-04;  // 20 (or 30) mV/fC * fC/electron
 
-  ADCThreshold_mV = ADCThreshold * ADCNoiseConversionGain;
+  const float threshold_electrons = ADCThreshold + (no_noise ? 0.0F : Pedestal);
+  ADCThreshold_mV = threshold_electrons * ADCNoiseConversionGain;
+  if (std::isfinite(m_pedestalADC))
+  {
+    ADCThreshold_mV = ADCThreshold * ADCNoiseConversionGain +
+                      (no_noise ? 0.0 : m_pedestalADC * 2200.0 / 1024.0);
+  }
 
   //-------------
   // Add Hit Node
@@ -77,6 +119,34 @@ int PHG4TpcDigitizer::InitRun(PHCompositeNode *topNode)
     return Fun4AllReturnCodes::ABORTRUN;
   }
   PHNodeIterator iter_dst(dstNode);
+  if (!findNode::getClass<PdbParameterMap>(topNode, "TPC_ADC_BASELINE"))
+  {
+    dstNode->addNode(new PHIODataNode<PHObject>(
+        new PdbParameterMap, "TPC_ADC_BASELINE", "PHObject"));
+  }
+
+  if (m_maskDeadChannels &&
+      !m_deadChannelMap.load(
+          m_deadChannelMapName,
+          "TotalDeadChannels",
+          m_maskFromFile,
+          Verbosity()))
+  {
+    std::cerr << PHWHERE << "failed to load requested TPC dead-channel map"
+              << std::endl;
+    return Fun4AllReturnCodes::ABORTRUN;
+  }
+  if (m_maskHotChannels &&
+      !m_hotChannelMap.load(
+          m_hotChannelMapName,
+          "TotalHotChannels",
+          m_maskFromFile,
+          Verbosity()))
+  {
+    std::cerr << PHWHERE << "failed to load requested TPC hot-channel map"
+              << std::endl;
+    return Fun4AllReturnCodes::ABORTRUN;
+  }
 
   CalculateCylinderCellADCScale(topNode);
 
@@ -103,6 +173,19 @@ int PHG4TpcDigitizer::InitRun(PHCompositeNode *topNode)
 
 int PHG4TpcDigitizer::process_event(PHCompositeNode *topNode)
 {
+  // Event-level metadata travels with TRKR_HITSET. It is reset and filled for
+  // every event, including empty events; it must be saved by the DST writer.
+  auto* baseline = findNode::getClass<PdbParameterMap>(topNode, "TPC_ADC_BASELINE");
+  if (!baseline)
+  {
+    return Fun4AllReturnCodes::ABORTRUN;
+  }
+  baseline->Reset();
+  baseline->set_int_param("schema_version", 1);
+  baseline->set_int_param("state", 0);
+  baseline->set_double_param("pedestal_adc", no_noise ? 0.0 : GetPedestalADC());
+  baseline->set_double_param("removed_pedestal_adc", 0.0);
+  baseline->set_string_param("source", "PHG4TpcDigitizer");
   DigitizeCylinderCells(topNode);
 
   return Fun4AllReturnCodes::EVENT_OK;
@@ -149,9 +232,9 @@ void PHG4TpcDigitizer::DigitizeCylinderCells(PHCompositeNode *topNode)
 {
   unsigned int print_layer = 18;  // to print diagnostic output for layer 47
 
-  // Digitizes the Tpc cells that were created in PHG4CylinderCellTpcReco
-  // These contain as edep the number of electrons out of the GEM stack, distributed between Z bins by shaper response and ADC clock window
-  // - i.e. all of the phi and Z bins in a cluster have edep values that add up to the primary charge in the layer times 2000
+  // Digitizes equivalent-electron amplitudes from PHG4TpcPadPlaneReadout.
+  // Each time-bin value includes the peak-normalized SAMPA bin-average response;
+  // summing those amplitudes is not a count of physical GEM electrons.
 
   // NOTES:
   // Modified by ADF June 2018 to do the following:
@@ -159,58 +242,19 @@ void PHG4TpcDigitizer::DigitizeCylinderCells(PHCompositeNode *topNode)
   //   Digitize the first adc time bin to exceed the threshold, and the 4 bins after that
   //   If the adc value is still above the threshold after 5 bins, repeat for the next 5 bins
 
-  // Electron production:
-  // A MIP produces 32 electrons in 1.25 cm of Ne:CF4 gas
-  // The nominal GEM gain is 2000 => 64,000 electrons per MIP through 1.25 cm gas
-  // Thus a MIP produces a charge value out of the GEM stack of 64000/6.242x10^18 = 10.2 fC
-
-  // SAMPA:
-  // See https://indico.cern.ch/event/489996/timetable/#all.detailed
-  //      "SAMPA Chip: the New ASIC for the ALICE Tpc and MCH Upgrades", M Bregant
-  // The SAMPA has a maximum output voltage of 2200 mV (but the pedestal is about 200 mV)
-  // The SAMPA shaper is set to 80 ns peaking time
-  // The ADC Digitizes the SAMPA shaper output into 1024 channels
-  // Conversion gains of 20 mV/fC or 30 mV/fC are possible - 1 fC charge input produces a peak voltage out of
-  // the shaper of 20 or 30 mV
-  //   At 30 mV/fC, the input signal saturates at 2.2 V / 30 mV/fC = 73 fC (say 67 with pedestal not at zero)
-  //   At 20 mV/fC, the input signal saturates at 2.2 V / 20 mV/fC = 110 fC (say 100 fC with pedestal not at zero) - assume 20 mV/fC
-  // The equivalent noise charge RMS at 20 mV/fC was measured (w/o detector capacitance) at 490 electrons
-  //      - note: this appears to be just the pedestal RMS voltage spread divided by the conversion gain, so it is a bit of a
-  //         funny number (see below)
-  //      - it is better to think of noise and signal in terms of voltage at the input of the ADC
-  // Bregant's slides say 670 electrons ENC for the full chip with 18 pf detector, as in ALICE - should use that number
-
-  // Signal:
-  // To normalize the signal in each cell, take the entire charge on the pad and multiply by 20 mV/fC to get the adc
-  //       input AT THE PEAK of the shaper
-  // The cell contents should thus be multipied by the normalization given by:
-  // V_peak = Q_pad (electrons) * 1.6e-04 fC/electron * 20 mV/fC
-  // From the sims, for 80 ns and 18.8 MHz, if we take the input charge and spread it a across the shaping time (which is how it has always been done, and is
-  // not the best way to think about it, because the ADC does not see charge it sees voltage out of a charge integrating
-  //     preamp followed by a shaper), to get
-  // the voltage at the ADC input right, then the values of Q_(pad,z) have to be scaled up by 2.4
-  // V_(pad,z) = 2.4 * Q_(pad,z) (electrons) * 1.6e-04 fC/electron * 20 mV/fC = Q_(pad,z) * 7.68e-03 (in mV)
-  // ADU_(pad,z) = V_(pad,z) * (1024 ADU / 2200 mV) = V_(pad,z) * 0.465
-  // Remember that Q_(pad,z) is the GEM output charge
-
-  // Noise:
-  // The ENC is defined as the RMS spread of the ADC pedestal distribution coming out from the SAMPA
-  //      divided by the corresponding conversion gain.
-  // The full range of the ADC input is 2.2V (which will become 1024 adc counts, i.e. 1024 ADU's).
-  // If you see the RMS of the pedestal in adc counts as 1 at the gain of 20mV/fC, the ENC would be defined by:
-  //             (2200 [mV]) * (1/1024) / (20[mV/fC]) / (1.6*10^-4 [fC]) = 671 [electrons]
-  // The RMS noise voltage would be:
-  //     V_RMS = ENC (electrons) *1.6e-04 fC/electron * 20 mV/fC = ENC (electrons) * 3.2e-03 (in mV)
-  // The ADC readout would be:  ADU = V_RMS * (1024 ADU / 2200 mV) = V_RMS * 0.465
-
-  // The cells that we need to digitize here contain as the energy "edep", which is the number of electrons out of the GEM stack
-  // distributed over the pads and ADC time bins according to the output time distribution of the SAMPA shaper
-  //      - not what really happens, see above
-  // We convert to volts at the input to the ADC and add noise generated with the RMS value of the noise voltage at the ADC input
-  // We assume the pedestal is zero, for simplicity, so the noise fluctuates above and below zero
-
-  // Note that tbin = 0 corresponds to - max drift length, tbin 248 corresponds to 0 cm, and tbin 497 corresponds to max drift length
-  // increasing time should be bins (497 -> 249) and (0 -> 248)
+  // For pad charge Q and unit-peak analog response g, the pad readout stores
+  // E_i = Q * integral_bin(g(t-arrival) dt) / ADC_clock as equivalent electrons.
+  // V_i [mV] = E_i * 1.60e-4 [fC/electron] * ChargeToPeakVolts [mV/fC].
+  // The stored pulse sum is Q * response_area / ADC_clock before truncation;
+  // it is not normalized to Q, and a bin's voltage need not equal the analog
+  // peak. Clock-phase dependence and loss outside the readout window remain.
+  // ADC = V_i * 1024 / 2200, truncated and saturated to the 10-bit ADC range.
+  //
+  // The noise/pedestal contract is independent of the signal pulse shape:
+  // sigma_noise [mV] = ENC * 1.60e-4 * ChargeToPeakVolts. The configured
+  // pedestal is added before zero suppression (unless no_noise is selected).
+  // Neither ENC, the physical gain, nor the threshold receives a pulse-area
+  // correction. At 20 mV/fC, 670-electron ENC corresponds to about one ADC count.
 
   //----------
   // Get Nodes
@@ -326,6 +370,17 @@ void PHG4TpcDigitizer::DigitizeCylinderCells(PHCompositeNode *topNode)
 
       for (unsigned int iphi = 0; iphi < phi_sorted_hits.size(); iphi++)
       {
+        const unsigned int sector = 12U * iphi / nphibins;
+        const TrkrDefs::hitsetkey channel_hitsetkey =
+            TpcDefs::genHitSetKey(layer, sector, side);
+
+        // A masked electronics channel has neither signal nor electronic
+        // noise. Skip the complete time stream before sampling any noise.
+        if (isChannelMasked(channel_hitsetkey, iphi))
+        {
+          continue;
+        }
+
         int ntbins = layergeom->get_zbins();
         signal_hit_by_tbin.assign(ntbins, nullptr);
 
@@ -496,9 +551,8 @@ void PHG4TpcDigitizer::DigitizeCylinderCells(PHCompositeNode *topNode)
                 {
                   // Hit does not exist yet, have to make one
                   // we need the hitset key, requires (layer, sector, side)
-                  unsigned int sector = 12 * iphi / nphibins;
-                  TrkrDefs::hitsetkey hitsetkey = TpcDefs::genHitSetKey(layer, sector, side);
-                  auto hitset_iter = trkrhitsetcontainer->findOrAddHitSet(hitsetkey);
+                  auto hitset_iter =
+                      trkrhitsetcontainer->findOrAddHitSet(channel_hitsetkey);
 
                   hit = new TrkrHitv2();
                   hitset_iter->second->addHitSpecificKey(hitkey, hit);
@@ -575,6 +629,8 @@ void PHG4TpcDigitizer::DigitizeCylinderCells(PHCompositeNode *topNode)
     {
       TrkrDefs::hitkey hitkey = hit_iter->first;
       TrkrHit *tpchit = hit_iter->second;
+      const bool masked =
+          isChannelMasked(hitsetkey, TpcDefs::getPad(hitkey));
 
       if (Verbosity() > 5)
       {
@@ -583,7 +639,7 @@ void PHG4TpcDigitizer::DigitizeCylinderCells(PHCompositeNode *topNode)
                   << " adc " << tpchit->getAdc() << std::endl;
       }
 
-      if (tpchit->getAdc() == 0)
+      if (tpchit->getAdc() == 0 || masked)
       {
         if (Verbosity() > 20)
         {
@@ -597,6 +653,18 @@ void PHG4TpcDigitizer::DigitizeCylinderCells(PHCompositeNode *topNode)
     // delete all undigitized hits
     for (auto &hitkey : delete_hitkey_list)
     {
+      if (isChannelMasked(hitsetkey, TpcDefs::getPad(hitkey)))
+      {
+        // A hit may have several contributing G4 hits. The legacy v1
+        // implementation removes one association per call, so repeat once
+        // for every association reported before deleting the digitized hit.
+        TrkrHitTruthAssoc::MMap associations;
+        hittruthassoc->getG4Hits(hitsetkey, hitkey, associations);
+        for (std::size_t index = 0; index < associations.size(); ++index)
+        {
+          hittruthassoc->removeAssoc(hitsetkey, hitkey);
+        }
+      }
       hitset->removeHit(hitkey);
       if (Verbosity() > 20)
       {
@@ -664,12 +732,28 @@ void PHG4TpcDigitizer::DigitizeCylinderCells(PHCompositeNode *topNode)
   return;
 }
 
+bool PHG4TpcDigitizer::isChannelMasked(
+    const TrkrDefs::hitsetkey hitsetkey,
+    const unsigned int pad) const
+{
+  return (m_maskDeadChannels && m_deadChannelMap.contains(hitsetkey, pad)) ||
+         (m_maskHotChannels && m_hotChannelMap.contains(hitsetkey, pad));
+}
+
 float PHG4TpcDigitizer::add_noise_to_bin(float signal)
 {
   // add noise to the signal and return adc input voltage
-  float adc_input_voltage = signal * ADCSignalConversionGain;                 // mV, see comments above
-  float noise_voltage = (Pedestal + added_noise()) * ADCNoiseConversionGain;  // mV - from definition of noise charge and pedestal charge
-  adc_input_voltage += noise_voltage;
+  float adc_input_voltage = signal * ADCSignalConversionGain;  // mV, see comments above
+  if (!no_noise)
+  {
+    // Keep the historical arithmetic unchanged unless an ADC pedestal was
+    // explicitly selected. Setting 60 ADC uses the exact voltage 128.90625 mV,
+    // avoiding an electrons-to-voltage round trip that can truncate 60 to 59.
+    const float noise_voltage = std::isfinite(m_pedestalADC)
+                                    ? m_pedestalADC * 2200.0 / 1024.0 + added_noise() * ADCNoiseConversionGain
+                                    : (Pedestal + added_noise()) * ADCNoiseConversionGain;
+    adc_input_voltage += noise_voltage;
+  }
 
   return adc_input_voltage;
 }

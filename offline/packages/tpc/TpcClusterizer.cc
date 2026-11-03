@@ -3,6 +3,7 @@
 #include <torch/script.h>
 
 #include "TpcClusterizer.h"
+#include "TpcAdcBaselineCorrection.h"
 
 #include "LaserEventInfo.h"
 
@@ -1568,6 +1569,20 @@ int TpcClusterizer::InitRun(PHCompositeNode *topNode)
 
 int TpcClusterizer::process_event(PHCompositeNode *topNode)
 {
+  // Metadata-marked simulation is normalized by the first ADC consumer.
+  // Unmarked data/legacy inputs retain their explicitly configured pedestal.
+  double effectivePedestal = pedestal;
+  if (!do_read_raw)
+  {
+    const auto baseline = TpcAdcBaseline::normalizeIfMetadata(topNode, Name());
+    if (!baseline.ok)
+    {
+      std::cerr << Name() << ": " << baseline.error << std::endl;
+      return Fun4AllReturnCodes::ABORTRUN;
+    }
+    if (baseline.has_metadata) effectivePedestal = 0.0;
+  }
+
   // The TPC is the only subsystem that clusters in global coordinates. For consistency,
   // we must use the construction transforms to get the local coordinates.
   // Set the flag to use ideal transforms for the duration of this process_event, for thread safety
@@ -1732,7 +1747,7 @@ int TpcClusterizer::process_event(PHCompositeNode *topNode)
       thread_pair.data.hitset = hitset;
       thread_pair.data.rawhitset = nullptr;
       thread_pair.data.layer = layer;
-      thread_pair.data.pedestal = pedestal;
+      thread_pair.data.pedestal = effectivePedestal;
       thread_pair.data.seed_threshold = seed_threshold;
       thread_pair.data.edge_threshold = edge_threshold;
       thread_pair.data.sector = sector;
@@ -1866,7 +1881,7 @@ int TpcClusterizer::process_event(PHCompositeNode *topNode)
       thread_pair.data.hitset = nullptr;
       thread_pair.data.rawhitset = hitset;
       thread_pair.data.layer = layer;
-      thread_pair.data.pedestal = pedestal;
+      thread_pair.data.pedestal = effectivePedestal;
       thread_pair.data.sector = sector;
       thread_pair.data.side = side;
       thread_pair.data.debug = m_debug;

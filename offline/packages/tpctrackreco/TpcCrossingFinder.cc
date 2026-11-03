@@ -1,6 +1,7 @@
 #include "TpcCrossingFinder.h"
 
 #include "IdealPadMap.h"
+#include "TpcDriftTimePolicy.h"
 #include "Tpc_AssembledTrack.h"
 #include "Tpc_AssembledTrackContainer.h"
 #include "TpcCrossingDecisionContainerv1.h"
@@ -41,6 +42,7 @@
 #include <limits>
 #include <map>
 #include <set>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -90,6 +92,15 @@ TpcCrossingFinder::TpcCrossingFinder(const std::string& name)
 {
 }
 
+TpcCrossingFinder::~TpcCrossingFinder() = default;
+
+void TpcCrossingFinder::setCentralMembraneTailToleranceNs(const double value)
+{
+  if (!std::isfinite(value) || value<0.0)
+  { throw std::invalid_argument("central-membrane tail tolerance must be finite and nonnegative"); }
+  m_centralMembraneTailToleranceNs=value;
+}
+
 int TpcCrossingFinder::InitRun(PHCompositeNode* topNode)
 {
   if (getNodes(topNode) != Fun4AllReturnCodes::EVENT_OK) { return Fun4AllReturnCodes::ABORTRUN;
@@ -110,9 +121,27 @@ int TpcCrossingFinder::InitRun(PHCompositeNode* topNode)
     return Fun4AllReturnCodes::ABORTRUN;
   }
 
-  auto* layergeom = m_geomContainerTpc->GetLayerCellGeom(20);
+  PHG4TpcGeom* layergeom = m_geomContainerTpc->GetLayerCellGeom(20);
+  if (!layergeom && m_useTpcGeometryAdcClock)
+  {
+    std::cerr << Name()
+              << "::InitRun - cannot read the ADC clock without TPC layer 20 geometry"
+              << std::endl;
+    return Fun4AllReturnCodes::ABORTRUN;
+  }
   if (layergeom)
   {
+    if (m_useTpcGeometryAdcClock)
+    {
+      const double adc_clock = layergeom->get_adc_clock();
+      if (!std::isfinite(adc_clock) || adc_clock <= 0.0)
+      {
+        std::cerr << Name() << "::InitRun - invalid TPC geometry ADC clock "
+                  << adc_clock << std::endl;
+        return Fun4AllReturnCodes::ABORTRUN;
+      }
+      m_tpcAdcClock = adc_clock;
+    }
     const double rot_x = layergeom->get_rot_x();
     const double rot_y = layergeom->get_rot_y();
     const double rot_z = layergeom->get_rot_z();
@@ -249,12 +278,23 @@ void TpcCrossingFinder::configure_garfield(PHGarfield* garfield) const
 {
   if (!garfield) { return; }
 
+  garfield->SetUseSurveyGeometry(use_survey_geometry);
+  if (m_electricFieldMapOverride)
+  {
+    garfield->SetElectricFieldMap(m_electricFieldMap);
+  }
   garfield->MoveTpc(m_tpcMove[0], m_tpcMove[1], m_tpcMove[2]);
   for (const auto& rotation : m_tpcRotations)
   {
     garfield->RotateTpc(rotation[0], rotation[1], rotation[2]);
   }
+  if (!m_gasFile.empty())
+  {
+    garfield->SetGasFile(m_gasFile);
+  }
   garfield->SetCMVoltageDefault(m_cmVoltageDefault);
+  garfield->SetCentralMembraneHalfWidth(m_centralMembraneHalfWidth);
+  garfield->SetDriftVolumeRadii(m_driftInnerRadius, m_driftOuterRadius);
 
   if (m_isNonDistortedMC)
   {
@@ -280,9 +320,11 @@ bool TpcCrossingFinder::build_drift_lookup()
   if (m_reverseDriftStepNs <= 0.0 || !std::isfinite(m_reverseDriftStepNs)) { return false; }
 
   m_maxLookupTimeNs = std::numeric_limits<double>::max();
+  m_cmTerminatedPolylines=0;
   for (DriftPolyline& polyline : m_driftLookup)
   {
     polyline.phi = 0.0;
+    polyline.terminal_is_central_membrane=false;
     polyline.points.clear();
   }
 
@@ -311,7 +353,8 @@ bool TpcCrossingFinder::build_drift_lookup()
 
           const double x0 = radius * std::cos(phi_local);
           const double y0 = radius * std::sin(phi_local);
-          TPolyLine3D* drift = m_garfield->ReverseDrift(x0, y0, z0, m_reverseDriftStepNs);
+          PHGarfield::ReverseDriftStatus terminal_status=PHGarfield::ReverseDriftStatus::Running;
+          TPolyLine3D* drift = m_garfield->ReverseDrift(x0, y0, z0, m_reverseDriftStepNs,&terminal_status);
           if (!drift || drift->GetN() <= 0)
           {
             delete drift;
@@ -328,6 +371,8 @@ bool TpcCrossingFinder::build_drift_lookup()
 
           DriftPolyline& polyline = m_driftLookup[drift_lookup_index(layer_index, side, sector, sample)];
           polyline.phi = phi_local;
+          polyline.terminal_is_central_membrane=terminal_status==PHGarfield::ReverseDriftStatus::CentralMembrane;
+          if (polyline.terminal_is_central_membrane) { ++m_cmTerminatedPolylines; }
           polyline.points.resize(static_cast<std::size_t>(npoints));
           for (int ipoint = 0; ipoint < npoints; ++ipoint)
           {
@@ -362,8 +407,10 @@ bool TpcCrossingFinder::sample_drift_lookup(const unsigned int layer,
                                             const short crossing,
                                             double& x,
                                             double& y,
-                                            double& z) const
+                                            double& z,
+                                            bool* central_membrane_clamped) const
 {
+  if (central_membrane_clamped) { *central_membrane_clamped=false; }
   if (!m_idealPadMap) { return false; }
   if (layer < FirstLayer || layer > LastLayer) { return false; }
   if (side >= NSides) { return false; }
@@ -434,7 +481,8 @@ bool TpcCrossingFinder::sample_drift_lookup(const unsigned int layer,
   }
   if (!bracket_found) { return false; }
 
-  auto sample_time = [this, target_time_ns, edge_tolerance_ns](const DriftPolyline& polyline,
+  bool any_cm_clamped=false;
+  auto sample_time = [this, target_time_ns, edge_tolerance_ns,&any_cm_clamped](const DriftPolyline& polyline,
                                             double& delta_r,
                                             double& delta_phi,
                                             double& point_z) -> bool
@@ -443,11 +491,11 @@ bool TpcCrossingFinder::sample_drift_lookup(const unsigned int layer,
     if (npoints <= 0) { return false; }
     // The last point in the drift line is at time (npoints - 1) * m_reverseDriftStepNs.
     const double max_time_ns = static_cast<double>(npoints - 1) * m_reverseDriftStepNs;
-    if (target_time_ns > max_time_ns + edge_tolerance_ns) { return false; }
-    // Within the tolerance, a time just past the end of the drift line is clamped to it.
-    const double time_ns = std::min(target_time_ns, max_time_ns);
+    const auto time=resolve_tpc_drift_time(target_time_ns,max_time_ns,edge_tolerance_ns,
+        m_centralMembraneTailToleranceNs,polyline.terminal_is_central_membrane);
+    if (!time.accepted) { ++m_outOfTimeRejectedSamples; return false; }
 
-    const double fbin = time_ns / m_reverseDriftStepNs;
+    const double fbin = time.time_ns / m_reverseDriftStepNs;
     const int i0 = std::min(static_cast<int>(std::floor(fbin)), npoints - 1);
     const int i1 = std::min(i0 + 1, npoints - 1);
     const double frac = fbin - static_cast<double>(i0);
@@ -459,7 +507,9 @@ bool TpcCrossingFinder::sample_drift_lookup(const unsigned int layer,
     delta_r = static_cast<double>(p0.delta_r) + frac * static_cast<double>(p1.delta_r - p0.delta_r);
     delta_phi = dphi0 + frac * (dphi1 - dphi0);
     point_z = static_cast<double>(p0.z) + frac * static_cast<double>(p1.z - p0.z);
-    return std::isfinite(delta_r) && std::isfinite(delta_phi) && std::isfinite(point_z);
+    const bool finite_sample=std::isfinite(delta_r) && std::isfinite(delta_phi) && std::isfinite(point_z);
+    if (finite_sample && time.central_membrane_clamped) { ++m_cmTailClampedSamples; any_cm_clamped=true; }
+    return finite_sample;
   };
 
   double delta_r0 = 0.0;
@@ -478,6 +528,7 @@ bool TpcCrossingFinder::sample_drift_lookup(const unsigned int layer,
     z1 = z0;
   }
   if (!valid0 && !valid1) { return false; }
+  if (central_membrane_clamped) { *central_membrane_clamped=any_cm_clamped; }
 
   double delta_r = 0.0;
   double delta_phi = 0.0;
@@ -999,6 +1050,8 @@ TpcCrossingFinder::test_candidate(const Tpc_AssembledTrack* track,
 
 int TpcCrossingFinder::process_event(PHCompositeNode* topNode)
 {
+  m_cmTailClampedSamples=0;
+  m_outOfTimeRejectedSamples=0;
   if (getNodes(topNode) != Fun4AllReturnCodes::EVENT_OK) { return Fun4AllReturnCodes::ABORTEVENT;
 }
   if (!m_assembledTracks || !m_decisions) { return Fun4AllReturnCodes::EVENT_OK;
@@ -1037,6 +1090,10 @@ int TpcCrossingFinder::process_event(PHCompositeNode* topNode)
   std::set<short> available_crossings = get_available_crossings();
   const std::set<short> intt_crossings = get_intt_crossings();
   available_crossings.insert(intt_crossings.begin(), intt_crossings.end());
+  if (m_useConfiguredCrossing)
+  {
+    available_crossings.insert(m_configuredCrossing);
+  }
   const auto vertices_by_crossing = get_vertices_by_crossing();
   const bool has_vertex_map = m_vertexMap != nullptr;
 
@@ -1122,8 +1179,20 @@ int TpcCrossingFinder::process_event(PHCompositeNode* topNode)
       const double min_time_ns = min_time0_ns - static_cast<double>(crossing) * m_crossingPeriodNs;
       const double max_time_ns = max_time0_ns - static_cast<double>(crossing) * m_crossingPeriodNs;
       const double edge_tolerance_ns = m_edgeToleranceTbins * m_tpcAdcClock;
-      const bool passes_time_window = std::isfinite(min_time_ns) && std::isfinite(max_time_ns) &&
+      bool passes_time_window = std::isfinite(min_time_ns) && std::isfinite(max_time_ns) &&
         min_time_ns > -edge_tolerance_ns && max_time_ns <= m_maxLookupTimeNs + edge_tolerance_ns;
+      // Preserve the upstream global time-window decision when the option is
+      // zero. An opt-in extension must be justified by the actual maximum-hit
+      // lookup sample terminating at CM; no radial/invalid endpoint receives
+      // a larger window merely because another line reaches the membrane.
+      if (!passes_time_window && m_centralMembraneTailToleranceNs>0.0 &&
+          std::isfinite(min_time_ns) && std::isfinite(max_time_ns) && min_time_ns>-edge_tolerance_ns)
+      {
+        double tail_x=0.0,tail_y=0.0,tail_z=0.0;
+        bool cm_clamped=false;
+        passes_time_window=sample_drift_lookup(TrkrDefs::getLayer(max_hsk),TpcDefs::getSide(max_hsk),
+            TpcDefs::getPad(max_hk),max_tbin,crossing,tail_x,tail_y,tail_z,&cm_clamped) && cm_clamped;
+      }
       if (passes_time_window)
       {
         allowed_crossings.push_back(crossing);

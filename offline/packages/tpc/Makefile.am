@@ -48,6 +48,7 @@ pkginclude_HEADERS = \
   TrainingHitsContainer.h \
   TrainingHits.h \
   Tpc3DClusterizer.h \
+  TpcAdcBaselineCorrection.h \
   TpcRawDataTree.h \
   TpcClusterCleaner.h \
   TpcClusterizer.h \
@@ -114,6 +115,7 @@ libtpc_la_LIBADD = \
   -lmicromegas_io \
   -lfun4all \
   -lphool \
+  -lpdbcalBase \
   -lSpectrum \
   -lpthread \
   -lPHGarfield
@@ -152,6 +154,13 @@ testexternals_tpc_io_LDADD = libtpc_io.la
 
 testexternals_tpc_SOURCES = testexternals.cc
 testexternals_tpc_LDADD = libtpc.la
+
+if !USE_ONLINE
+check_PROGRAMS = test_TpcClusterizerAdcBaseline
+TESTS = $(check_PROGRAMS)
+test_TpcClusterizerAdcBaseline_SOURCES = tests/test_TpcClusterizerAdcBaseline.cc
+test_TpcClusterizerAdcBaseline_LDADD = libtpc.la -ltrack_io -lpdbcalBase -lphool
+endif
 
 testexternals.cc:
 	echo "//*** this is a generated file. Do not commit, do not edit" > $@

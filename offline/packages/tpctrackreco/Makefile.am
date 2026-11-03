@@ -16,6 +16,7 @@ AM_LDFLAGS = \
   -L$(OFFLINE_MAIN)/lib64
 
 pkginclude_HEADERS = \
+  TpcHitsetPedestalCorrection.h \
   Tpc_ModuleTrackReco.h \
   Tpc_ModuleTrack.h \
   Tpc_ModuleTrackv1.h \
@@ -49,6 +50,8 @@ pkginclude_HEADERS = \
   TpcTrackFit.h \
   TpcTrackHelixFitter.h \
   TpcTrackKalmanFitter.h \
+  TpcTrackDiagnosticFitter.h \
+  TpcDriftTimePolicy.h \
   TpcPolyTrackSeedConverter.h \
   TpcPolyClusterTrkrClusterConverter.h \
   Tpc_FittingTools.h \
@@ -101,6 +104,7 @@ libtpctrackreco_io_la_SOURCES = \
   $(ROOTDICTS)
 
 libtpctrackreco_la_SOURCES = \
+  TpcHitsetPedestalCorrection.cc \
   Tpc_ModuleTrackReco.cc \
   Tpc_AssembledTrackReco.cc \
   TpcCrossingFinder.cc \
@@ -111,6 +115,7 @@ libtpctrackreco_la_SOURCES = \
   TpcPolyClusterTrkrClusterConverter.cc \
   TpcTrackHelixFitter.cc \
   TpcTrackKalmanFitter.cc \
+  TpcTrackDiagnosticFitter.cc \
   Tpc_FittingTools.cc \
   IdealPadMap.cc
 
@@ -120,6 +125,7 @@ libtpctrackreco_io_la_LIBADD = \
 libtpctrackreco_la_LIBADD = \
   libtpctrackreco_io.la \
   -lphool \
+  -lpdbcalBase \
   -lfun4all \
   -lffamodules \
   -lcdbobjects \
@@ -165,6 +171,18 @@ testexternals_tpctrackreco_LDADD = libtpctrackreco.la
 
 testexternals_tpctrackreco_io_SOURCES = testexternals.cc
 testexternals_tpctrackreco_io_LDADD = libtpctrackreco_io.la
+
+check_PROGRAMS = test_TpcTrackDiagnosticFitter test_TpcDriftTimePolicy test_TpcHitsetPedestalCorrection
+TESTS = $(check_PROGRAMS)
+test_TpcTrackDiagnosticFitter_SOURCES = tests/test_TpcTrackDiagnosticFitter.cc
+test_TpcTrackDiagnosticFitter_CPPFLAGS = $(AM_CPPFLAGS) -I$(srcdir)
+test_TpcTrackDiagnosticFitter_LDADD = libtpctrackreco.la
+test_TpcDriftTimePolicy_SOURCES = tests/test_TpcDriftTimePolicy.cc
+test_TpcDriftTimePolicy_CPPFLAGS = -I$(srcdir)
+test_TpcHitsetPedestalCorrection_SOURCES = tests/test_TpcHitsetPedestalCorrection.cc
+test_TpcHitsetPedestalCorrection_CPPFLAGS = $(AM_CPPFLAGS) -I$(srcdir)
+test_TpcHitsetPedestalCorrection_LDFLAGS = $(AM_LDFLAGS) -L$(ROOTSYS)/lib
+test_TpcHitsetPedestalCorrection_LDADD = libtpctrackreco.la -ltrack_io -lpdbcalBase -lphool -lCore -lRIO
 
 testexternals.cc:
 	echo "//*** this is a generated file. Do not commit, do not edit" > $@
